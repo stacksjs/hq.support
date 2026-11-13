@@ -10,8 +10,8 @@ export default defineModel({
     { name: 'support_membership_identity', columns: ['workspace_id', 'email'], unique: true },
   ],
   attributes: {
-    workspaceId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
-    userId: { fillable: true, nullable: true, validation: { rule: schema.number().integer() } },
+    workspaceId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    userId: { type: 'bigint', fillable: true, nullable: true, validation: { rule: schema.number().integer() } },
     email: { fillable: true, required: true, validation: { rule: schema.string() } },
     role: { fillable: true, required: true, validation: { rule: schema.string() }, default: 'agent' },
     status: { fillable: true, required: true, validation: { rule: schema.string() }, default: 'active' },

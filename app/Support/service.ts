@@ -136,11 +136,12 @@ export async function idempotent<T>(projectRow: Row, operation: string, keyValue
 export async function enqueue(projectRow: Row, kind: string, payload: Row) {
   return await insert('support_outbox', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, event_id: crypto.randomUUID(), kind, payload: JSON.stringify(payload), available_at: Date.now() })
 }
+const isoTime = (value: unknown) => value instanceof Date ? value.toISOString() : String(value)
 export function summary(row: Row) {
-  return { id: String(row.id), subject: String(row.subject), status: String(row.status), customer_id: String(row.contact_id), updated_at: String(row.updated_at), unread_count: Number(row.unread_count) }
+  return { id: String(row.id), subject: String(row.subject), status: String(row.status), customer_id: String(row.contact_id), updated_at: isoTime(row.updated_at), unread_count: Number(row.unread_count) }
 }
 export function messageView(row: Row) {
-  return { id: String(row.id), conversation_id: String(row.conversation_id), body: String(row.body), visibility: String(row.visibility), author_type: String(row.author_type), created_at: String(row.created_at), delivery_status: String(row.delivery_status) }
+  return { id: String(row.id), conversation_id: String(row.conversation_id), body: String(row.body), visibility: String(row.visibility), author_type: String(row.author_type), created_at: isoTime(row.created_at), delivery_status: String(row.delivery_status) }
 }
 export async function conversation(projectRow: Row, id: unknown, person?: Row): Promise<Row> {
   const row = await one('SELECT * FROM support_conversations WHERE id = ? AND project_id = ?', [identifier(id), projectRow.id])
@@ -183,7 +184,8 @@ export async function reply(projectRow: Row, id: unknown, input: Row, actor: { c
 }
 export async function track(projectRow: Row, input: Row) {
   return await idempotent(projectRow, 'event', input.idempotencyKey, input, async () => {
-    const person = await contact(projectRow, input)
+    const externalId = text(input.externalId, 'externalId', 255)
+    const person = await one('SELECT * FROM support_contacts WHERE project_id = ? AND external_id = ?', [projectRow.id, externalId]) ?? await contact(projectRow, { externalId })
     const event = await insert('support_events', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, contact_id: person.id, event: text(input.event, 'event', 200), attributes: jsonText(input.attributes) })
     await enqueue(projectRow, 'event.created', { eventId: event.id })
     return { id: String(event.id), accepted: true }
@@ -200,7 +202,7 @@ export async function updateConversation(projectRow: Row, id: unknown, input: Ro
   })
 }
 
-/** Exact AI admission once per conversation/month; a failed provider call must release its reservation. */
+/** Internal atomic admission primitive; provider orchestration uses durable run reservations and reconciliation. */
 export async function reserveAi(projectRow: Row, conversationId: unknown, tokens: number) {
   if (!Number.isSafeInteger(tokens) || tokens <= 0) fail(422, 'invalid_input', 'Token reservation must be a positive integer.')
   return await workspaceTransaction(number(projectRow, 'workspace_id'), async () => {

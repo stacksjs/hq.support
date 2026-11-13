@@ -10,8 +10,8 @@ export default defineModel({
     { name: 'support_contact_external', columns: ['project_id', 'external_id'], unique: true },
   ],
   attributes: {
-    workspaceId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
-    projectId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    workspaceId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    projectId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     externalId: { fillable: true, required: true, validation: { rule: schema.string() } },
     name: { fillable: true, required: true, validation: { rule: schema.string() }, default: '' },
     email: { fillable: true, required: true, validation: { rule: schema.string() }, default: '' },

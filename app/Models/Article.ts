@@ -10,8 +10,8 @@ export default defineModel({
     { name: 'support_article_slug', columns: ['project_id', 'locale', 'slug'], unique: true },
   ],
   attributes: {
-    workspaceId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
-    projectId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    workspaceId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    projectId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     slug: { fillable: true, required: true, validation: { rule: schema.string() } },
     title: { fillable: true, required: true, validation: { rule: schema.string() } },
     body: { fillable: true, required: true, type: 'text', validation: { rule: schema.string() } },
@@ -19,6 +19,6 @@ export default defineModel({
     visibility: { fillable: true, required: true, validation: { rule: schema.string() }, default: 'public' },
     locale: { fillable: true, required: true, validation: { rule: schema.string() }, default: 'en' },
     collection: { fillable: true, required: true, validation: { rule: schema.string() }, default: 'General' },
-    revision: { fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 1 },
+    revision: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 1 },
   },
 } as const)

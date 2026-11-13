@@ -7,8 +7,8 @@ export default defineModel({
   traits: { useTimestamps: true },
   dashboard: { access: false },
   attributes: {
-    workspaceId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
-    projectId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    workspaceId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    projectId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     provider: { fillable: true, required: true, validation: { rule: schema.string() } },
     status: { fillable: true, required: true, validation: { rule: schema.string() }, default: 'unconfigured' },
     configuration: { fillable: true, required: true, type: 'text', validation: { rule: schema.string() }, default: '{}' },

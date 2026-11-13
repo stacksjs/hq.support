@@ -10,8 +10,8 @@ export default defineModel({
     { name: 'support_idempotency_operation', columns: ['project_id', 'operation', 'key'], unique: true },
   ],
   attributes: {
-    workspaceId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
-    projectId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    workspaceId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    projectId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     operation: { fillable: true, required: true, validation: { rule: schema.string() } },
     key: { fillable: true, required: true, validation: { rule: schema.string() } },
     fingerprint: { fillable: true, required: true, validation: { rule: schema.string() } },

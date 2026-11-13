@@ -10,9 +10,9 @@ export default defineModel({
     { name: 'support_usage_meter', columns: ['workspace_id', 'period', 'meter'], unique: true },
   ],
   attributes: {
-    workspaceId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    workspaceId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     period: { fillable: true, required: true, validation: { rule: schema.string() } },
     meter: { fillable: true, required: true, validation: { rule: schema.string() } },
-    used: { fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },
+    used: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },
   },
 } as const)

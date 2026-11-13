@@ -12,6 +12,6 @@ export default defineModel({
     status: { fillable: true, required: true, validation: { rule: schema.string() } },
     sealedGrant: { fillable: true, type: 'text', validation: { rule: schema.string() }, nullable: true },
     claim: { fillable: true, validation: { rule: schema.string() }, nullable: true },
-    expiresAt: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    expiresAt: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
   },
 } as const)
