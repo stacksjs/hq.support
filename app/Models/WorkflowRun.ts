@@ -1,0 +1,22 @@
+import { defineModel } from '@stacksjs/orm'
+import { schema } from '@stacksjs/validation/runtime'
+
+export default defineModel({
+  name: 'WorkflowRun',
+  table: 'support_workflow_runs',
+  traits: { useTimestamps: true },
+  dashboard: { access: false },
+  indexes: [
+    { name: 'support_workflow_event', columns: ['workflow_id', 'event_id'], unique: true },
+  ],
+  attributes: {
+    workspaceId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    projectId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    workflowId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    eventId: { fillable: true, required: true, validation: { rule: schema.number().integer() } },
+    status: { fillable: true, required: true, validation: { rule: schema.string() }, default: 'pending' },
+    cursor: { fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },
+    availableAt: { fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },
+    lastError: { fillable: true, required: true, type: 'text', validation: { rule: schema.string() }, default: '' },
+  },
+} as const)

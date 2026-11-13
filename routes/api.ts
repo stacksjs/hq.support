@@ -1,33 +1,65 @@
-import { response, route } from '@stacksjs/router'
+import { route } from '@stacksjs/router'
+import { createCsrfCookie, csrfCookieToken, generateCsrfToken } from '@stacksjs/defaults/app/Middleware/Csrf.ts'
+import { supportAction } from '../app/Actions/Support/SupportAction'
 
-/**
- * This file is the entry point for your application's API routes.
- * The routes defined here are automatically registered. Last but
- * not least, you may also create any other `routes/*.ts` files.
- *
- * Every route in this file is mounted under `/api`. The prefix comes from
- * the `'api'` key in `app/Routes.ts` and lines up with the path the dev
- * proxy forwards (`/api/*`), so `route.get('/hello', ...)` below answers
- * `GET /api/hello`. Paths at the document root belong in a route file
- * whose registry entry sets `prefix: ''`.
- *
- * Framework routes (auth, dashboard, commerce, CMS, etc.) are loaded
- * automatically from storage/framework/defaults/routes/dashboard.ts.
- * You do NOT need to define them here — only add your own custom routes.
- *
- * @see https://docs.stacksjs.com/routing
- */
+// Keep the native auth actions reachable behind the application's /api proxy.
+route.get('/csrf-token', (request) => {
+  const token = csrfCookieToken(request as Request) || generateCsrfToken()
+  return Response.json({ token }, { headers: { 'Cache-Control': 'no-store', 'Set-Cookie': createCsrfCookie(request as Request, token) } })
+})
+route.post('/login', 'Actions/Auth/LoginAction').rateLimit(5, 'minute')
+route.post('/register', 'Actions/Auth/RegisterAction').rateLimit(3, 'minute')
+route.post('/verify-two-factor-login', 'Actions/Auth/VerifyTwoFactorLoginAction').rateLimit(5, 'minute')
+route.post('/logout', 'Actions/Auth/LogoutAction').middleware('auth')
 
-// Your custom routes go here. This one answers `GET /api/hello`:
-route.get('/hello', () => response.text('hello world'))
+route.get('/support/me', supportAction('me', 'GET')).middleware('auth')
+route.post('/support/workspaces', supportAction('workspaces.create', 'POST')).middleware('auth').rateLimit(5, 'hour')
+route.post('/support/workspaces/{workspace}/projects', supportAction('projects.create', 'POST')).middleware('auth')
+route.post('/support/workspaces/{workspace}/invitations', supportAction('invitations.create', 'POST')).middleware('auth').rateLimit(20, 'hour')
+route.post('/support/invitations/{id}/accept', supportAction('invitations.accept', 'POST')).middleware('auth')
+route.get('/support/projects/{project}/inbox', supportAction('inbox', 'GET')).middleware('auth')
+route.get('/support/projects/{project}/conversations/{id}', supportAction('conversation.detail', 'GET')).middleware('auth')
+route.patch('/support/projects/{project}/conversations/{id}', supportAction('conversation.update', 'PATCH')).middleware('auth')
+route.post('/support/projects/{project}/conversations/{id}/messages', supportAction('agent.reply', 'POST')).middleware('auth')
+route.patch('/support/projects/{project}', supportAction('projects.settings', 'PATCH')).middleware('auth')
+route.post('/support/projects/{project}/keys', supportAction('keys.create', 'POST')).middleware('auth').rateLimit(10, 'hour')
+route.get('/support/projects/{project}/tickets', supportAction('tickets.list', 'GET')).middleware('auth')
+route.post('/support/projects/{project}/tickets', supportAction('tickets.create', 'POST')).middleware('auth')
+route.patch('/support/projects/{project}/tickets/{id}', supportAction('tickets.update', 'PATCH')).middleware('auth')
+route.get('/support/projects/{project}/articles', supportAction('articles.list', 'GET')).middleware('auth')
+route.post('/support/projects/{project}/articles', supportAction('articles.create', 'POST')).middleware('auth')
+route.patch('/support/projects/{project}/articles/{id}', supportAction('articles.update', 'PATCH')).middleware('auth')
+route.get('/support/projects/{project}/reports', supportAction('reports', 'GET')).middleware('auth')
+route.get('/support/projects/{project}/billing', supportAction('billing', 'GET')).middleware('auth')
+route.get('/support/projects/{project}/workflows', supportAction('workflows.list', 'GET')).middleware('auth')
+route.post('/support/projects/{project}/workflows', supportAction('workflows.create', 'POST')).middleware('auth')
 
-// `/coming-soon` is served as an STX view from
-// `storage/framework/defaults/resources/views/coming-soon.stx`. The
-// view auto-resolves through stx-serve, so no route registration is
-// needed here. To activate the holding page across the whole app:
-//
-//   ./buddy coming-soon [--secret=my-magic-token]
-//
-// Launch the site with `./buddy launch`. Maintenance mode (503 page,
-// distinct cookie + state file) is the separate `./buddy down` /
-// `./buddy up` pair.
+// These APIs require their own project/customer bearer and never use cookies.
+route.post('/v1/projects/{project}/sessions', supportAction('sessions', 'POST')).skipCsrf().rateLimit(120, 'minute')
+route.post('/v1/projects/{project}/events', supportAction('events', 'POST')).skipCsrf().rateLimit(300, 'minute')
+route.get('/v1/projects/{project}/conversations', supportAction('conversations.list', 'GET')).rateLimit(120, 'minute')
+route.post('/v1/projects/{project}/conversations', supportAction('conversations.create', 'POST')).skipCsrf().rateLimit(120, 'minute')
+route.post('/v1/projects/{project}/conversations/{id}/messages', supportAction('messages.create', 'POST')).skipCsrf().rateLimit(120, 'minute')
+route.post('/widget/projects/{project}/session', supportAction('widget.session', 'POST')).skipCsrf().rateLimit(30, 'minute')
+route.post('/widget/projects/{project}/events', supportAction('widget.events', 'POST')).skipCsrf().rateLimit(120, 'minute')
+route.get('/widget/projects/{project}/conversations', supportAction('widget.conversations', 'GET')).rateLimit(120, 'minute')
+route.post('/widget/projects/{project}/conversations', supportAction('widget.create', 'POST')).skipCsrf().rateLimit(30, 'minute')
+route.get('/widget/projects/{project}/conversations/{id}', supportAction('widget.detail', 'GET')).rateLimit(120, 'minute')
+route.post('/widget/projects/{project}/conversations/{id}/messages', supportAction('widget.reply', 'POST')).skipCsrf().rateLimit(60, 'minute')
+route.get('/widget/projects/{project}/articles', supportAction('widget.articles', 'GET')).rateLimit(120, 'minute')
+route.post('/widget/projects/{project}/tickets', supportAction('widget.tickets.create', 'POST')).skipCsrf().rateLimit(20, 'minute')
+route.get('/widget/projects/{project}/tickets/{id}', supportAction('widget.tickets.detail', 'GET')).rateLimit(120, 'minute')
+route.options('/widget/projects/{project}/*', async (request) => {
+  const { project } = await import('../app/Support/service')
+  const origin = request.headers.get('origin')
+  const selected = await project(request.getParam('project') || '')
+  const allowed: unknown = JSON.parse(String(selected.allowed_origins))
+  if (!origin || !Array.isArray(allowed) || !allowed.includes(origin)) return new Response(null, { status: 403 })
+  return new Response(null, { status: 204, headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Max-Age': '600', 'Vary': 'Origin' } })
+}).skipCsrf()
+
+route.post('/cli/connect', supportAction('hq.start', 'POST')).skipCsrf().rateLimit(10, 'minute')
+route.get('/cli/connect/{code}', supportAction('hq.poll', 'GET')).rateLimit(120, 'minute')
+route.get('/support/connect/{code}', supportAction('hq.describe', 'GET')).middleware('auth')
+route.post('/support/connect/{code}/approve', supportAction('hq.approve', 'POST')).middleware('auth').rateLimit(5, 'minute')
+route.get('/v1/usage', supportAction('hq.usage', 'GET')).rateLimit(120, 'minute')

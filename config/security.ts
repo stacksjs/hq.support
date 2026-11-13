@@ -24,7 +24,7 @@ export default {
     // own models as well, 'none' turns generated model APIs off, and a list
     // of model names picks exactly those (['own', 'Product'] adds one framework
     // model to yours). STACKS_MODEL_APIS overrides it. See #2866 and #2954.
-    models: 'own',
+    models: 'none',
   },
 
   // Application rate limits (route `.rateLimit()`, `rateLimit()`, the login

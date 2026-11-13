@@ -7,6 +7,7 @@
 export const actions = {
   'Actions/NotifyUser': '../../../app/Actions/NotifyUser.ts',
   'Actions/SendWelcomeEmail': '../../../app/Actions/SendWelcomeEmail.ts',
+  'Actions/Support/SupportAction': '../../../app/Actions/Support/SupportAction.ts',
   'Actions/AI/AskAction': '@stacksjs/defaults/app/Actions/AI/AskAction.ts',
   'Actions/AI/CompleteAction': '@stacksjs/defaults/app/Actions/AI/CompleteAction.ts',
   'Actions/AI/SummaryAction': '@stacksjs/defaults/app/Actions/AI/SummaryAction.ts',

@@ -240,13 +240,6 @@ declare module '@stacksjs/database' {
       end_date: string
       team_id: number
     }
-    card_assignees: {
-      // columns
-      card_id: number
-      user_id: number
-      assigned_by_user_id: number | null
-      created_at: string | null
-    }
     card_attachments: {
       // columns
       id: number
@@ -268,12 +261,6 @@ declare module '@stacksjs/database' {
       card_id: number
       user_id: number
       body: string
-    }
-    card_labels: {
-      // columns
-      card_id: number
-      label_id: number
-      created_at: string | null
     }
     cards: {
       // columns
@@ -372,47 +359,6 @@ declare module '@stacksjs/database' {
       is_active: number
       categorizable_id: number
       categorizable_type: string
-    }
-    ci_run_states: {
-      // columns
-      repo_full_name: string
-      last_conclusion: string | null
-      last_run_id: number | null
-      last_seen_at: string | null
-      last_notified_at: string | null
-      updated_at: string | null
-    }
-    ci_runner_alert_states: {
-      // columns
-      org: string
-      alerting: number
-      last_alerted_at: string | null
-      last_cleared_at: string | null
-      updated_at: string | null
-    }
-    ci_runner_samples: {
-      // columns
-      id: number
-      org: string
-      running: number
-      queued: number
-      cap: number
-      sampled_at: string
-    }
-    commentables: {
-      // columns
-      id: number
-      title: string
-      body: string
-      status: string
-      approved_at: number | null
-      rejected_at: number | null
-      commentables_id: number
-      commentables_type: string
-      user_id: number | null
-      is_active: number | null
-      created_at: string
-      updated_at: string | null
     }
     comments: {
       // columns
@@ -533,20 +479,6 @@ declare module '@stacksjs/database' {
       status: "Active" | "Inactive"
       avatar: string
       user_id: number
-    }
-    dead_letter_jobs: {
-      // columns
-      id: number
-      uuid: string
-      connection: string
-      queue: string
-      payload: string
-      exception: string
-      reason: string
-      total_failures: number
-      first_failed_at: string | null
-      last_failed_at: string | null
-      dead_lettered_at: string
     }
     delivery_routes: {
       // columns
@@ -798,38 +730,17 @@ declare module '@stacksjs/database' {
       template_id: string
       customer_id: number
     }
-    job_batches: {
+    hq_connect_codes: {
       // columns
-      id: string
-      name: string
-      total_jobs: number
-      pending_jobs: number
-      failed_jobs: number
-      failed_job_ids: string
-      options: string | null
-      cancelled_at: string | null
+      id: number
       created_at: string
-      finished_at: string | null
-      then_handler: string | null
-      catch_handler: string | null
-      finally_handler: string | null
-    }
-    job_idempotency: {
-      // columns
-      id: number
-      idempotency_key: string
-      job_name: string
-      queue: string
-      dispatched_at: string
-    }
-    job_quarantine: {
-      // columns
-      id: number
-      job_name: string
-      payload_hash: string
-      failure_count: number
-      window_start: string
-      quarantined_at: string | null
+      updated_at: string | null
+      code_hash: string
+      app: string
+      status: string
+      sealed_grant: string | null
+      claim: string | null
+      expires_at: number
     }
     jobs: {
       // columns
@@ -1223,15 +1134,6 @@ declare module '@stacksjs/database' {
       order_id: number
       customer_id: number
     }
-    permissions: {
-      // columns
-      id: number
-      name: string
-      guard_name: string
-      description: string | null
-      created_at: string | null
-      updated_at: string | null
-    }
     pledges: {
       // columns
       id: number
@@ -1358,15 +1260,6 @@ declare module '@stacksjs/database' {
       explain_plan: string
       optimization_suggestions: string
     }
-    queue_circuit_state: {
-      // columns
-      queue_name: string
-      success_count: number
-      failure_count: number
-      window_start: string
-      paused_at: string | null
-      resume_at: string | null
-    }
     queue_workers: {
       // columns
       worker_id: string
@@ -1466,21 +1359,6 @@ declare module '@stacksjs/database' {
       product_id: number
       customer_id: number
       order_id: number
-    }
-    role_permissions: {
-      // columns
-      role_id: number
-      permission_id: number
-      created_at: string | null
-    }
-    roles: {
-      // columns
-      id: number
-      name: string
-      guard_name: string
-      description: string | null
-      created_at: string | null
-      updated_at: string | null
     }
     sender_domains: {
       // columns
@@ -1661,23 +1539,275 @@ declare module '@stacksjs/database' {
       last_used_at: string
       user_id: number
     }
+    support_api_keys: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      digest: string
+      scope: string
+      revoked_at: number
+    }
+    support_articles: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      slug: string
+      title: string
+      body: string
+      status: string
+      visibility: string
+      locale: string
+      collection: string
+      revision: number
+    }
+    support_attachments: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      conversation_id: number
+      storage_key: string
+      file_name: string
+      mime_type: string
+      bytes: number
+      status: string
+    }
+    support_challenges: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      digest: string
+      kind: string
+      expires_at: number
+      consumed_at: number
+    }
+    support_channels: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      provider: string
+      status: string
+      configuration: string
+    }
+    support_contacts: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      external_id: string
+      name: string
+      email: string
+      company: string
+      attributes: string
+    }
+    support_conversations: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      contact_id: number
+      subject: string
+      status: string
+      assignee_id: number
+      unread_count: number
+      channel: string
+      ai_turns: number
+      ai_tokens: number
+      ai_charged_period: string
+    }
+    support_customer_sessions: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      contact_id: number
+      digest: string
+      expires_at: number
+    }
+    support_events: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      contact_id: number
+      event: string
+      attributes: string
+    }
+    support_idempotency: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      operation: string
+      key: string
+      fingerprint: string
+      response: string
+    }
+    support_inbound: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      provider: string
+      provider_event_id: string
+      payload: string
+      status: string
+      last_error: string
+    }
+    support_memberships: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      user_id: number | null
+      email: string
+      role: string
+      status: string
+    }
+    support_messages: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      conversation_id: number
+      contact_id: number
+      body: string
+      visibility: string
+      author_type: string
+      author_id: number
+      delivery_status: string
+    }
+    support_outbox: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      event_id: string
+      kind: string
+      payload: string
+      status: string
+      attempts: number
+      available_at: number
+      lease_token: string
+      lease_until: number
+      last_error: string
+    }
+    support_projects: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      public_id: string
+      name: string
+      allowed_origins: string
+      anonymous_enabled: number
+    }
+    support_tickets: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      contact_id: number
+      conversation_id: number | null
+      title: string
+      description: string
+      status: string
+      priority: string
+      assignee_id: number
+      due_at: number
+    }
+    support_usage: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      period: string
+      meter: string
+      used: number
+    }
+    support_workflow_runs: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      workflow_id: number
+      event_id: number
+      status: string
+      cursor: number
+      available_at: number
+      last_error: string
+    }
+    support_workflows: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      name: string
+      event: string
+      enabled: number
+      definition: string
+    }
+    support_workspaces: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      public_id: string
+      name: string
+      owner_id: number
+      plan: string
+      trial_ends_at: number
+      stacks_verified: number
+      deployment_verified: number
+      overages_enabled: number
+      spending_cap_cents: number
+      wallet_cents: number
+      storage_bytes: number
+    }
     taggable_models: {
       // columns
       id: number
       tag_id: number
       taggable_id: number
-      taggable_type: string
-      created_at: string
-      updated_at: string | null
-    }
-    taggables: {
-      // columns
-      id: number
-      name: string
-      slug: string
-      description: string | null
-      is_active: number
-      taggable_id: number | null
       taggable_type: string
       created_at: string
       updated_at: string | null
@@ -1779,18 +1909,6 @@ declare module '@stacksjs/database' {
       occurred_at: string
       team_id: number
     }
-    user_permissions: {
-      // columns
-      user_id: number
-      permission_id: number
-      created_at: string | null
-    }
-    user_roles: {
-      // columns
-      user_id: number
-      role_id: number
-      created_at: string | null
-    }
     users: {
       // columns
       id: number
@@ -1803,10 +1921,10 @@ declare module '@stacksjs/database' {
       two_factor_enabled: number | null
       two_factor_last_used_step: number | null
       stripe_id: string | null
+      avatar: string | null
       name: string
       email: string
       password: string
-      avatar: string
     }
     waitlist_products: {
       // columns
