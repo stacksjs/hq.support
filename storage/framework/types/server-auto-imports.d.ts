@@ -115,6 +115,7 @@ declare global {
   const QueueWorker: typeof import('../../../app/Models/QueueWorker')['default']
   const SupportReplayChannel: typeof import('../../../app/Models/SupportReplayChannel')['default']
   const SupportReplayEvent: typeof import('../../../app/Models/SupportReplayEvent')['default']
+  const SupportReplayOperatorLock: typeof import('../../../app/Models/SupportReplayOperatorLock')['default']
   const SupportRoutingAgent: typeof import('../../../app/Models/SupportRoutingAgent')['default']
   const SupportTeam: typeof import('../../../app/Models/SupportTeam')['default']
   const SupportTeamMember: typeof import('../../../app/Models/SupportTeamMember')['default']

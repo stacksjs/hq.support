@@ -22,6 +22,7 @@ export const actions = {
   'Actions/Support/ListAgentsAction': '../../../app/Actions/Support/ListAgentsAction.ts',
   'Actions/Support/MarkReadAction': '../../../app/Actions/Support/MarkReadAction.ts',
   'Actions/Support/PhoneAction': '../../../app/Actions/Support/PhoneAction.ts',
+  'Actions/Support/RealtimeAction': '../../../app/Actions/Support/RealtimeAction.ts',
   'Actions/Support/RoutingAction': '../../../app/Actions/Support/RoutingAction.ts',
   'Actions/Support/SupportAction': '../../../app/Actions/Support/SupportAction.ts',
   'Actions/Support/TicketAction': '../../../app/Actions/Support/TicketAction.ts',

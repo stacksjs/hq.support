@@ -56,6 +56,7 @@ export { default as ProviderCostBucket } from '../../../app/Models/ProviderCostB
 export { default as QueueWorker } from '../../../app/Models/QueueWorker'
 export { default as SupportReplayChannel } from '../../../app/Models/SupportReplayChannel'
 export { default as SupportReplayEvent } from '../../../app/Models/SupportReplayEvent'
+export { default as SupportReplayOperatorLock } from '../../../app/Models/SupportReplayOperatorLock'
 export { default as SupportRoutingAgent } from '../../../app/Models/SupportRoutingAgent'
 export { default as SupportTeam } from '../../../app/Models/SupportTeam'
 export { default as SupportTeamMember } from '../../../app/Models/SupportTeamMember'

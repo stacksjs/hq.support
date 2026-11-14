@@ -177,6 +177,7 @@
     "Subscription": true,
     "SupportReplayChannel": true,
     "SupportReplayEvent": true,
+    "SupportReplayOperatorLock": true,
     "SupportRoutingAgent": true,
     "SupportTeam": true,
     "SupportTeamMember": true,

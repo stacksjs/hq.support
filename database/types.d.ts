@@ -2317,6 +2317,11 @@ declare module '@stacksjs/database' {
       payload: string
       recorded_at: number | bigint
     }
+    support_replay_operator_locks: {
+      // columns
+      id: number
+      name: string
+    }
     support_routing_agents: {
       // columns
       id: number
