@@ -83,7 +83,7 @@ async function qualify(assets: string, path: '/proof' | '/loader-proof', viewpor
   const origin = preview.server.url.origin, url = origin + path, policy = (await fetch(url)).headers.get('content-security-policy') || ''
   assert.ok(policy.includes("script-src 'self'") && !/unsafe-inline|unsafe-eval/.test(policy), 'Proof must run under a strict script CSP')
   const requests = new Map<string, RequestRecord>(), failures: string[] = [], forbidden: string[] = [], expectedFailures = new Set<string>(), logs: LogEntry[] = []
-  browser = await launch({ headless: true, shared: false, viewport, chromePath: process.env.CHROME_PATH || process.env.BROWSE_BROWSER, args: process.platform === 'linux' ? ['--disable-dev-shm-usage', ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])] : [], startTimeoutMs: 20000, commandTimeoutMs: 20000 })
+  browser = await launch({ headless: true, shared: false, viewport, chromePath: process.env.CHROME_PATH || process.env.BROWSE_BROWSER, args: process.platform === 'linux' ? ['--disable-dev-shm-usage', ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])] : [], startTimeoutMs: 60000, commandTimeoutMs: 20000 })
   const cdp = browser.cdp
   cdp.on('Network.requestWillBeSent', event => requests.set(event.requestId, event.request))
   cdp.on('Log.entryAdded', event => logs.push(event.entry))

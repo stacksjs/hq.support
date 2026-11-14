@@ -22,13 +22,13 @@ Native browser close and preview shutdown run in `finally`. Build subprocesses r
 
 Artifacts are written to `storage/framework/runtime/support-browser` (override with `SUPPORT_BROWSER_ARTIFACTS` pointing to a dedicated output directory): `report.json`, build log, and desktop/mobile screenshots for both pages. Failures retain available page diagnostics and a clearly named failure screenshot. These are test fixture artifacts without real session credentials or customer data.
 
-## CI integration proposal
+## CI workflow
 
-The existing verification job already builds the emitted widget. Add this immediately after `bun scripts/build-support-elements.ts`:
+The verification workflow builds the emitted widget once, then runs this browser gate and retains its evidence:
 
 ```yaml
 - name: Qualify compiled widget in Chromium
-  timeout-minutes: 5
+  timeout-minutes: 8
   env:
     CHROME_PATH: /usr/bin/google-chrome
   run: bun --no-env-file scripts/qualify-support-browser.ts --skip-build
@@ -44,4 +44,4 @@ The existing verification job already builds the emitted widget. Add this immedi
 
 Alternatively run the default command in a dedicated job after checkout, Bun setup and frozen dependency installation; it does not require the database service or `buddy key:generate`. GitHub's [Ubuntu runner image installs Google Chrome at this path](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-google-chrome.sh). The runner records the actual browser version rather than assuming a fixed version. If the chosen runner lacks Chrome, configure an executable explicitly; do not suppress the failed check. The upload step uses the current [official artifact action](https://github.com/actions/upload-artifact/releases/tag/v7.0.2).
 
-This change does not modify `.github/workflows/ci.yml`, package manifests or locks. CI integration is owned by the root implementation task. Local qualification used the installed published Stacks testing helper and an existing Chrome for Testing 157 executable on macOS, including a fresh native build and all four real-browser journeys. Execution on the Linux CI runner still needs its own recorded result after the workflow integration lands. This compiler proof does not qualify live providers, customer authentication, telephony audio or real customer delivery.
+Local qualification used the installed published Stacks testing helper and an existing Chrome for Testing 157 executable on macOS, including a fresh native build and all four real-browser journeys. Execution on the Linux CI runner still needs its own recorded result. Browser startup has a 60-second deadline to accommodate measured runner I/O delays; assertion and protocol deadlines remain separate. This compiler proof does not qualify live providers, customer authentication, telephony audio or real customer delivery.

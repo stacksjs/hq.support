@@ -17,21 +17,52 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg17@sha256:3e8b3adfd27b5707128f60956f62a793c3c9326ea8cfaf0eab7adccb5d700b21
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       APP_ENV: testing
       NODE_ENV: test
       DB_CONNECTION: sqlite
       DB_DATABASE: database/ci.sqlite
+      STACKS_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+      MAIL_MAILER: capture
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
       - run: ./buddy key:generate
+      - run: bun scripts/build-support-elements.ts
+      - name: Qualify compiled widget in Chromium
+        timeout-minutes: 8
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: bun --no-env-file scripts/qualify-support-browser.ts --skip-build
+      - name: Upload widget browser evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: support-browser-${{ github.run_attempt }}
+          path: storage/framework/runtime/support-browser
+          if-no-files-found: error
+          retention-days: 7
       - run: ./buddy lint
       - run: ./buddy typecheck
       - run: ./buddy migrate
+      - name: Verify model migration freshness
+        run: |
+          ./buddy generate:migrations --dialect all
+          git diff --exit-code -- database/migrations storage/framework/database
+          test -z "$(git ls-files --others --exclude-standard database/migrations)"
       - run: ./buddy test
-      - run: bun scripts/build-support-elements.ts
       - run: ./buddy build:views
