@@ -97,8 +97,9 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
     else if (operation === 'conversations.create' || operation === 'widget.create') { body = await support.createConversation(project, data, data, person); status = 201 }
     else if (operation === 'inbox' || operation === 'conversations.list' || operation === 'widget.conversations') {
       const search = new URL(request.url).searchParams
-      for (const name of ['cursor', 'status', 'limit', 'inboxId']) if (search.getAll(name).length > 1) fail(422, 'duplicate_query', `Provide ${name} once.`)
-      body = await support.conversations(project, person, search.get('cursor'), operation === 'inbox' ? account?.id : undefined, { status: search.get('status') ?? undefined, limit: search.get('limit') ?? undefined, ...(operation === 'inbox' ? { inboxId: search.get('inboxId') ?? undefined } : {}) })
+      for (const name of ['cursor', 'status', 'limit', 'inboxId', 'q']) if (search.getAll(name).length > 1) fail(422, 'duplicate_query', `Provide ${name} once.`)
+      if (search.has('q') && operation !== 'inbox') fail(403, 'search_agent_required', 'Transcript search requires an authenticated agent.')
+      body = await support.conversations(project, person, search.get('cursor'), operation === 'inbox' ? account?.id : undefined, { status: search.get('status') ?? undefined, limit: search.get('limit') ?? undefined, ...(operation === 'inbox' ? { inboxId: search.get('inboxId') ?? undefined, q: search.get('q') ?? undefined } : {}) })
     }
     else if (operation === 'conversation.detail' || operation === 'widget.detail') body = await support.detail(project, params.id, person, new URL(request.url).searchParams.get('beforeMessage'))
     else if (operation === 'messages.create' || operation === 'agent.reply' || operation === 'widget.reply') { body = operation === 'agent.reply' ? await (await import('./managed-channels')).createChannelReply(project, params.id, data, Number(account?.id)) : await support.reply(project, params.id, data, { customer: person, userId: account?.id }); status = 201 }

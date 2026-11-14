@@ -5,6 +5,7 @@ import { db, insert, one, query, workspaceTransaction } from './database'
 import { billingPolicy, limitsFor, periodOf } from './limits'
 import { fail, identifier, text } from './errors'
 import { initialWorkspaceEntitlement } from './deployment'
+import { conversationSearch } from './conversation-search'
 
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 export const secret = () => randomBytes(32).toString('hex')
@@ -166,7 +167,7 @@ export async function conversation(projectRow: Row, id: unknown, person?: Row): 
 }
 /** States supported by actual conversation transitions, independent of ticket state names. */
 export const conversationStatuses = ['open', 'closed', 'snoozed'] as const
-export async function conversations(projectRow: Row, person?: Row, cursor?: string | null, agentId?: number, options: { status?: unknown, limit?: unknown, inboxId?: unknown } = {}) {
+export async function conversations(projectRow: Row, person?: Row, cursor?: string | null, agentId?: number, options: { status?: unknown, limit?: unknown, inboxId?: unknown, q?: unknown } = {}) {
   if (cursor !== undefined && cursor !== null && !/^[1-9]\d*$/.test(cursor)) fail(422, 'invalid_cursor', 'Use the conversation cursor returned by the previous page.')
   const before = cursor === undefined || cursor === null ? Number.MAX_SAFE_INTEGER : identifier(cursor)
   if (options.status !== undefined && !conversationStatuses.some(status => status === options.status)) fail(422, 'invalid_status', 'Conversation status must be open, closed or snoozed.')
@@ -174,9 +175,11 @@ export async function conversations(projectRow: Row, person?: Row, cursor?: stri
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail(422, 'invalid_limit', 'Conversation limit must be a whole number from 1 to 100.')
   const inboxId = options.inboxId === undefined ? undefined : options.inboxId === '0' || options.inboxId === 0 ? 0 : identifier(options.inboxId)
   if (inboxId && !await one('SELECT id FROM support_team_inboxes WHERE id = ? AND project_id = ? AND workspace_id = ?', [inboxId, projectRow.id, projectRow.workspace_id])) fail(404, 'not_found', 'Team inbox not found.')
-  const readProjection = agentId ? `, (SELECT COUNT(*) FROM support_messages m WHERE m.conversation_id = support_conversations.id AND m.project_id = support_conversations.project_id AND m.author_type = 'customer' AND m.visibility = 'public' AND m.delivery_status <> 'imported' AND m.id > COALESCE((SELECT last_message_id FROM support_conversation_reads r WHERE r.conversation_id = support_conversations.id AND r.user_id = ?), 0)) AS agent_unread_count` : ''
-  const rows = await query(`SELECT support_conversations.*${readProjection} FROM support_conversations WHERE project_id = ? AND id < ?${person ? ' AND contact_id = ?' : ''}${options.status !== undefined ? ' AND status = ?' : ''}${inboxId !== undefined ? ' AND inbox_id = ?' : ''} ORDER BY id DESC LIMIT ?`, [...(agentId ? [agentId] : []), projectRow.id, before, ...(person ? [person.id] : []), ...(options.status !== undefined ? [options.status] : []), ...(inboxId !== undefined ? [inboxId] : []), limit + 1])
-  return { conversations: rows.slice(0, limit).map(row => summary(row, Boolean(agentId))), nextCursor: rows.length > limit ? String(rows[limit - 1]!.id) : null }
+  if (options.q !== undefined && (!agentId || person)) fail(403, 'search_agent_required', 'Transcript search requires an authenticated agent.')
+  const search = conversationSearch(options.q)
+  const readProjection = agentId ? `, (SELECT COUNT(*) FROM support_messages m WHERE m.conversation_id = support_conversations.id AND m.project_id = support_conversations.project_id AND m.workspace_id = support_conversations.workspace_id AND m.author_type = 'customer' AND m.visibility = 'public' AND m.delivery_status <> 'imported' AND m.id > COALESCE((SELECT last_message_id FROM support_conversation_reads r WHERE r.conversation_id = support_conversations.id AND r.project_id = support_conversations.project_id AND r.workspace_id = support_conversations.workspace_id AND r.user_id = ?), 0)) AS agent_unread_count` : ''
+  const rows = await query(`SELECT support_conversations.*${readProjection} FROM support_conversations WHERE workspace_id = ? AND project_id = ? AND id < ?${person ? ' AND contact_id = ?' : ''}${options.status !== undefined ? ' AND status = ?' : ''}${inboxId !== undefined ? ' AND inbox_id = ?' : ''}${search ? ` AND ${search.predicate}` : ''} ORDER BY id DESC LIMIT ?`, [...(agentId ? [agentId] : []), projectRow.workspace_id, projectRow.id, before, ...(person ? [person.id] : []), ...(options.status !== undefined ? [options.status] : []), ...(inboxId !== undefined ? [inboxId] : []), ...(search?.values ?? []), limit + 1])
+  return { conversations: rows.slice(0, limit).map(row => summary(row, Boolean(agentId))), nextCursor: rows.length > limit ? String(rows[limit - 1]!.id) : null, ...(search ? { search: { mode: search.mode } } : {}) }
 }
 export async function detail(projectRow: Row, id: unknown, person?: Row, beforeMessage?: string | null) {
   const row = await conversation(projectRow, id, person)

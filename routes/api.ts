@@ -17,7 +17,7 @@ route.post('/support/workspaces', supportAction('workspaces.create', 'POST')).mi
 route.post('/support/workspaces/{workspace}/projects', supportAction('projects.create', 'POST')).middleware('auth')
 route.post('/support/workspaces/{workspace}/invitations', supportAction('invitations.create', 'POST')).middleware('auth').rateLimit(20, 'hour')
 route.post('/support/invitations/{id}/accept', supportAction('invitations.accept', 'POST')).middleware('auth')
-route.get('/support/projects/{project}/inbox', supportAction('inbox', 'GET')).middleware('auth')
+route.get('/support/projects/{project}/inbox', supportAction('inbox', 'GET')).middleware('auth').rateLimit(120, 'minute')
 route.get('/support/projects/{project}/conversations/{id}', supportAction('conversation.detail', 'GET')).middleware('auth')
 route.patch('/support/projects/{project}/conversations/{id}', supportAction('conversation.update', 'PATCH')).middleware('auth')
 route.post('/support/projects/{project}/conversations/{id}/messages', supportAction('agent.reply', 'POST')).middleware('auth')
