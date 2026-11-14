@@ -73,6 +73,9 @@ try {
   const owner = await nativeAccount('owner@example.test'), agent = await nativeAccount('agent@example.test'), outsider = await nativeAccount('outsider@example.test')
   const created = await request('/support/workspaces', 'POST', { name: 'Enterprise One' }, owner)
   check(created.status === 201, 'native workspace created')
+  const otherWorkspace = (await request('/support/workspaces', 'POST', { name: 'Agent Independent Workspace' }, agent)).data.workspace
+  const otherProject = (await request(`/support/workspaces/${otherWorkspace.id}/projects`, 'POST', { name: 'Independent Project' }, agent)).data.project
+  const affectedProject = (await request(`/support/workspaces/${created.data.workspace.id}/projects`, 'POST', { name: 'Enterprise Project' }, owner)).data.project
   const workspace = created.data.workspace, workspacePath = `/support/workspaces/${workspace.id}/enterprise`, scimPath = `/scim/v2/${workspace.id}`
   check((await request(workspacePath + '/provider', 'POST', { protocol: 'oidc', issuer, clientId: 'hq-support' }, owner)).status === 402, 'missing license rejects enterprise configuration')
   process.env.SUPPORT_ENTERPRISE_LICENSE = license(workspace.public_id, Date.now() + 86400000, otherKeys.privateKey)
@@ -129,8 +132,10 @@ try {
   await query("UPDATE support_memberships SET role = 'admin' WHERE id = ? AND workspace_id = ?", [membership!.id, workspace.id])
   const deactivated = await request(scimPath + `/Users/${provisioned.data.id}`, 'PATCH', { schemas: ['urn:ietf:params:scim:api:messages:2.0:PatchOp'], Operations: [{ op: 'replace', path: 'active', value: false }] }, scimToken)
   check(deactivated.status === 200 && !deactivated.data.active, `SCIM deactivation remains available on expired license ${JSON.stringify(deactivated.data)}`)
-  check((await request('/support/me', 'GET', undefined, undefined, sessionCookie)).status === 401, 'SCIM sweep revokes existing native browser session')
-  check((await request('/support/me', 'GET', undefined, agent)).status === 401, 'SCIM sweep revokes native bearer')
+  check((await request(`/support/projects/${affectedProject.public_id}/inbox`, 'GET', undefined, undefined, sessionCookie)).status === 403, 'revoked membership immediately denies affected workspace through native browser session')
+  check((await request(`/support/projects/${affectedProject.public_id}/inbox`, 'GET', undefined, agent)).status === 403, 'revoked membership immediately denies affected workspace through native bearer')
+  check((await request(`/support/projects/${otherProject.public_id}/inbox`, 'GET', undefined, undefined, sessionCookie)).status === 200, 'directory revocation preserves native browser access to another workspace')
+  check((await request(`/support/projects/${otherProject.public_id}/inbox`, 'GET', undefined, agent)).status === 200, 'directory revocation preserves native bearer access to another workspace')
   const revokedLogin = await start(idp.public_id)
   check((await request(`/_enterprise/providers/${idp.public_id}/callback?code=test&state=${revokedLogin.state}`, 'GET', undefined, undefined, revokedLogin.cookie)).status === 403, 'revoked directory identity cannot sign in again through OIDC')
   check((await request(workspacePath + '/audit', 'GET', undefined, owner)).status === 200, 'SCIM does not revoke owner credential')

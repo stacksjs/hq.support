@@ -98,14 +98,15 @@ role claims cannot create owners/admins, and directory writes refuse owner
 memberships. Manually promoted administrators can still be deactivated. This deliberately requires a native onboarding step; automatic JIT
 account creation and third-party directory compatibility certification remain work.
 
-Deactivation revokes the workspace membership and its identity inside the same
-transaction as native account credential revocation. Existing access/refresh
-credentials and native browser sessions lose authority. The global account and
-other workspace memberships remain intact; users may sign in again to access
-those other workspaces. This signs out the affected account across workspaces
-because native credentials are account-wide. Token revocation and provisioning
-serialize on the workspace row. The application does not delete customer contacts,
-conversations or exports when a human agent is deactivated.
+Deactivation revokes the workspace membership and its identity in one
+transaction. Every affected workspace API reauthorizes the native account against
+its active membership, so existing browser sessions and bearers immediately lose
+that workspace's authority. Native credentials belong to the human account and
+remain usable in other workspaces. Provisioning does not run an account-wide
+credential sweep. Subsequent OIDC login through the deactivated identity is
+refused. Token revocation and provisioning serialize on the workspace row. The
+application does not delete customer contacts, conversations or exports when a
+human agent is deactivated.
 
 ## Audit and verification
 
@@ -121,7 +122,7 @@ external SIEM sink is included.
 generated model migrations and real disposable SQLite/PostgreSQL. Only the IdP
 HTTP boundary is injected. It exercises signed Ed25519 workspace entitlement,
 SCIM tenant isolation, native invitations, OIDC signature/audience checks,
-one-use browser binding, native session issuance/revocation and expiry recovery.
+one-use browser binding, native session issuance and workspace-scoped revocation and expiry recovery.
 The auth package also has `enterprise-oidc.test.ts` covering issuer, audience,
 nonce, expiry, unsigned tokens, callback binding and S256 PKCE. Provider production
 configuration and real third-party conformance testing remain deployment gates.

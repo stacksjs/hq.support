@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-HQ-Support-Enterprise
 import type { Row } from '../app/Support/database'
 import type { EnterpriseOidcConfig } from '@stacksjs/auth/enterprise-oidc'
-import { revokeAccountCredentials } from '@stacksjs/auth'
 import { insert, one, query, workspaceTransaction } from '../app/Support/database'
 import { fail, identifier, text } from '../app/Support/errors'
 import { digest, secret, workspace } from '../app/Support/service'
@@ -110,11 +109,10 @@ export async function setProvisionedActive(workspaceId: number, principal: Row, 
     if (row.role === 'owner') fail(403, 'protected_membership', 'Provisioning cannot deactivate a workspace owner.')
     await query('UPDATE support_enterprise_identities SET active = ?, updated_at = ? WHERE id = ? AND workspace_id = ?', [active, new Date().toISOString(), row.id, workspaceId])
     await query('UPDATE support_memberships SET status = ?, updated_at = ? WHERE id = ? AND workspace_id = ?', [active ? (row.user_id || row.membership_user_id) ? 'active' : 'pending' : 'revoked', new Date().toISOString(), row.membership_id, workspaceId])
-    if (!active && (row.user_id || row.membership_user_id)) {
-      // Existing native credentials must lose authority immediately. This
-      // signs the account out, but does not remove any other workspace membership.
-      await revokeAccountCredentials(Number(row.user_id || row.membership_user_id), { tx: true })
-    }
+    // Native credentials belong to the human account, across workspaces.
+    // Every workspace API rechecks membership, so revocation stops this
+    // workspace immediately without signing the human out elsewhere.
+
     await audit(workspaceId, null, active ? 'scim.user.reactivated' : 'scim.user.revoked', row.id)
     return await scimIdentity(workspaceId, principal.provider_id, row.id)
   })
