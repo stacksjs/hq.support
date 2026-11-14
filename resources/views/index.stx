@@ -1,41 +1,30 @@
+<script server>
+const pageTitle = 'Customer support, close to home'
+const pageDescription = 'An open source customer support workspace built on Stacks. Conversations, a customer messenger, and room to grow.'
+const snippet = `import { createSupportClient } from '@stacksjs/support/server'
+
+const support = createSupportClient({
+  url: 'https://hq.support',
+  key: process.env.SUPPORTHQ_KEY,
+  project: process.env.SUPPORTHQ_PROJECT_ID,
+})
+
+// Keep identity on your server.
+const session = await support.createSession({
+  externalId: String(user.id),
+  email: user.email,
+  name: user.name,
+})`
+const snippetLines = snippet.split('\n').map(line => ({ text: line.trimStart(), indented: line.startsWith(' ') }))
+</script>
 @extends('default')
 @section('content')
-<script server>
-/**
- * The starter page `buddy new` gives every app, at `/`.
- *
- * The document around it is `layouts/default.stx`, its <head> is
- * `resources/partials/head.stx`, and each row of the list is the `NextStep`
- * component from `resources/components`. Replace this file with your own
- * homepage and keep the three beside it.
- */
-import { config } from '@stacksjs/config'
-
-const appName = config.app.name || 'My App'
-
-const nextSteps = [
-  { icon: 'i-hugeicons-file-edit', title: 'Edit this page', path: 'resources/views/index.stx' },
-  { icon: 'i-hugeicons-layout-01', title: 'Shape the document', path: 'resources/views/layouts/default.stx' },
-  { icon: 'i-hugeicons-database-01', title: 'Define a model', path: 'app/Models' },
-  { icon: 'i-hugeicons-route-01', title: 'Add an API route', path: 'routes/api.ts' },
-  { icon: 'i-hugeicons-settings-02', title: 'Configure the app', path: 'config/app.ts' },
-]
-</script>
-<div class="flex flex-col justify-center mx-auto px-6 py-16 max-w-2xl min-h-screen">
-  <p class="font-medium text-neutral-500 text-sm dark:text-neutral-400">Your app is running</p>
-  <h1 class="mt-2 font-semibold text-4xl tracking-tight">{{ appName }}</h1>
-  <p class="mt-4 text-neutral-600 dark:text-neutral-300">
-    Start with <code class="px-1.5 py-0.5 text-sm bg-neutral-200 dark:bg-neutral-800 rounded">./buddy dev</code>, then make it yours.
-  </p>
-
-  <ul class="mt-10 border-neutral-200 border-t dark:border-neutral-800">
-    @foreach(nextSteps as step)
-      <NextStep :icon="step.icon" :title="step.title" :path="step.path" />
-    @endforeach
-  </ul>
-
-  <p class="mt-10 text-neutral-500 text-sm dark:text-neutral-400">
-    <a class="underline underline-offset-4 hover:text-neutral-900 dark:hover:text-neutral-100" href="https://stacksjs.com/docs">Read the Stacks docs</a>
-  </p>
+<div class="mx-auto px-6 max-w-7xl">
+  <section class="grid gap-12 grid-cols-1 items-start lg:grid-cols-2 hero">
+    <div><h1>Good support.<br>Closer to home.</h1><p class="intro">Your conversations, your customers, your code. A support workspace built to belong in your stack.</p><div class="flex flex-wrap gap-3 items-center"><a href="/app" class="button button-teal">Open your workspace <i class="i-hugeicons-arrow-right-02" aria-hidden="true"></i></a><a href="/help/getting-started" class="button button-outline">Read the setup guide</a></div></div>
+    <div class="hero-code"><div class="code-header"><span>YOUR APP / SERVER</span><span>TypeScript</span></div><pre><code>@foreach(snippetLines as line)<span class="code-line {{ line.indented ? 'code-indent' : '' }}">{{ line.text }}</span>@endforeach</code></pre><div class="code-note">A public project ID in the browser. Your secret key stays on the server.</div></div>
+  </section>
+  <section class="feature-intro section-line"><h2>A direct line to your customers.</h2><p>Start with a shared inbox and an embeddable messenger. Keep customer context beside the conversation, with internal notes for your team.</p><div class="grid gap-10 grid-cols-1 md:grid-cols-3 mt-10"><article class="principle"><i class="i-hugeicons-inbox" aria-hidden="true"></i><h3>A shared place to reply</h3><p>Read the conversation, leave a private note, and keep a clear view of what still needs attention.</p></article><article class="principle"><i class="i-hugeicons-message-01" aria-hidden="true"></i><h3>A messenger in your app</h3><p>Native web components fit into your existing frontend. Customer identity comes from your own server.</p></article><article class="principle"><i class="i-hugeicons-source-code" aria-hidden="true"></i><h3>A core you can own</h3><p>The MIT licensed core is built on Bun, TypeScript, and Stacks. Read the code, contribute, or run it yourself.</p></article></div></section>
+  <section class="flex flex-col gap-8 items-start justify-between md:flex-row open-source"><div><h2>Make yourself at home.</h2><p>Support should fit the way your team works. Follow the implementation, inspect the boundaries, and help shape what comes next.</p></div><a href="https://github.com/stacksjs/hq.support" class="button button-outline">Explore the source <i class="i-hugeicons-arrow-up-right-01" aria-hidden="true"></i></a></section>
 </div>
 @endsection

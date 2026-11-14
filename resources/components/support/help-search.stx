@@ -1,0 +1,37 @@
+<script component>
+{"tag":"hq-support-help-search","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"results":{"type":"array","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false}},"events":{"results":{},"error":{}}}
+</script>
+<script client>
+async function search(event) {
+  event.preventDefault()
+  const query = String(new FormData(event.target).get('q') || '').trim()
+  if (!query || !this.projectId) return
+  this._abort?.abort()
+  this._abort = new AbortController()
+  this.pending = true
+  this.notice = ''
+  try {
+    const response = await fetch(this.apiUrl.replace(/\/$/, '') + '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/articles?q=' + encodeURIComponent(query), { signal: this._abort.signal, credentials: 'omit', headers: { Authorization: 'Bearer ' + this.sessionToken } })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.message || 'Help search is unavailable.')
+    this.results = (data.articles || []).map(article => ({ title: article.title, excerpt: article.excerpt || article.body || '' }))
+    this.notice = this.results.length ? '' : 'No matching articles. Try another search or message the team.'
+    this.emit('results', { count: this.results.length })
+  }
+  catch (error) {
+    if (error.name === 'AbortError') return
+    this.notice = error.message || 'Help search is unavailable.'
+    this.emit('error', { message: this.notice })
+  }
+  finally { this.pending = false }
+}
+function onDisconnect() { this._abort?.abort() }
+</script>
+<template>
+  <section aria-label="Search help"><form @submit.prevent="search"><label for="help-query">Find an answer</label><div class="row"><input id="help-query" type="search" name="q" required placeholder="Search help articles"><button type="submit" :disabled="this.pending">Search</button></div></form>
+  <div aria-live="polite">@if(this.notice)<p>{{ this.notice }}</p>@endif
+  @foreach(this.results as article)<article><details><summary>{{ article.title }}</summary><p>{{ article.excerpt }}</p></details></article>@endforeach</div></section>
+</template>
+<style>
+:host{display:block;color:#20332f;font:14px Geist,system-ui,sans-serif}*{box-sizing:border-box}label{display:block;font-size:18px;font-weight:650;margin-bottom:14px}.row{display:flex;gap:8px}input{width:100%;min-width:0;border:1px solid #cddbd3;border-radius:9px;padding:12px;font:inherit;color:inherit;background:#fff}button{border:0;border-radius:9px;background:#126d60;color:#fff;padding:12px 18px;font:inherit;cursor:pointer}button:disabled{opacity:.5}input:focus-visible,button:focus-visible,a:focus-visible{outline:3px solid #68bcab;outline-offset:3px}p{line-height:1.5;color:#53665d}article{padding:18px 0;border-bottom:1px solid #e5ebe7}a{color:#126d60;font-weight:600;text-decoration:none}a:hover{text-decoration:underline}
+</style>

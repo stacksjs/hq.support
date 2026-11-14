@@ -1,0 +1,46 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HQ.support native element proof</title><style>body{font:14px system-ui;color:#20332f;background:#f7faf5;padding:32px;margin:0}h1{font-size:28px}#checks{padding:20px;background:#fff;border:1px solid #dce5df;border-radius:12px;max-width:850px;line-height:1.9}#elements{display:flex;gap:30px;align-items:flex-start;flex-wrap:wrap;padding-top:30px}.pass{color:#126d60}.fail{color:#a23c2c}button{font:inherit}</style></head><body><h1>Native stx element proof</h1><p>Local compiler and API fixture. This page is a test host, not a live customer workspace.</p><div id="checks" role="log" aria-live="polite"></div><div id="elements"><hq-support-launcher label="Open compiler demo"></hq-support-launcher><hq-support-messenger id="messenger"></hq-support-messenger><hq-support-help-search></hq-support-help-search><hq-support-ticket-form></hq-support-ticket-form><hq-support-ticket-status></hq-support-ticket-status></div><script type="module">
+const output = document.querySelector('#checks')
+const failures = []
+function check(condition, name) { const item = document.createElement('div'); item.textContent = (condition ? 'PASS: ' : 'FAIL: ') + name; item.className = condition ? 'pass' : 'fail'; output.append(item); if (!condition) failures.push(name) }
+const ambientBefore = ['state','derived','onMount','stx'].map(name => typeof globalThis[name])
+const messenger = document.querySelector('#messenger')
+messenger.heading = 'Compiler demo support'
+const events = []
+for (const name of ['ready','opened','closed','delivery','unread','error']) messenger.addEventListener(name, event => events.push({ name, detail: event.detail }))
+try {
+ await import('/widgets/bundle.js')
+ for (const tag of ['messenger','launcher','help-search','ticket-form','ticket-status']) { await customElements.whenDefined('hq-support-' + tag); check(!!document.querySelector('hq-support-' + tag).shadowRoot, tag + ' registers with isolated shadow root') }
+ check(ambientBefore.every((value,index) => value === typeof globalThis[['state','derived','onMount','stx'][index]]), 'bundle does not install ambient stx globals')
+ await messenger.boot({ url: location.origin, project: 'proof' })
+ check(events.some(event => event.name === 'ready'), 'boot creates a scoped session and emits ready')
+ check(!messenger.hasAttribute('session-token') && !messenger.outerHTML.includes('fixture-session'), 'session token is never reflected into HTML')
+ check(messenger.heading === 'Compiler demo support', 'property set before custom element upgrade survives registration')
+ document.querySelector('hq-support-launcher').addEventListener('opened', () => messenger.open())
+ document.querySelector('hq-support-launcher').shadowRoot.querySelector('button').click()
+ await messenger.updateComplete
+ check(!!messenger.shadowRoot.querySelector('section'), 'launcher opens the real messenger')
+ check(messenger.shadowRoot.querySelector('h2').textContent === 'Compiler demo support', 'pre-upgrade property renders correctly')
+ const text = '<script>alert("xss")<\/script> Customer message'
+ const textarea = messenger.shadowRoot.querySelector('textarea'); textarea.value = text
+ await messenger.send({ preventDefault(){}, target: messenger.shadowRoot.querySelector('form') })
+ await messenger.updateComplete
+ check(events.some(event => event.name === 'delivery'), 'message uses scoped HTTP API and emits delivery')
+ check(messenger.shadowRoot.textContent.includes(text) && !messenger.shadowRoot.querySelector('.message script'), 'customer HTML renders as escaped text')
+ messenger.shadowRoot.querySelector('textarea').value = 'FAIL'
+ await messenger.send({ preventDefault(){}, target: messenger.shadowRoot.querySelector('form') })
+ await messenger.updateComplete
+ check(events.some(event => event.name === 'error'), 'delivery failure emits a useful error')
+ check(messenger.shadowRoot.querySelector('textarea').value === 'FAIL', 'failed delivery preserves the customer draft')
+ messenger.close(); await messenger.updateComplete
+ check(!messenger.shadowRoot.querySelector('section') && events.some(event => event.name === 'closed'), 'close hides the panel and emits closed')
+ await messenger.track({ name: 'compiler-proof' })
+ messenger.shutdown(); await messenger.updateComplete
+ check(!messenger.sessionToken && !messenger.thread.length, 'shutdown clears customer session and messages')
+ const second = document.createElement('hq-support-messenger'); document.querySelector('#elements').append(second); await second.updateComplete
+ check(second.thread !== messenger.thread && second.sessionToken === '', 'two widget instances keep independent state')
+ check(!messenger.shadowRoot.querySelector('script'), 'no executable scripts leak into the shadow markup')
+ check(!!getComputedStyle(document.querySelector('hq-support-launcher').shadowRoot.querySelector('button')).backgroundColor, 'shadow styling is self contained')
+ document.title = failures.length ? failures.length + ' widget checks failed' : 'All native widget checks passed'
+ const done = document.createElement('strong'); done.textContent = document.title; output.append(done)
+} catch(error) { check(false, error.stack || error.message); document.title = 'Widget proof failed' }
+</script></body></html>

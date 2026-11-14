@@ -1,0 +1,8 @@
+<script server>
+const pageTitle = 'Connect your Stacks app'
+const pageDescription = 'Verify the app you own to unlock the Stacks tier.'
+</script>
+@extends('default')
+@section('content')
+<div class="mx-auto px-6 help-layout"><header class="page-heading"><a href="/help" class="text-xs muted">Help center / Guide</a><h1 class="mt-6">Connect your Stacks app</h1><p>Verify the app you own to unlock the Stacks tier.</p></header><article class="article-prose"><h2>Use Buddy connect</h2><p>The HQ integration uses the service ID <code>supporthq</code>. Buddy connects your authenticated account, confirms the deployment challenge, and saves the resulting server credentials.</p><h2>Know what is public</h2><p><code>SUPPORTHQ_URL</code> selects your service URL. <code>SUPPORTHQ_PROJECT_ID</code> is public. <code>SUPPORTHQ_KEY</code> and <code>SUPPORTHQ_READ_KEY</code> are server secrets and must never appear in a client bundle or HTML.</p><h2>Verify deployment ownership</h2><p>The free Stacks tier requires both a verified Buddy connection and proof that you control the deployment. A framework version string alone does not grant eligibility.</p><h2>Understand the limits</h2><p>The free tier includes two human agents, including the owner and pending invitations, and one project. It permits 100 new conversations each UTC month with 20% grace, 10 AI handled text conversations, and 300,000,000 stored attachment bytes. Existing conversations remain usable after the new conversation cap.</p></article></div>
+@endsection

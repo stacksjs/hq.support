@@ -1,0 +1,17 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HQ.support local customer proof</title><style>body{font:14px system-ui;background:#f7faf5;color:#20332f;margin:0;padding:32px}h1{font-size:28px}p{line-height:1.8;max-width:650px}#surface{display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap}#tools{width:380px;display:grid;gap:28px}#status{padding:12px 16px;background:#fff;border:1px solid #dce5df;border-radius:10px;max-width:750px;margin-bottom:24px}.launcher{margin-bottom:20px}</style></head><body><h1>Local customer proof</h1><p>These elements connect to the real native HQ.support API and a disposable SQLite database. This is local test data.</p><div id="status" role="status">Connecting customer session...</div><div class="launcher"><hq-support-launcher label="Open customer support"></hq-support-launcher></div><div id="surface"><hq-support-messenger></hq-support-messenger><div id="tools"><hq-support-ticket-form></hq-support-ticket-form><hq-support-ticket-status></hq-support-ticket-status><hq-support-help-search></hq-support-help-search></div></div><script type="module">
+await import(new URLSearchParams(location.search).has('native') ? 'http://127.0.0.1:4411/widgets/bundle.js' : '/widgets/bundle.js')
+const project = new URLSearchParams(location.search).get('project') || ''
+const messenger = document.querySelector('hq-support-messenger')
+const status = document.querySelector('#status')
+const form = document.querySelector('hq-support-ticket-form')
+const ticket = document.querySelector('hq-support-ticket-status')
+const search = document.querySelector('hq-support-help-search')
+const url = 'http://127.0.0.1:4407'
+for (const element of [form, ticket, search]) { element.apiUrl = url; element.projectId = project }
+messenger.addEventListener('ready', () => { status.textContent = 'Connected to the native customer API.'; for (const element of [form, ticket, search]) element.sessionToken = messenger.sessionToken })
+messenger.addEventListener('delivery', () => { status.textContent = 'Customer message persisted by the native API.' })
+messenger.addEventListener('error', event => { status.textContent = event.detail.message })
+document.querySelector('hq-support-launcher').addEventListener('opened', () => messenger.open())
+form.addEventListener('delivery', async event => { ticket.ticketId = String(event.detail.ticket.id); await ticket.refresh(); status.textContent = 'Ticket persisted and retrieved from native API.' })
+await messenger.boot({ url, project }).then(() => messenger.open()).catch(error => { status.textContent = error.message })
+</script></body></html>

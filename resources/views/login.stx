@@ -1,0 +1,20 @@
+<script server>
+const pageTitle = 'Sign in'
+const pageDescription = 'Your HQ.support account.'
+</script>
+<script client>
+import { createSupportAuth } from '../functions/support/auth'
+const auth = createSupportAuth('login', () => navigate('/app'))
+const email = auth.email
+const password = auth.password
+const name = auth.name
+const remember = auth.remember
+const code = auth.code
+</script>
+@extends('default')
+@section('content')
+<section class="grid gap-12 grid-cols-1 md:grid-cols-2 mx-auto px-6 max-w-7xl auth-layout">
+<div class="auth-intro"><span class="brand-mark">h</span><h1>Welcome back.</h1><p>Your team. Your customers. Pick up the conversation.</p><div class="auth-principle"><i class="i-hugeicons-lock-key" aria-hidden="true"></i><p>One secure account for your support workspace. Your customer conversations stay in their own project.</p></div></div>
+<div class="auth-card"><div :if="auth.error()" class="auth-error" role="alert">{{ auth.error() }}</div><form @submit.prevent="auth.submit()"><div :if="auth.step() === 'credentials'"><h2>Sign in</h2><label for="email">Work email</label><input id="email" name="email" x-model.trim="email" type="email" autocomplete="email" required :disabled="auth.pending()"><label for="password">Password</label><input id="password" name="password" x-model="password" type="password" autocomplete="current-password" required :disabled="auth.pending()"><label class="remember-label"><input type="checkbox" x-model="remember">Keep me signed in</label><button class="button button-teal" type="submit" :disabled="auth.pending()">{{ auth.pending() ? 'Please wait...' : 'Sign in' }}</button><p class="auth-alternate">New to HQ.support? <a href="/register">Create an account</a></p></div><div :if="auth.step() === 'twofactor'"><h2>One more step.</h2><p class="auth-help">Enter the code from your authenticator app or a recovery code.</p><label for="code">Authentication code</label><input id="code" name="code" x-model.trim="code" autocomplete="one-time-code" required minlength="6" maxlength="64" :disabled="auth.pending()"><button class="button button-teal" type="submit" :disabled="auth.pending()">{{ auth.pending() ? 'Verifying...' : 'Verify and sign in' }}</button><button type="button" class="auth-back" @click="auth.restart()">Back to sign in</button></div></form></div>
+</section>
+@endsection

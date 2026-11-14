@@ -1,0 +1,10 @@
+<script server>
+const pageTitle = 'Add the customer messenger'
+const pageDescription = 'A native custom element, with identity issued by your server.'
+</script>
+@extends('default')
+@section('content')
+<div class="mx-auto px-6 help-layout"><header class="page-heading"><a href="/help" class="text-xs muted">Help center / Guide</a><h1 class="mt-6">Add the customer messenger</h1><p>A native custom element, with identity issued by your server.</p></header><article class="article-prose"><h2>Build the web components</h2><p>HQ.support ships stx sources for its messenger, launcher, help search, ticket form, and ticket status. Run the native build with <code>bun scripts/build-support-elements.ts</code>. The generated module is served at <code>/widgets/bundle.js</code>.</p><h2>Boot a customer session</h2><p>Your server creates a short lived session with the server SDK. Pass only that session token and the public project ID into the browser. Keep API keys on your server.</p><pre><code>&lt;script type="module" src="https://hq.support/widgets/bundle.js"&gt;&lt;/script&gt;
+&lt;hq-support-messenger project-id="YOUR_PUBLIC_PROJECT_ID"&gt;
+&lt;/hq-support-messenger&gt;</code></pre><p>Call the element's <code>boot({ url, project, token })</code> method to connect a verified identity, then <code>open()</code> to show it. Use <code>shutdown()</code> when the customer signs out. Anonymous sessions require an allowed origin on the project.</p><h2>Follow delivery state</h2><p>The messenger emits ready, opened, closed, unread, delivery, and error events. A delivery event confirms that the customer API accepted the message. An error leaves the draft available for retry.</p><h2>Match your host</h2><p>Elements render inside isolated shadow roots. The messenger accepts the CSS custom property <code>--support-accent</code>. Test your host's content security policy and allowed origins before rollout.</p></article></div>
+@endsection

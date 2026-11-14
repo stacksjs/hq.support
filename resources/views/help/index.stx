@@ -1,0 +1,8 @@
+<script server>
+const pageTitle = 'Help center'
+const pageDescription = 'Set up your HQ.support workspace, connect your app, and understand billing and customer sessions.'
+</script>
+@extends('default')
+@section('content')
+<div class="mx-auto pb-20 px-6 help-layout"><header class="page-heading"><h1>A little help, right here.</h1><p>Practical guides for setting up your workspace and bringing customer conversations into your app.</p></header><a href="/help/getting-started" class="help-item"><div><h2>Start with a workspace</h2><p>Sign in, create your workspace, and open the shared inbox.</p></div><i class="i-hugeicons-arrow-right-02" aria-hidden="true"></i></a><a href="/help/messenger" class="help-item"><div><h2>Add the customer messenger</h2><p>Web components, trusted identity, and public project IDs.</p></div><i class="i-hugeicons-arrow-right-02" aria-hidden="true"></i></a><a href="/help/stacks" class="help-item"><div><h2>Connect your Stacks app</h2><p>Understand Buddy connect and free tier verification.</p></div><i class="i-hugeicons-arrow-right-02" aria-hidden="true"></i></a><a href="/pricing" class="help-item"><div><h2>Plans and usage</h2><p>Seats, conversations, storage, and optional overages.</p></div><i class="i-hugeicons-arrow-right-02" aria-hidden="true"></i></a></div>
+@endsection

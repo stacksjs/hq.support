@@ -1,0 +1,8 @@
+<script server>
+const pageTitle = 'Start with a workspace'
+const pageDescription = 'Your workspace keeps your team, projects, and conversations together.'
+</script>
+@extends('default')
+@section('content')
+<div class="mx-auto px-6 help-layout"><header class="page-heading"><a href="/help" class="text-xs muted">Help center / Guide</a><h1 class="mt-6">Start with a workspace</h1><p>Your workspace keeps your team, projects, and conversations together.</p></header><article class="article-prose"><h2>Sign in to HQ.support</h2><p>Use your account to <a href="/login">sign in</a>, then open the inbox. New customers start with a 14 day trial. If you have no workspace, the inbox guides you through creating one.</p><h2>Find your conversations</h2><p>The left pane holds your conversation list. Select a conversation to read its history, reply to the customer, or add an internal note. Customer context stays beside the thread.</p><h2>Keep notes private</h2><p>Choose Internal note in the composer to leave context for your team. A reply marked Public is delivered to the customer conversation. Review the mode before sending.</p><h2>Check implementation status</h2><p>HQ.support is under active development. The repository records what is complete, partial, and planned. Do not rely on a planned channel until its acceptance checks pass.</p></article></div>
+@endsection

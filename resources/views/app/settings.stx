@@ -1,0 +1,21 @@
+<script server>
+const pageTitle = 'Workspace settings'
+const pageDescription = 'Configure your HQ.support messenger and server integration.'
+</script>
+<script client>
+import { createSupportSettings } from '../../functions/support/settings'
+const settings = createSupportSettings()
+const project = settings.project
+const origins = settings.origins
+const anonymous = settings.anonymous
+onMount(() => settings.load())
+onDestroy(() => settings.destroy())
+async function signOut() {
+  try { await settings.signOut(); navigate('/login') }
+  catch (error) { settings.error.set(error.message || 'Sign out could not be completed.') }
+}
+</script>
+@extends('default')
+@section('content')
+<div class="mx-auto px-6 max-w-7xl settings-layout"><header class="page-heading"><a class="text-xs muted" href="/app">Inbox / Settings</a><h1 class="mt-6">Make it your own.</h1><p>Connect your app, choose which origins can load the messenger, and keep your server credentials private.</p></header><div class="grid gap-12 grid-cols-1 lg:grid-cols-2 settings-grid"><section><h2 class="text-2xl">Customer messenger</h2><p class="settings-help">Workspace owners and admins can change project settings. Use one exact HTTPS origin per line. Localhost is allowed for development.</p><p :if="settings.error()" role="alert" class="auth-error">{{ settings.error() }}</p><p :if="settings.notice()" role="status" class="availability">{{ settings.notice() }}</p><form class="settings-form" @submit.prevent="settings.save()"><label for="settings-project">Project</label><select id="settings-project" x-model="project" @change="settings.select()" :disabled="settings.pending()"><option value="">Select a project</option><option :for="item in settings.projects()" :value="item.public_id">{{ item.name }}</option></select><label for="public-id">Public project ID</label><input id="public-id" :value="project()" readonly aria-describedby="public-id-help"><p id="public-id-help" class="settings-help">This ID is safe to include in your browser bundle.</p><label for="origins">Allowed origins</label><textarea id="origins" x-model="origins" rows="4" placeholder="https://your-app.com" :disabled="settings.pending()"></textarea><label class="settings-checkbox"><input type="checkbox" x-model="anonymous" :disabled="settings.pending()">Allow anonymous customer sessions</label><p class="settings-help">When disabled, your server must issue a trusted customer session before the messenger can connect.</p><button class="button button-teal" type="submit" :disabled="settings.pending() || !project()">Save messenger settings</button></form></section><section class="settings-integration"><h2 class="text-2xl">Your server connection</h2><p class="settings-help">Generate a write key for your server and a read key for summaries. Existing keys remain active. Store both in your deployment's secret manager.</p><button type="button" class="button button-outline" @click="settings.issueKeys()" :disabled="settings.pending() || !project()">Generate a new key pair</button><div :if="settings.keys().ingestKey" class="secret-result"><label for="write-key">SUPPORTHQ_KEY</label><textarea id="write-key" readonly rows="3" :value="settings.keys().ingestKey"></textarea><label for="read-key">SUPPORTHQ_READ_KEY</label><textarea id="read-key" readonly rows="3" :value="settings.keys().readKey"></textarea><p>These keys grant server access. Keep them out of your public HTML, source control, and client code.</p><button type="button" class="auth-back" @click="settings.keys.set({})">Hide keys</button></div><div class="settings-workspaces"><h3>Your workspaces</h3><article :for="workspace in settings.workspaces()"><strong>{{ workspace.name }}</strong><span>{{ workspace.role }} / {{ workspace.plan }}</span></article></div><a class="button button-outline" href="/help/messenger">Read the integration guide</a><button class="auth-back" type="button" @click="signOut()">Sign out of your account</button></section></div></div>
+@endsection

@@ -1,0 +1,21 @@
+<script server>
+import { PASSWORD_MIN_LENGTH, PASSWORD_MAX_LENGTH } from '@stacksjs/defaults/app/password-policy'
+const pageTitle = 'Create an account'
+const pageDescription = 'Your HQ.support account.'
+</script>
+<script client>
+import { createSupportAuth } from '../functions/support/auth'
+const auth = createSupportAuth('register', () => navigate('/app'))
+const email = auth.email
+const password = auth.password
+const name = auth.name
+const remember = auth.remember
+const code = auth.code
+</script>
+@extends('default')
+@section('content')
+<section class="grid gap-12 grid-cols-1 md:grid-cols-2 mx-auto px-6 max-w-7xl auth-layout">
+<div class="auth-intro"><span class="brand-mark">h</span><h1>A better place to help.</h1><p>Create your account, then make yourself at home.</p><div class="auth-principle"><i class="i-hugeicons-lock-key" aria-hidden="true"></i><p>One secure account for your support workspace. Your customer conversations stay in their own project.</p></div></div>
+<div class="auth-card"><div :if="auth.error()" class="auth-error" role="alert">{{ auth.error() }}</div><form @submit.prevent="auth.submit()"><div :if="auth.step() === 'credentials'"><h2>Create your account</h2><label for="name">Full name</label><input id="name" name="name" x-model.trim="name" autocomplete="name" required minlength="2" maxlength="255" :disabled="auth.pending()"><label for="email">Work email</label><input id="email" name="email" x-model.trim="email" type="email" autocomplete="email" required :disabled="auth.pending()"><label for="password">Password</label><input id="password" name="password" x-model="password" type="password" autocomplete="new-password" required minlength="{{ PASSWORD_MIN_LENGTH }}" maxlength="{{ PASSWORD_MAX_LENGTH }}" :disabled="auth.pending()"><button class="button button-teal" type="submit" :disabled="auth.pending()">{{ auth.pending() ? 'Please wait...' : 'Create your account' }}</button><p class="auth-alternate">Already have an account? <a href="/login">Sign in</a></p></div><div :if="auth.step() === 'twofactor'"><h2>One more step.</h2><p class="auth-help">Enter the code from your authenticator app or a recovery code.</p><label for="code">Authentication code</label><input id="code" name="code" x-model.trim="code" autocomplete="one-time-code" required minlength="6" maxlength="64" :disabled="auth.pending()"><button class="button button-teal" type="submit" :disabled="auth.pending()">{{ auth.pending() ? 'Verifying...' : 'Verify and sign in' }}</button><button type="button" class="auth-back" @click="auth.restart()">Back to sign in</button></div></form></div>
+</section>
+@endsection

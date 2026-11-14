@@ -1,0 +1,42 @@
+<script component>
+{"tag":"hq-support-ticket-form","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false}},"events":{"delivery":{},"error":{}}}
+</script>
+<script client>
+async function submit(event) {
+  event.preventDefault()
+  if (this.pending) return
+  if (!this.sessionToken || !this.projectId) { this.notice = 'Connect a customer session before submitting a ticket.'; return }
+  const form = event.target
+  const values = new FormData(form)
+  this._subject = String(values.get('subject') || '')
+  this._body = String(values.get('body') || '')
+  this.pending = true
+  this.notice = ''
+  this._abort = new AbortController()
+  try {
+    this._key = this._key || crypto.randomUUID()
+    const response = await fetch(this.apiUrl.replace(/\/$/, '') + '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/tickets', { method: 'POST', credentials: 'omit', signal: this._abort.signal, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + this.sessionToken }, body: JSON.stringify({ title: values.get('subject'), description: values.get('body'), idempotencyKey: this._key }) })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.message || 'Your ticket could not be submitted. Please retry.')
+    this._key = null
+    this._subject = ''
+    this._body = ''
+    form.reset()
+    this.notice = 'Your ticket has been submitted.'
+    this.emit('delivery', { ticket: data.ticket || data })
+  }
+  catch (error) {
+    if (error.name === 'AbortError') return
+    this.notice = error.message
+    this.emit('error', { message: this.notice })
+  }
+  finally { this.pending = false }
+}
+function onDisconnect() { this._abort?.abort() }
+</script>
+<template>
+  <form @submit.prevent="submit"><h2>Get help from the team</h2><label for="ticket-subject">Subject</label><input id="ticket-subject" name="subject" required maxlength="200" placeholder="What do you need help with?" value="{{ this._subject || '' }}" :disabled="this.pending"><label for="ticket-body">Details</label><textarea id="ticket-body" name="body" required maxlength="10000" rows="5" placeholder="Include the steps you took and what you expected." :disabled="this.pending">{{ this._body || '' }}</textarea><p role="status" aria-live="polite">{{ this.notice }}</p><button type="submit" :disabled="this.pending">{{ this.pending ? 'Submitting...' : 'Submit ticket' }}</button></form>
+</template>
+<style>
+:host{display:block;font:14px Geist,system-ui,sans-serif;color:#20332f}*{box-sizing:border-box}h2{font-size:20px;letter-spacing:-.5px;margin:0 0 24px}label{display:block;font-size:12px;font-weight:600;margin:16px 0 8px}input,textarea{width:100%;font:inherit;color:inherit;background:#fff;border:1px solid #cddbd3;border-radius:9px;padding:12px}textarea{resize:vertical}p{color:#53665d;line-height:1.5}button{font:inherit;border:0;border-radius:9px;background:#126d60;color:#fff;padding:12px 18px;cursor:pointer}button:disabled{opacity:.5}input:focus-visible,textarea:focus-visible,button:focus-visible{outline:3px solid #68bcab;outline-offset:3px}
+</style>
