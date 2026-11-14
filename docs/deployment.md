@@ -27,6 +27,45 @@ CI for the exact main commit and, for a real deploy, a complete matching
 `deployment/qualification.json`. `scripts/check-launch.ts` names every required
 qualification. Do not replace failed or missing evidence with claimed completion.
 
+## Runtime namespace evidence
+
+Each selected blueprint injects `CACHE_DRIVER=redis` and `QUEUE_DRIVER=database`
+into both web and API processes. `config/cache.ts` reads `CACHE_DRIVER` and
+`CACHE_PREFIX`; the configured native cache no longer stays on memory when the
+blueprint selects Redis. Production keeps `hq-support:cache` / `hq-support:queue`,
+staging uses `hq-support-staging:cache` / `hq-support-staging:queue`, and development
+uses `hq-support-development:cache` / `hq-support-development:queue`. The replay
+hint bus receives the corresponding `SUPPORT_REALTIME_NAMESPACE`, ending in
+`:replay-v1`. PostgreSQL database and owner selection remains per deployment;
+Redis prefixes do not isolate SQL rows.
+
+Without deployment overrides, cache remains memory and queue remains database,
+with `hq-support-development:*` local prefixes. `.env.example` explicitly selects
+local inline queues. Native boot validation rejects an unknown cache driver and
+unsupported queue drivers; it must finish before the cache is used. No fallback
+to memory or inline production jobs is an accepted deployment configuration.
+
+Installed `@stacksjs/queue` 0.75.585 honors `connections.redis.prefix` in the
+native `RedisQueue` adapter. Its separate `batch.ts` Redis store hardcodes
+`stacks:batch:*` and `stacks:batches`, ignores `batching.prefix`, and chooses the
+store from `QUEUE_DRIVER` rather than `batching.driver`. Database workers write
+`failed_jobs` in the app database; Redis failures live under the main queue
+prefix, not `failed.prefix`. The failed and batch prefixes are configured for
+each environment, but that is not evidence that those native consumers honor
+them. HQ deployments retain database queues and batches. Enabling native Redis
+batches on shared Redis requires an upstream fix and new provider evidence;
+this app does not patch installed packages or add a parallel batch store.
+
+`tests/feature/runtime-isolation.test.ts` starts fresh processes for both sites in
+all three selected environments and reads the public native configuration. It
+also checks native boot refusals and, with `SUPPORT_TEST_REDIS_URL`, uses the
+configured public cache and native Redis queue adapter across processes on the
+same server. The same logical cache key and random queue name remain independent
+in each environment. Cleanup deletes only those owned entries and jobs, never
+flushes a database. This is Redis namespace evidence, not PostgreSQL queue-worker
+or Redis-batch qualification. The full CI suite requires the real Redis service;
+a local run filtered to configuration checks cannot replace that proof.
+
 ## Environment
 
 Keep `APP_KEY`, database and Redis credentials, private storage credentials,

@@ -14,12 +14,12 @@ export default {
    * 'singlestore', or 'sqlite' (entries kept in a file, across restarts and
    * deploys).
    */
-  driver: 'memory',
+  driver: env.CACHE_DRIVER || 'memory',
 
   /**
    * Key prefix for cache namespacing
    */
-  prefix: 'stacks:cache',
+  prefix: env.CACHE_PREFIX || 'hq-support-development:cache',
 
   /**
    * Default TTL in seconds (0 = no expiration)

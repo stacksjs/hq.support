@@ -57,7 +57,7 @@ export default {
         db: Number(env.REDIS_DB || 0),
       },
       // Key prefix for all queue keys
-      prefix: String(env.QUEUE_PREFIX || 'stacks:queue'),
+      prefix: String(env.QUEUE_PREFIX || 'hq-support-development:queue'),
       // Worker concurrency (number of jobs processed simultaneously)
       concurrency: Number(env.QUEUE_CONCURRENCY || 5),
       // Log level for queue operations
@@ -124,17 +124,22 @@ export default {
     },
   },
 
+  // Database workers store failed_jobs in the app database. The Redis worker
+  // retains failures under its main queue prefix; failed.prefix is not consumed
+  // by the currently installed native workers.
   // Failed jobs configuration
   failed: {
     driver: failedDriver as 'database' | 'redis',
     table: 'failed_jobs',
-    prefix: 'stacks:failed',
+    prefix: env.QUEUE_FAILED_PREFIX || 'hq-support-development:failed',
   },
 
+  // The installed native batch store selects queue.default, and currently
+  // ignores this Redis prefix. HQ uses database queues/batches in deployments.
   // Batching configuration
   batching: {
     driver: 'redis',
-    prefix: 'stacks:batches',
+    prefix: env.QUEUE_BATCH_PREFIX || 'hq-support-development:batches',
   },
 
   // Worker configuration
