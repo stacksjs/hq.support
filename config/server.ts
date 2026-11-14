@@ -13,7 +13,11 @@ export default {
   // Opt in after publishing the native Request model and migrating its table.
   captureRequests: false,
   headers: {
-    '/widgets/*': { 'Access-Control-Allow-Origin': '*' },
+    '/widgets/*': { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=31536000, immutable' },
+    '/widgets/bundle.js': { 'Cache-Control': 'no-cache' },
+    '/widgets/custom-elements.json': { 'Cache-Control': 'no-cache' },
+    '/widgets/manifest.json': { 'Cache-Control': 'no-cache' },
+    '/support.js': { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' },
   },
   /**
    * **API Proxy**

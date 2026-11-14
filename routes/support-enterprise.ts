@@ -1,3 +1,4 @@
+import { route } from '@stacksjs/router'
 import { enterpriseAction } from '../app/Actions/Support/EnterpriseAction'
 
 route.get('/support/workspaces/{workspace}/enterprise', enterpriseAction('status', 'GET')).middleware('auth')

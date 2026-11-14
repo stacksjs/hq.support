@@ -2,6 +2,7 @@ import type { Row } from './database'
 import { insert, one, query, workspaceTransaction } from './database'
 import { fail, identifier, text } from './errors'
 import { member } from './service'
+import { invalidateArticleIndex, removeKnowledgeSource } from './knowledge-index'
 
 export type KnowledgeScope = { internal?: boolean, publishedOnly?: boolean, locale?: string, collection?: string }
 const snapshotFields = ['slug', 'title', 'body', 'status', 'visibility', 'locale', 'collection', 'revision'] as const
@@ -42,21 +43,27 @@ function attributes(data: Row, previous?: Row) {
   if (!['draft', 'published', 'archived'].includes(status) || !['public', 'internal'].includes(visibility)) fail(422, 'invalid_input', 'Unknown article status or visibility.')
   return { slug, title: text(data.title ?? previous?.title, 'title', 200), status, visibility, locale: localeOf(data.locale ?? previous?.locale ?? 'en'), collection: text(data.collection ?? previous?.collection ?? 'General', 'collection', 120) }
 }
-async function recordRevision(project: Row, article: Row, authorId: number) {
-  await insert('support_article_revisions', { workspace_id: project.workspace_id, project_id: project.id, article_id: article.id, revision: article.revision, author_id: authorId, snapshot: JSON.stringify(Object.fromEntries(snapshotFields.map(key => [key, key === 'revision' ? Number(article[key]) : article[key]]))) })
+export type KnowledgeAuthor = number | { integrationKeyId: number }
+async function authorizeAuthor(project: Row, author: KnowledgeAuthor) {
+  if (typeof author === 'number') return await member(author, Number(project.workspace_id), ['owner', 'admin'])
+  if (!await one("SELECT id FROM support_api_keys WHERE id = ? AND project_id = ? AND workspace_id = ? AND scope = 'write' AND revoked_at = 0", [author.integrationKeyId, project.id, project.workspace_id])) fail(403, 'forbidden', 'Knowledge integration access has been revoked.')
 }
-export async function createArticle(project: Row, data: Row, authorId: number) {
-  await member(authorId, Number(project.workspace_id), ['owner', 'admin'])
+async function recordRevision(project: Row, article: Row, author: KnowledgeAuthor) {
+  await insert('support_article_revisions', { workspace_id: project.workspace_id, project_id: project.id, article_id: article.id, revision: article.revision, author_id: typeof author === 'number' ? author : 0, integration_key_id: typeof author === 'number' ? 0 : author.integrationKeyId, snapshot: JSON.stringify(Object.fromEntries(snapshotFields.map(key => [key, key === 'revision' ? Number(article[key]) : article[key]]))) })
+}
+export async function createArticle(project: Row, data: Row, authorId: KnowledgeAuthor) {
+  await authorizeAuthor(project, authorId)
   const fields = attributes(data), body = await knowledgeText(data.body, data.format)
   return await workspaceTransaction(Number(project.workspace_id), async () => {
     if (await one('SELECT id FROM support_articles WHERE project_id = ? AND locale = ? AND slug = ?', [project.id, fields.locale, fields.slug])) fail(409, 'slug_conflict', 'This article slug already exists for this locale.')
     const row = await insert('support_articles', { workspace_id: project.workspace_id, project_id: project.id, ...fields, body, revision: 1 })
     await recordRevision(project, row, authorId)
+    await invalidateArticleIndex(project, row)
     return articleView(row)
   })
 }
-export async function updateArticle(project: Row, id: unknown, data: Row, authorId: number) {
-  await member(authorId, Number(project.workspace_id), ['owner', 'admin'])
+export async function updateArticle(project: Row, id: unknown, data: Row, authorId: KnowledgeAuthor) {
+  await authorizeAuthor(project, authorId)
   const imported = data.body === undefined ? undefined : await knowledgeText(data.body, data.format)
   return await workspaceTransaction(Number(project.workspace_id), async () => {
     const row = await one('SELECT * FROM support_articles WHERE id = ? AND project_id = ? AND workspace_id = ?', [identifier(id), project.id, project.workspace_id])
@@ -70,6 +77,7 @@ export async function updateArticle(project: Row, id: unknown, data: Row, author
     await query('UPDATE support_articles SET slug = ?, title = ?, body = ?, status = ?, visibility = ?, locale = ?, collection = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND project_id = ? AND workspace_id = ?', [fields.slug, fields.title, imported ?? row.body, fields.status, fields.visibility, fields.locale, fields.collection, new Date().toISOString(), row.id, project.id, project.workspace_id])
     const updated = (await one('SELECT * FROM support_articles WHERE id = ? AND project_id = ?', [row.id, project.id]))!
     await recordRevision(project, updated, authorId)
+    await invalidateArticleIndex(project, updated)
     return articleView(updated)
   })
 }
@@ -80,7 +88,7 @@ export function searchTerms(value: string) { return [...new Set(value.toLowerCas
 export async function searchArticles(project: Row, search: string, scope: KnowledgeScope = {}) {
   const terms = searchTerms(search.slice(0, 500)), values: unknown[] = [project.id, project.workspace_id]
   let where = 'project_id = ? AND workspace_id = ?'
-  if (!scope.internal) where += " AND status = 'published' AND visibility = 'public'"
+  if (!scope.internal) { where += " AND status = 'published' AND visibility = 'public' AND NOT EXISTS (SELECT 1 FROM support_knowledge_sources ks WHERE ks.article_id = support_articles.id AND ks.project_id = support_articles.project_id AND (ks.permission_granted = ? OR ks.deleted_at > 0))"; values.push(false) }
   if (scope.internal && scope.publishedOnly) where += " AND status = 'published'"
   if (scope.locale) { where += ' AND locale = ?'; values.push(localeOf(scope.locale)) }
   if (scope.collection) { where += ' AND collection = ?'; values.push(text(scope.collection, 'collection', 120)) }
@@ -91,12 +99,22 @@ export async function searchArticles(project: Row, search: string, scope: Knowle
   return { articles: rows.slice(0, 50).map(articleView), retrievalMode: 'lexical' as const }
 }
 export async function publishedArticle(project: Row, slug: string, locale: string) {
-  const row = await one("SELECT * FROM support_articles WHERE project_id = ? AND workspace_id = ? AND slug = ? AND locale = ? AND status = 'published' AND visibility = 'public'", [project.id, project.workspace_id, text(slug, 'slug', 200), localeOf(locale)])
+  const row = await one("SELECT * FROM support_articles WHERE project_id = ? AND workspace_id = ? AND slug = ? AND locale = ? AND status = 'published' AND visibility = 'public' AND NOT EXISTS (SELECT 1 FROM support_knowledge_sources ks WHERE ks.article_id = support_articles.id AND ks.project_id = support_articles.project_id AND (ks.permission_granted = ? OR ks.deleted_at > 0))", [project.id, project.workspace_id, text(slug, 'slug', 200), localeOf(locale), false])
   if (!row) fail(404, 'not_found', 'Article not found.')
   return articleView(row)
 }
 export async function articleRevisions(project: Row, id: unknown) {
   if (!await one('SELECT id FROM support_articles WHERE id = ? AND project_id = ? AND workspace_id = ?', [identifier(id), project.id, project.workspace_id])) fail(404, 'not_found', 'Article not found.')
-  const rows = await query('SELECT revision, author_id, snapshot, created_at FROM support_article_revisions WHERE article_id = ? AND project_id = ? AND workspace_id = ? ORDER BY revision DESC LIMIT 100', [identifier(id), project.id, project.workspace_id])
+  const rows = await query('SELECT revision, author_id, integration_key_id, snapshot, created_at FROM support_article_revisions WHERE article_id = ? AND project_id = ? AND workspace_id = ? ORDER BY revision DESC LIMIT 100', [identifier(id), project.id, project.workspace_id])
   return rows.map(row => ({ ...row, revision: Number(row.revision), snapshot: JSON.parse(String(row.snapshot)) }))
+}
+
+/** Removal archives authoritative content and synchronously deletes every searchable chunk. */
+export async function removeArticle(project: Row, id: unknown, revision: unknown, author: KnowledgeAuthor) {
+  await authorizeAuthor(project, author)
+  return await workspaceTransaction(Number(project.workspace_id), async () => {
+    const article = await updateArticle(project, id, { revision, status: 'archived' }, author)
+    await removeKnowledgeSource(project, Number(article.id))
+    return { removed: true, article }
+  })
 }

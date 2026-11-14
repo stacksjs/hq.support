@@ -1,4 +1,5 @@
 import type { RequestInstance } from '@stacksjs/types'
+import { Action } from '@stacksjs/actions/runtime'
 import type { AnswerProvider } from '../../Support/ai'
 import { answerQuestion } from '../../Support/ai'
 import { SupportError, fail } from '../../Support/errors'

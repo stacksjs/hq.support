@@ -10,4 +10,10 @@ export default {
   supportEnterprise: { path: 'support-enterprise', prefix: '/api' },
   supportVerification: { path: 'support-verification', prefix: '/api' },
   supportImports: { path: 'support-imports', prefix: '/api' },
+  supportDocumentation: { path: 'support-documentation', prefix: '/api' },
+  supportInstallation: { path: 'support-installation', prefix: '/api' },
+  supportPhone: { path: 'support-phone', prefix: '/api' },
+  supportChannels: { path: 'support-channels', prefix: '/api' },
+  supportTickets: { path: 'support-tickets', prefix: '/api' },
+  supportEmail: { path: 'support-email', prefix: '/api' },
 } satisfies RouteRegistry

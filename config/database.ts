@@ -194,13 +194,10 @@ export default {
    */
   queryLogging: {
     /**
-     * Persist query diagnostics to the database. Development keeps the
-     * dashboard useful out of the box; production makes the write-heavy
-     * history an explicit opt-in. Development keeps request-scoped query
-     * diagnostics; production avoids the query-hook path unless persistence
-     * is explicitly enabled.
+     * Support SQL parameters can contain transcript text and credentials.
+     * Disable ordinary query diagnostics in every environment.
      */
-    enabled: env.DB_QUERY_LOGGING_ENABLED ?? !['production', 'prod'].includes(env.APP_ENV || ''),
+    enabled: false,
 
     /**
      * Capture caller stacks for successful fast queries too. Slow and failed

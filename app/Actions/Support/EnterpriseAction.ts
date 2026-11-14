@@ -1,3 +1,4 @@
+import { Action } from '@stacksjs/actions/runtime'
 import type { EnterpriseOperation } from '../../../enterprise/http'
 import { enterpriseHttp } from '../../../enterprise/http'
 

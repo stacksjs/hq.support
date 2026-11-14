@@ -13,6 +13,10 @@ export default function (): void {
   schedule.job('ApplyEnterpriseRetention').hourly().onQueue('support-retention').withoutOverlapping().onOneServer()
   schedule.job('RunSupportWorkflows').everyMinute().onQueue('support-workflows').withoutOverlapping().onOneServer()
   schedule.job('RunSupportImport').everyMinute().onQueue('support-imports').withoutOverlapping().onOneServer()
+  schedule.job('RunChannelDelivery').everyMinute().onQueue('support-channels').withoutOverlapping().onOneServer()
+  schedule.job('RunTicketSla').everyMinute().onQueue('support-sla').withoutOverlapping().onOneServer()
+  schedule.job('RunSupportEmail').everyMinute().onQueue('support-email').withoutOverlapping().onOneServer()
+  schedule.job('IndexSupportKnowledge').everyMinute().onQueue('support-knowledge').withoutOverlapping().onOneServer()
   // Run the Inspire job every hour. An example, so it ships commented out
   // like the others: live, it put an always-on scheduler daemon on every
   // deploy of every new app, and `buddy new --minimal` (which removes

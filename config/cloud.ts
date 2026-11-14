@@ -44,7 +44,7 @@ export const tsCloud: TsCloudConfig = {
       root: '.', path: '/', domain, framework: 'stacks', port: 3340,
       start: 'bun node_modules/@stacksjs/buddy/dist/serve-entry.js',
       preStart: ['bun install --frozen-lockfile', 'bun node_modules/@stacksjs/buddy/dist/cli.js migrate', 'bun node_modules/@stacksjs/buddy/dist/cli.js queue:table'],
-      queues: [{ connection: 'database', queue: 'support-workflows,support-retention,support-imports,support-delivery,default', processes: 2, timeout: 120, tries: 5, memory: 384, stopWaitSecs: 120 }],
+      queues: [{ connection: 'database', queue: 'support-workflows,support-retention,support-imports,support-delivery,support-channels,support-sla,support-email,support-knowledge,default', processes: 2, timeout: 120, tries: 5, memory: 384, stopWaitSecs: 120 }],
       scheduler: true,
       memoryHigh: '768M', memoryMax: '1536M',
       env: { APP_ENV: 'production', NODE_ENV: 'production', PORT: '3340', PORT_API: '3348', API_URL: 'http://127.0.0.1:3348' },
