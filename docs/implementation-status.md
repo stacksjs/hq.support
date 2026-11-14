@@ -45,3 +45,28 @@ registry-installed native 0.75.579 packages without aliases or local links.
 Native 0.75.580 also passes repeated migration generation without changes,
 TypeScript checking, 18 affected artifact/configuration tests and all 78 browser
 assertions. Live provider acceptance remains a separate requirement.
+
+## Stage 3: support team inbox routing
+
+The backend now has separate support-team memberships, project team inboxes,
+explicit agent availability and workspace-wide open-conversation capacity.
+Native workspace membership remains the access authority. Persisted round robin,
+manual assignment, default ingress routing, legacy status updates and workflow
+assignment share the same native workspace transaction lock and audit engine.
+Overflow remains unassigned. Closed and snoozed conversations release capacity;
+reopening rechecks admission. Agents cannot claim another agent's assignment or
+change capacity. Owners/admins manage team and inbox configuration.
+
+The retained HTTP fixture uses installed NPM Stacks 0.75.579 with real disposable
+SQLite and PostgreSQL databases. Three independent native HTTP server processes
+race one final capacity slot; exactly one assignment is admitted. A further
+fresh server process resumes the persisted cursor. Additional cases cover
+cross-project/tenant isolation, inactive membership/inbox refusal, team removal,
+admin/agent permissions, exact cross-brand load, idempotent routing retries and
+durable workflow provenance. Core auth/allowance, native SDK/widget and workflow
+HTTP suites provide regression coverage. No customer/provider traffic is used.
+
+Team settings UI, presence, automatic draining of old overflow, merge/split and
+production workload qualification remain outstanding. See `docs/team-inboxes.md`
+for the HTTP contract and precise routing rules. These APIs do not qualify the
+whole inbox stage or deployment for launch.

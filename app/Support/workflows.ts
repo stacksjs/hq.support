@@ -165,7 +165,7 @@ async function runStep(run: Row, lease: string, now: number) {
     if (previous) fail(409, 'workflow_cursor_conflict', 'A completed step cannot execute twice.')
     if (node.type === 'condition') { const allowed = matches(fieldValue(scope, String(node.field)), String(node.operator), node.value); next = String(allowed ? node.yes : node.no); outcome = { matched: allowed } }
     else if (node.type === 'wait') { waitingUntil = now + Number(node.seconds) * 1000; outcome = { wakeAt: waitingUntil } }
-    else if (node.type === 'assign') { const convo = requireConversation(); await support.member(identifier(node.userId), Number(project.workspace_id)); await query('UPDATE support_conversations SET assignee_id = ?, updated_at = ? WHERE id = ? AND project_id = ?', [node.userId, new Date(now).toISOString(), convo.id, project.id]); outcome = { assigneeId: node.userId } }
+    else if (node.type === 'assign') { const convo = requireConversation(); const { routeConversation } = await import('./routing'); outcome = await routeConversation(project, convo.id, { assigneeId: identifier(node.userId) }, { source: 'workflow', workflowRunId: Number(run.id) }) }
     else if (node.type === 'tag' || node.type === 'tool') {
       if (node.type === 'tag') { const tags = Array.isArray(attributes.tags) ? attributes.tags.filter(value => typeof value === 'string').slice(0, 49) : []; attributes.tags = [...new Set([...tags, text(node.tag, 'tag', 60)])] }
       else if (node.tool === 'contact.set_attribute') attributes[String(node.key)] = node.value ?? null
@@ -177,7 +177,7 @@ async function runStep(run: Row, lease: string, now: number) {
       const result = await support.reply(project, convo.id, { body: interpolate(node.body, scope), visibility: node.type === 'note' ? 'internal' : 'public', idempotencyKey: `workflow:${current.id}:${node.id}` }, { userId: 0 })
       await query("UPDATE support_messages SET author_type = 'automation' WHERE id = ? AND project_id = ?", [Number(result.message.id), project.id]); outcome = { messageId: result.message.id }
     }
-    else if (node.type === 'status') { const convo = requireConversation(); await query('UPDATE support_conversations SET status = ?, updated_at = ? WHERE id = ? AND project_id = ?', [node.status, new Date(now).toISOString(), convo.id, project.id]); outcome = { status: node.status } }
+    else if (node.type === 'status') { const convo = requireConversation(); const { routeConversation } = await import('./routing'); outcome = await routeConversation(project, convo.id, { status: node.status }, { source: 'workflow', workflowRunId: Number(run.id) }) }
     else if (node.type === 'ticket') {
       const ticket = await insert('support_tickets', { workspace_id: project.workspace_id, project_id: project.id, contact_id: contact.id, conversation_id: selected?.id ?? null, title: interpolate(node.title, scope, 200), description: node.description ? interpolate(node.description, scope) : '', status: 'open', priority: ['low', 'normal', 'high', 'urgent'].includes(String(node.priority)) ? node.priority : 'normal' })
       await support.enqueue(project, 'ticket.created', { ticketId: ticket.id, automationDepth: Number(context.depth || 0) + 1, workflowRunId: current.id }); outcome = { ticketId: ticket.id }

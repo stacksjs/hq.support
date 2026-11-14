@@ -153,8 +153,8 @@ export async function enqueue(projectRow: Row, kind: string, payload: Row) {
   return await insert('support_outbox', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, event_id: crypto.randomUUID(), kind, payload: JSON.stringify(payload), available_at: Date.now() })
 }
 const isoTime = (value: unknown) => value instanceof Date ? value.toISOString() : String(value)
-export function summary(row: Row) {
-  return { id: String(row.id), subject: String(row.subject), status: String(row.status), customer_id: String(row.contact_id), updated_at: isoTime(row.updated_at), unread_count: Number(row.agent_unread_count ?? row.unread_count) }
+export function summary(row: Row, routing = false) {
+  return { ...(routing ? { assignee_id: String(row.assignee_id), team_id: String(row.team_id), inbox_id: String(row.inbox_id), routing_reason: String(row.routing_reason) } : {}), id: String(row.id), subject: String(row.subject), status: String(row.status), customer_id: String(row.contact_id), updated_at: isoTime(row.updated_at), unread_count: Number(row.agent_unread_count ?? row.unread_count) }
 }
 export function messageView(row: Row) {
   return { id: String(row.id), conversation_id: String(row.conversation_id), body: String(row.body), visibility: String(row.visibility), author_type: String(row.author_type), created_at: isoTime(row.created_at), delivery_status: String(row.delivery_status) }
@@ -166,15 +166,17 @@ export async function conversation(projectRow: Row, id: unknown, person?: Row): 
 }
 /** States supported by actual conversation transitions, independent of ticket state names. */
 export const conversationStatuses = ['open', 'closed', 'snoozed'] as const
-export async function conversations(projectRow: Row, person?: Row, cursor?: string | null, agentId?: number, options: { status?: unknown, limit?: unknown } = {}) {
+export async function conversations(projectRow: Row, person?: Row, cursor?: string | null, agentId?: number, options: { status?: unknown, limit?: unknown, inboxId?: unknown } = {}) {
   if (cursor !== undefined && cursor !== null && !/^[1-9]\d*$/.test(cursor)) fail(422, 'invalid_cursor', 'Use the conversation cursor returned by the previous page.')
   const before = cursor === undefined || cursor === null ? Number.MAX_SAFE_INTEGER : identifier(cursor)
   if (options.status !== undefined && !conversationStatuses.some(status => status === options.status)) fail(422, 'invalid_status', 'Conversation status must be open, closed or snoozed.')
   const limit = options.limit === undefined ? 50 : typeof options.limit === 'number' ? options.limit : typeof options.limit === 'string' && /^[1-9]\d{0,2}$/.test(options.limit) ? Number(options.limit) : NaN
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail(422, 'invalid_limit', 'Conversation limit must be a whole number from 1 to 100.')
+  const inboxId = options.inboxId === undefined ? undefined : options.inboxId === '0' || options.inboxId === 0 ? 0 : identifier(options.inboxId)
+  if (inboxId && !await one('SELECT id FROM support_team_inboxes WHERE id = ? AND project_id = ? AND workspace_id = ?', [inboxId, projectRow.id, projectRow.workspace_id])) fail(404, 'not_found', 'Team inbox not found.')
   const readProjection = agentId ? `, (SELECT COUNT(*) FROM support_messages m WHERE m.conversation_id = support_conversations.id AND m.project_id = support_conversations.project_id AND m.author_type = 'customer' AND m.visibility = 'public' AND m.delivery_status <> 'imported' AND m.id > COALESCE((SELECT last_message_id FROM support_conversation_reads r WHERE r.conversation_id = support_conversations.id AND r.user_id = ?), 0)) AS agent_unread_count` : ''
-  const rows = await query(`SELECT support_conversations.*${readProjection} FROM support_conversations WHERE project_id = ? AND id < ?${person ? ' AND contact_id = ?' : ''}${options.status !== undefined ? ' AND status = ?' : ''} ORDER BY id DESC LIMIT ?`, [...(agentId ? [agentId] : []), projectRow.id, before, ...(person ? [person.id] : []), ...(options.status !== undefined ? [options.status] : []), limit + 1])
-  return { conversations: rows.slice(0, limit).map(summary), nextCursor: rows.length > limit ? String(rows[limit - 1]!.id) : null }
+  const rows = await query(`SELECT support_conversations.*${readProjection} FROM support_conversations WHERE project_id = ? AND id < ?${person ? ' AND contact_id = ?' : ''}${options.status !== undefined ? ' AND status = ?' : ''}${inboxId !== undefined ? ' AND inbox_id = ?' : ''} ORDER BY id DESC LIMIT ?`, [...(agentId ? [agentId] : []), projectRow.id, before, ...(person ? [person.id] : []), ...(options.status !== undefined ? [options.status] : []), ...(inboxId !== undefined ? [inboxId] : []), limit + 1])
+  return { conversations: rows.slice(0, limit).map(row => summary(row, Boolean(agentId))), nextCursor: rows.length > limit ? String(rows[limit - 1]!.id) : null }
 }
 export async function detail(projectRow: Row, id: unknown, person?: Row, beforeMessage?: string | null) {
   const row = await conversation(projectRow, id, person)
@@ -183,7 +185,7 @@ export async function detail(projectRow: Row, id: unknown, person?: Row, beforeM
   const messages = page.slice(0, 500).reverse(), messagesNextCursor = page.length > 500 ? String(messages[0]!.id) : null
   const personRow = await one('SELECT * FROM support_contacts WHERE id = ? AND project_id = ?', [row.contact_id, projectRow.id])
   const attachments = await query(`SELECT id, file_name, mime_type, bytes, status, visibility FROM support_attachments WHERE project_id = ? AND conversation_id = ? AND status = 'stored'${person ? " AND (visibility = 'public' OR contact_id = ?)" : ''} ORDER BY id ASC`, [projectRow.id, row.id, ...(person ? [person.id] : [])])
-  return { attachments: attachments.map(file => ({ id: String(file.id), fileName: file.file_name, mimeType: file.mime_type, bytes: Number(file.bytes), status: file.status, visibility: file.visibility })), conversation: summary(row), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.map(messageView), messagesNextCursor }
+  return { attachments: attachments.map(file => ({ id: String(file.id), fileName: file.file_name, mimeType: file.mime_type, bytes: Number(file.bytes), status: file.status, visibility: file.visibility })), conversation: summary(row, !person), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.map(messageView), messagesNextCursor }
 }
 export async function createConversation(projectRow: Row, identity: Row, input: Row, person?: Row, automation?: { workflowRunId: number, automationDepth: number }, options?: { mediaOnly?: boolean }) {
   return await idempotent(projectRow, `conversation:${person?.id ?? identity.externalId}`, input.idempotencyKey, input, async () => {
@@ -192,6 +194,7 @@ export async function createConversation(projectRow: Row, identity: Row, input: 
     await consume(number(projectRow, 'workspace_id'), 'conversations', limitsFor(owner.plan as Plan).conversationCeiling)
     const row = await insert('support_conversations', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, contact_id: who.id, subject: text(input.subject, 'subject', 200), status: 'open', unread_count: 1 })
     const message = await insert('support_messages', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, conversation_id: row.id, contact_id: who.id, body: options?.mediaOnly && input.body === '' ? '' : text(input.body, 'body', 20000), visibility: 'public', author_type: 'customer' })
+    await (await import('./routing')).routeNewConversation(projectRow, row.id)
     await enqueue(projectRow, 'conversation.created', { conversationId: row.id, messageId: message.id, ...(automation || {}) })
     return { conversation: summary(row) }
   })
@@ -222,16 +225,9 @@ export async function track(projectRow: Row, input: Row) {
     return { id: String(event.id), accepted: true }
   })
 }
-export async function updateConversation(projectRow: Row, id: unknown, input: Row) {
-  return await workspaceTransaction(number(projectRow, 'workspace_id'), async () => {
-    const row = await conversation(projectRow, id)
-    const status = input.status ?? row.status, assigneeId = Number(input.assigneeId === undefined ? row.assignee_id : input.assigneeId)
-    if (!Number.isSafeInteger(assigneeId) || assigneeId < 0) fail(422, 'invalid_assignee', 'Assignee must be an active workspace user identifier, or zero to unassign.')
-    if (!conversationStatuses.some(value => value === status)) fail(422, 'invalid_input', 'Unknown conversation status.')
-    if (assigneeId) await member(Number(assigneeId), number(projectRow, 'workspace_id'))
-    await query('UPDATE support_conversations SET status = ?, assignee_id = ?, unread_count = 0, updated_at = ? WHERE id = ? AND project_id = ?', [status, assigneeId, new Date().toISOString(), row.id, projectRow.id])
-    return { conversation: summary((await conversation(projectRow, id))) }
-  })
+export async function updateConversation(projectRow: Row, id: unknown, input: Row, userId: number) {
+  const { routeConversation } = await import('./routing')
+  return await routeConversation(projectRow, id, input, { userId, source: 'manual' })
 }
 
 /** Internal atomic admission primitive; provider orchestration uses durable run reservations and reconciliation. */
