@@ -61,6 +61,7 @@ export async function createWidgetPreview(options: { port?: number, assetsDirect
         if (resource === '/session') return Response.json({ token: 'fixture-session', contact: { id: 'fixture' } })
         if (request.headers.get('Authorization') !== 'Bearer fixture-session') return Response.json({ message: 'Forbidden' }, { status: 403 })
         if (resource === '/conversations' && request.method === 'GET') return Response.json({ conversations: messages.length ? [{ id: 1 }] : [] })
+        if (resource === '/conversations/1/csat' && request.method === 'GET') return Response.json({ available: false, reason: 'disabled' })
         if (resource === '/events') return Response.json({ accepted: true })
         if ((resource === '/conversations' || resource.endsWith('/messages')) && request.method === 'POST') {
           const body = await request.json()
