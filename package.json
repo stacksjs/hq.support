@@ -45,6 +45,7 @@
     "generate": "./buddy generate",
     "typecheck": "bun run typecheck:app",
     "typecheck:app": "bun x --bun tsc --noEmit -p tsconfig.json --pretty false",
+    "typecheck:elements": "bun x --bun tsc --noEmit -p tsconfig.elements.json --pretty false",
     "typecheck:views": "bun x --bun stx typecheck --lib storage/framework/types/request-context.d.ts --lib storage/framework/types/browser-composables.d.ts 'resources/**/*.stx'",
     "typecheck:clean": "bunx --bun rimraf storage/framework/.cache/typescript",
     "types:check": "bun run typecheck",

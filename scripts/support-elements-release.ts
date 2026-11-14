@@ -6,6 +6,7 @@ import { resolve } from 'node:path'
 import { launch, navigate, waitFor } from '@stacksjs/testing/browser'
 import { archivePayload, assertRealInstall, directoryPayload, elements, inspectPayload, materialize, packageName, payloadHashes, sha256 } from './lib/support-elements-artifact'
 import type { Payload } from './lib/support-elements-artifact'
+import { readPublishedElements } from './lib/support-elements-registry'
 
 const root = resolve(import.meta.dir, '..'), generated = resolve(root, 'storage/framework/libs/packages/support-elements')
 const defaultArtifact = resolve(root, 'storage/framework/runtime/support-elements-release')
@@ -126,17 +127,9 @@ export async function releaseCommand(mode: string, artifact: string, version: st
   if (mode === 'restore') { await reviewedConfig(version); assert.equal(await sha(), expectedSha); await rm(generated, { recursive: true, force: true }); await materialize(payload, generated); return release }
   if (mode === 'verify') { await verifyElementsConsumer(payload, resolve(artifact, 'package.tgz'), version, false); return release }
   assert.equal(mode, 'registry', 'Expected inspect, prepare, restore, verify or registry')
-  const response = await fetch(`https://registry.npmjs.org/@stacksjs%2fsupport-elements/${version}`, { redirect: 'error' }); assert.ok(response.ok, `Published version not readable: HTTP ${response.status}`)
-  const metadata = await response.json() as any; assert.equal(metadata.name, packageName); assert.equal(metadata.version, version)
-  const url = new URL(metadata.dist.tarball); assert.equal(url.origin, 'https://registry.npmjs.org')
-  const tar = await fetch(url, { redirect: 'error' }); assert.ok(tar.ok); const bytes = new Uint8Array(await tar.arrayBuffer())
-  assert.equal(`sha512-${createHash('sha512').update(bytes).digest('base64')}`, metadata.dist.integrity)
-  assert.equal(sha256(bytes), release.archiveSha256, 'Public npm archive bytes differ from the reviewed CI archive')
-  const published = await archivePayload(bytes); inspectPayload(published, version); assert.deepEqual(payloadHashes(published), release.files, 'Public npm payload differs from the reviewed same-SHA CI artifact')
-  const tagsResponse = await fetch('https://registry.npmjs.org/@stacksjs%2fsupport-elements', { redirect: 'error' }); assert.ok(tagsResponse.ok)
-  const tags = (await tagsResponse.json() as any)['dist-tags']; assert.equal(tags.alpha, version, 'The verified release must be tagged alpha')
+  const { published, tags } = await readPublishedElements(release)
   const outcome = await verifyElementsConsumer(published, '', version, true)
-  await Bun.write(resolve(artifact, 'registry-report.json'), JSON.stringify({ version, sourceSha: expectedSha, tags, ...outcome }, null, 2))
+  await Bun.write(resolve(artifact, 'registry-report.json'), JSON.stringify({ version, sourceSha: expectedSha, verifierSha: await sha(), archiveSha256: release.archiveSha256, tags, ...outcome }, null, 2))
   return outcome
 }
 if (import.meta.main) {

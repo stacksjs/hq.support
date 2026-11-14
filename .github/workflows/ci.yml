@@ -85,6 +85,8 @@ jobs:
           retention-days: 14
       - run: ./buddy lint
       - run: ./buddy typecheck
+      - name: Typecheck component release and read-only verification boundaries
+        run: bun run typecheck:elements
       - name: Typecheck authored stx views and component contracts
         run: bun run typecheck:views
       - run: ./buddy migrate

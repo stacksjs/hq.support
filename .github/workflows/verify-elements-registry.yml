@@ -1,0 +1,69 @@
+name: Verify published support elements
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Immutable full source SHA of the published candidate
+        required: true
+        type: string
+      ci_run_id:
+        description: Successful main push CI run that owns the original candidate
+        required: true
+        type: string
+      version:
+        description: Exact published alpha version, for example 0.1.0-alpha.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify:
+    if: github.repository == 'stacksjs/hq.support' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SUPPORT_ELEMENTS_CI_RUN: ${{ inputs.ci_run_id }}
+      SUPPORT_ELEMENTS_VERSION: ${{ inputs.version }}
+      SUPPORT_ELEMENTS_SOURCE_SHA: ${{ inputs.source_sha }}
+      CHROME_PATH: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: Verify original main CI and candidate ownership
+        id: source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun --no-env-file scripts/verify-elements-registry-source.ts
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.source.outputs.artifact_id }}
+          path: storage/framework/runtime/support-elements-release
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify public npm bytes, clean strict consumer and browser imports
+        run: bun --no-env-file scripts/support-elements-release.ts registry
+      - name: Verify hosted loader against the original published bundle
+        env:
+          SUPPORT_BROWSER_ASSETS: storage/framework/runtime/support-elements-release/hosted
+        run: bun --no-env-file scripts/qualify-support-browser.ts --skip-build
+      - name: Retain public readback evidence and separate verifier provenance
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: support-elements-readback-${{ github.run_attempt }}
+          path: |
+            storage/framework/runtime/support-elements-readback
+            storage/framework/runtime/support-elements-release/*report.json
+            storage/framework/runtime/support-browser
+          if-no-files-found: warn
+          retention-days: 14
