@@ -2,7 +2,7 @@ import { derived, state } from '@stacksjs/stx'
 import { createSupportConsole } from './console'
 
 interface Billing { workspace: { plan: string, trialEndsAt: number, overagesEnabled: boolean, spendingCapCents: number }, limits: { conversations: number | null, conversationCeiling: number | null, ai: number | null, storageBytes: number | null, seats: number | null, projects: number | null }, usage: { conversations: number, ai: number, storageBytes: number }, checkoutAvailable: boolean }
-interface Wallet { balanceCents: number, currency: string, minimumTopupCents: number, checkoutAvailable: boolean, autoTopupEnabled: boolean, entries: { reference: string, kind: string, amount_cents: number, balance_cents: number, created_at: string }[] }
+interface Wallet { balanceCents: number, currency: string, minimumTopupCents: number, checkoutAvailable: boolean, autoTopupEnabled: boolean, dailyLimitCents: number, monthlyLimitCents: number, spending: { dailyCents: number, monthlyCents: number, period: string }, entries: { reference: string, kind: string, amount_cents: number, balance_cents: number, created_at: string }[] }
 interface Subscription { subscription: { status: string, plan: string, interval: string, current_period_end: number, cancel_at_period_end: boolean } | null, plans: Record<string, { monthlyCents: number, annualCents: number, seats: number, conversations: number, ai: number }>, checkoutAvailable: boolean, portalAvailable?: boolean, pendingCheckout?: { url: string | null, plan: string, interval: string, operationKey: string } | null }
 export function createUsage() {
   const workspace = createSupportConsole()
@@ -17,9 +17,11 @@ export function createUsage() {
   const subscriptionChoice = state('')
   const portalUrl = state('')
   const selectedPrice = derived(() => { const item = subscription()?.plans[plan()]; return item ? interval() === 'year' ? item.annualCents : item.monthlyCents : undefined })
-  const subscriptionCurrent = derived(() => subscriptionUrl() && subscriptionChoice() === `${workspace.workspace()?.id}:${plan()}:${interval()}`)
+  const subscriptionCurrent = derived(() => subscription()?.checkoutAvailable && subscriptionUrl() && subscriptionChoice() === `${workspace.workspace()?.id}:${plan()}:${interval()}`)
   const canSubscribe = derived(() => !subscription()?.subscription || ['canceled', 'incomplete_expired'].includes(subscription()?.subscription?.status || '') || (subscription()?.subscription?.status === 'pending' && !!subscription()?.pendingCheckout))
   const amount = state('20.00')
+  const dailyLimit = state('0.00')
+  const monthlyLimit = state('0.00')
   const checkoutUrl = state('')
   const checkoutAmount = state('')
   const checkoutCurrent = derived(() => checkoutUrl() && amount() === checkoutAmount())
@@ -55,6 +57,8 @@ export function createUsage() {
     if (!result || selectedProject !== workspace.project()) return
     billing.set(result.billing)
     wallet.set(result.wallet)
+    dailyLimit.set(((result.wallet?.dailyLimitCents || 0) / 100).toFixed(2))
+    monthlyLimit.set(((result.wallet?.monthlyLimitCents || 0) / 100).toFixed(2))
     walletError.set(result.walletError)
     subscription.set(result.subscription)
     subscriptionError.set(result.subscriptionError)
@@ -89,11 +93,26 @@ export function createUsage() {
   }
   function date(value?: number) { return value ? new Date(value).toLocaleDateString('en-US', { dateStyle: 'medium', timeZone: 'UTC' }) : 'Not recorded' }
   async function boot() { await workspace.boot(); await load() }
+  function parseCents(value: string) {
+    const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(value.trim())
+    const cents = match ? Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0')) : Number.NaN
+    return Number.isSafeInteger(cents) ? cents : Number.NaN
+  }
+  async function saveLimits() {
+    if (!wallet() || !workspace.canManage() || workspace.pending() || !workspace.workspace()) return
+    const daily = parseCents(dailyLimit()), monthly = parseCents(monthlyLimit())
+    if (!Number.isFinite(daily) || !Number.isFinite(monthly) || daily > monthly) { workspace.error.set('Enter nonnegative USD ceilings with at most two decimal places. The monthly ceiling must cover the daily ceiling.'); return }
+    const result = await workspace.run(() => workspace.request(`/api/support/workspaces/${workspace.workspace()!.id}/wallet/limits`, { method: 'POST', body: JSON.stringify({ dailyLimitCents: daily, monthlyLimitCents: monthly }) }), workspace.pending)
+    if (!result) return
+    wallet.set(result)
+    dailyLimit.set((result.dailyLimitCents / 100).toFixed(2))
+    monthlyLimit.set((result.monthlyLimitCents / 100).toFixed(2))
+    workspace.notice.set(daily === 0 || monthly === 0 ? 'Spending ceilings saved. New managed paid operations are paused.' : 'Spending ceilings saved. Managed paid operations also require available credit and a configured provider.')
+  }
   async function checkout() {
     if (!wallet()?.checkoutAvailable || workspace.pending() || !workspace.workspace()) return
     workspace.notice.set('')
-    const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(amount().trim())
-    const cents = match ? Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0')) : 0
+    const cents = parseCents(amount())
     if (!Number.isSafeInteger(cents) || cents < 2000 || cents > 100000) { workspace.error.set('Enter a top up between $20.00 and $1,000.00 with at most two decimal places.'); return }
     if (cents !== keyedAmount) { key = crypto.randomUUID(); keyedAmount = cents }
     const result = await workspace.run(() => workspace.request(`/api/support/workspaces/${workspace.workspace()!.id}/wallet/checkout`, { method: 'POST', body: JSON.stringify({ amountCents: cents, idempotencyKey: key }) }), workspace.pending)
@@ -106,5 +125,5 @@ export function createUsage() {
   function money(cents?: number) { return typeof cents === 'number' ? (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : 'Unavailable' }
   function count(value?: number | null) { return value === null ? 'Unlimited' : typeof value === 'number' ? value.toLocaleString() : 'Unavailable' }
   function bytes(value?: number | null) { return value === null ? 'Unlimited' : typeof value === 'number' ? value >= 1000000000 ? `${(value / 1000000000).toLocaleString()} GB` : `${(value / 1000000).toLocaleString()} MB` : 'Unavailable' }
-  return { workspace, billing, wallet, walletError, amount, checkoutUrl, checkoutCurrent, subscription, subscriptionError, plan, interval, selectedPrice, subscriptionUrl, subscriptionCurrent, canSubscribe, portalUrl, subscribe, portal, date, load, boot, checkout, money, count, bytes }
+  return { workspace, billing, wallet, walletError, amount, dailyLimit, monthlyLimit, saveLimits, checkoutUrl, checkoutCurrent, subscription, subscriptionError, plan, interval, selectedPrice, subscriptionUrl, subscriptionCurrent, canSubscribe, portalUrl, subscribe, portal, date, load, boot, checkout, money, count, bytes }
 }
