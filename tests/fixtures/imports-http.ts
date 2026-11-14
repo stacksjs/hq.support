@@ -39,6 +39,7 @@ try {
   const workspace = (await http('/support/workspaces', 'POST', { name: 'Imports' }, token)).data.workspace
   const project = (await http(`/support/workspaces/${workspace.id}/projects`, 'POST', { name: 'Migrated app' }, token)).data.project
   const prefix = `/support/projects/${project.public_id}`, keys = (await http(`${prefix}/keys`, 'POST', {}, token)).data
+  const outboxBeforeImport = JSON.stringify(await query('SELECT * FROM support_outbox ORDER BY id'))
   // An existing native customer with the same external identity is linked. Matching email alone never links.
   const existing = (await http(`/v1/projects/${project.public_id}/sessions`, 'POST', { externalId: 'native-customer-1', name: 'Current native name', email: 'current@example.test', attributes: { native: true } }, keys.ingestKey)).data
   async function upload(bundle: unknown, options: { integration?: boolean, key?: string, dryRun?: boolean } = {}) {
@@ -56,7 +57,7 @@ try {
   check(Number((await one('SELECT COUNT(*) AS count FROM support_import_runs'))?.count) === 0 && Number((await one('SELECT COUNT(*) AS count FROM support_import_mappings'))?.count) === 0 && Number((await one('SELECT COUNT(*) AS count FROM support_conversations'))?.count) === 0 && Number((await one('SELECT COUNT(*) AS count FROM support_messages'))?.count) === 0, 'dry run rolls back every target/archive/mapping row on the actual database')
   check(Number((await one('SELECT COUNT(*) AS count FROM jobs'))?.count) === jobsBeforePreview && !await Storage.disk('local').directoryExists('support-imports'), 'dry run creates no queue intent or private archive file')
   check(JSON.stringify(await one('SELECT name, email, attributes, updated_at FROM support_contacts WHERE id = ?', [Number(existing.contact.id)])) === JSON.stringify(nativeProfileBeforePreview), 'dry run preserves existing native row values and timestamps exactly')
-  check(Number((await one('SELECT COUNT(*) AS count FROM support_outbox'))?.count) === 0 && Number((await one('SELECT COUNT(*) AS count FROM support_usage'))?.count) === 0 && Number((await one('SELECT COUNT(*) AS count FROM support_contacts'))?.count) === 1, 'preview sends nothing, charges nothing and preserves the existing native profile')
+  check(JSON.stringify(await query('SELECT * FROM support_outbox ORDER BY id')) === outboxBeforeImport && Number((await one('SELECT COUNT(*) AS count FROM support_usage'))?.count) === 0 && Number((await one('SELECT COUNT(*) AS count FROM support_contacts'))?.count) === 1, 'preview sends nothing, charges nothing and preserves the existing native profile')
   check((await upload(source, { integration: true, key: keys.readKey, dryRun: true })).status === 401, 'read key can neither preview nor upload migration data')
   const uploaded = await upload(source)
   check(uploaded.status === 202 && uploaded.data.run.status === 'ready' && uploaded.data.run.totalRecords === 4, `private migration accepted asynchronously ${JSON.stringify(uploaded.data)}`)
@@ -79,7 +80,7 @@ try {
   const linked = await one('SELECT * FROM support_contacts WHERE external_id = ? AND project_id = ?', ['native-customer-1', project.id])
   check(String(linked?.id) === existing.contact.id && linked?.name === 'Current native name' && JSON.parse(String(linked.attributes)).native === true, 'explicit external identity links while current native profile edits remain intact')
   check(Number((await one('SELECT COUNT(*) AS count FROM support_conversations WHERE project_id = ?', [project.id]))?.count) === 2 && Number((await one('SELECT COUNT(*) AS count FROM support_messages WHERE project_id = ?', [project.id]))?.count) === 5, 'historical conversations and every supplied message persisted')
-  check(Number((await one('SELECT COUNT(*) AS count FROM support_outbox WHERE project_id = ?', [project.id]))?.count) === 0 && Number((await one('SELECT COUNT(*) AS count FROM support_usage WHERE workspace_id = ?', [workspace.id]))?.count) === 0, 'history does not send notifications, trigger workflows or charge new support traffic quota')
+  check(JSON.stringify(await query('SELECT * FROM support_outbox ORDER BY id')) === outboxBeforeImport && Number((await one('SELECT COUNT(*) AS count FROM support_usage WHERE workspace_id = ?', [workspace.id]))?.count) === 0, 'history does not send notifications, trigger workflows or charge new support traffic quota')
   check((await http(`${prefix}/inbox`, 'GET', undefined, token)).data.conversations.every((row: any) => row.unread_count === 0), 'historical imports do not fabricate unread traffic')
   const conversationMap = await one("SELECT * FROM support_import_mappings WHERE project_id = ? AND entity_type = 'conversation' AND external_id = 'one'", [project.id])
   const detail = await http(`/widget/projects/${project.public_id}/conversations/${conversationMap!.target_id}`, 'GET', undefined, existing.token)

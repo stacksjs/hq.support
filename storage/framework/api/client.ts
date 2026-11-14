@@ -746,6 +746,13 @@ export function createClient(config: ClientConfig) {
   },
 
   /**
+   * POST /api/support/projects/{project}/customers/{contact}/sessions/revoke
+   */
+  postSupportProjectsProjectCustomersContactSessionsRevoke(input: { "project": string; "contact": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "POST", "/api/support/projects/{project}/customers/{contact}/sessions/revoke", input ?? {}, [{"name":"project","in":"path","required":true},{"name":"contact","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
    * GET /api/support/projects/{project}/email-receipts
    */
   getSupportProjectsProjectEmailReceipts(input: { "project": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
@@ -795,10 +802,31 @@ export function createClient(config: ClientConfig) {
   },
 
   /**
+   * GET /api/support/projects/{project}/keys
+   */
+  getSupportProjectsProjectKeys(input: { "project": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "GET", "/api/support/projects/{project}/keys", input ?? {}, [{"name":"project","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
    * POST /api/support/projects/{project}/keys
    */
   postSupportProjectsProjectKeys(input: { "project": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
     return request(config, "POST", "/api/support/projects/{project}/keys", input ?? {}, [{"name":"project","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * POST /api/support/projects/{project}/keys/{key}/revoke
+   */
+  postSupportProjectsProjectKeysKeyRevoke(input: { "project": string; "key": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "POST", "/api/support/projects/{project}/keys/{key}/revoke", input ?? {}, [{"name":"project","in":"path","required":true},{"name":"key","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * POST /api/support/projects/{project}/keys/{key}/rotate
+   */
+  postSupportProjectsProjectKeysKeyRotate(input: { "project": string; "key": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "POST", "/api/support/projects/{project}/keys/{key}/rotate", input ?? {}, [{"name":"project","in":"path","required":true},{"name":"key","in":"path","required":true}], null, "application/json", [], options)
   },
 
   /**
@@ -1429,6 +1457,13 @@ export function createClient(config: ClientConfig) {
    */
   postWidgetProjectsProjectSession(input: { "project": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
     return request(config, "POST", "/api/widget/projects/{project}/session", input ?? {}, [{"name":"project","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * POST /api/widget/projects/{project}/session/revoke
+   */
+  postWidgetProjectsProjectSessionRevoke(input: { "project": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "POST", "/api/widget/projects/{project}/session/revoke", input ?? {}, [{"name":"project","in":"path","required":true}], null, "application/json", [], options)
   },
 
   /**

@@ -3004,6 +3004,48 @@
         }
       }
     },
+    "/api/support/projects/{project}/customers/{contact}/sessions/revoke": {
+      "post": {
+        "summary": "/api/support/projects/{project}/customers/{contact}/sessions/revoke",
+        "operationId": "post__api_support_projects__project__customers__contact__sessions_revoke",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "contact",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
     "/api/support/projects/{project}/email-receipts": {
       "get": {
         "summary": "/api/support/projects/{project}/email-receipts",
@@ -3267,12 +3309,128 @@
       }
     },
     "/api/support/projects/{project}/keys": {
+      "get": {
+        "summary": "/api/support/projects/{project}/keys",
+        "operationId": "get__api_support_projects__project__keys",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      },
       "post": {
         "summary": "/api/support/projects/{project}/keys",
         "operationId": "post__api_support_projects__project__keys",
         "parameters": [
           {
             "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/api/support/projects/{project}/keys/{key}/revoke": {
+      "post": {
+        "summary": "/api/support/projects/{project}/keys/{key}/revoke",
+        "operationId": "post__api_support_projects__project__keys__key__revoke",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/api/support/projects/{project}/keys/{key}/rotate": {
+      "post": {
+        "summary": "/api/support/projects/{project}/keys/{key}/rotate",
+        "operationId": "post__api_support_projects__project__keys__key__rotate",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
             "in": "path",
             "required": true,
             "schema": {
@@ -6538,6 +6696,40 @@
       "post": {
         "summary": "/api/widget/projects/{project}/session",
         "operationId": "post__api_widget_projects__project__session",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/api/widget/projects/{project}/session/revoke": {
+      "post": {
+        "summary": "/api/widget/projects/{project}/session/revoke",
+        "operationId": "post__api_widget_projects__project__session_revoke",
         "parameters": [
           {
             "name": "project",

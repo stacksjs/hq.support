@@ -38,6 +38,7 @@ try {
   const project = (await http(`/support/workspaces/${workspace.id}/projects`, 'POST', { name: 'Imported knowledge' }, token)).data.project
   const prefix = `/support/projects/${project.public_id}`, integration = `/v1/projects/${project.public_id}`
   const keys = (await http(prefix + '/keys', 'POST', {}, token)).data
+  const outboxBeforeImport = JSON.stringify(await query('SELECT * FROM support_outbox ORDER BY id'))
   const keyRow = (await one("SELECT id FROM support_api_keys WHERE project_id = ? AND scope = 'write' AND revoked_at = 0", [project.id]))!
   const owner = (await one('SELECT id FROM users WHERE email = ?', ['article-import@example.test']))!
   async function upload(bundle: unknown, options: { integration?: boolean, dryRun?: boolean, credential?: string } = {}) {
@@ -103,7 +104,7 @@ try {
   const single = { version: 1, provider: 'intercom', contacts: [], conversations: [], articleLocale: 'de', articles: [article('single-language', { default_locale: undefined, body: null, body_markdown: '# Anleitung\nPrivater Inhalt.', parent_ids: [] })] }
   const singleRun = await upload(single); await run(singleRun.data.run.id)
   check((await one("SELECT a.locale FROM support_articles a JOIN support_import_mappings m ON m.target_id = a.id WHERE m.entity_type = 'article' AND m.external_id = 'single-language:de'"))?.locale === 'de', 'single-language API responses use an explicit supplied bundle locale without guessing from URLs')
-  check(Number((await one('SELECT COUNT(*) AS n FROM support_outbox'))?.n) === 0 && Number((await one('SELECT COUNT(*) AS n FROM support_usage'))?.n) === 0 && Number((await one('SELECT COUNT(*) AS n FROM support_knowledge_indexes'))?.n) === 0 && providerCalls === 0, 'article migration sends no notifications, triggers no provider index, and consumes no support AI or conversation quota')
+  check(JSON.stringify(await query('SELECT * FROM support_outbox ORDER BY id')) === outboxBeforeImport && Number((await one('SELECT COUNT(*) AS n FROM support_usage'))?.n) === 0 && Number((await one('SELECT COUNT(*) AS n FROM support_knowledge_indexes'))?.n) === 0 && providerCalls === 0, 'article migration sends no notifications, triggers no provider index, and consumes no support AI or conversation quota')
   const incompleteLocale = { ...single, articleLocale: undefined, articles: [article('locale-unknown', { default_locale: undefined, parent_ids: [] })] }
   check((await upload(incompleteLocale, { dryRun: true })).data.reasons[0].code === 'source_article_locale_missing', 'unknown source locale is reported for review rather than invented')
   const revokedSource = { ...single, articles: [article('revoked-principal', { parent_ids: [] })] }

@@ -1747,6 +1747,29 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/support/projects/{project}/customers/{contact}/sessions/revoke": {
+    get?: never
+    put?: never
+    post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: { "project": string; "contact": string }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      "200": { content: { "application/json": Record<string, unknown> } }
+      "422": { content: never }
+      "500": { content: never }
+    }
+  }
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/support/projects/{project}/email-receipts": {
     get: {
     parameters: {
@@ -1909,13 +1932,72 @@ export interface paths {
     trace?: never
   }
   "/api/support/projects/{project}/keys": {
-    get?: never
+    get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: { "project": string }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      "200": { content: { "application/json": Record<string, unknown> } }
+      "422": { content: never }
+      "500": { content: never }
+    }
+  }
     put?: never
     post: {
     parameters: {
       query?: never
       header?: never
       path: { "project": string }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      "200": { content: { "application/json": Record<string, unknown> } }
+      "422": { content: never }
+      "500": { content: never }
+    }
+  }
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/support/projects/{project}/keys/{key}/revoke": {
+    get?: never
+    put?: never
+    post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: { "project": string; "key": string }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      "200": { content: { "application/json": Record<string, unknown> } }
+      "422": { content: never }
+      "500": { content: never }
+    }
+  }
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/support/projects/{project}/keys/{key}/rotate": {
+    get?: never
+    put?: never
+    post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: { "project": string; "key": string }
       cookie?: never
     }
     requestBody?: never
@@ -3829,6 +3911,29 @@ export interface paths {
     trace?: never
   }
   "/api/widget/projects/{project}/session": {
+    get?: never
+    put?: never
+    post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: { "project": string }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      "200": { content: { "application/json": Record<string, unknown> } }
+      "422": { content: never }
+      "500": { content: never }
+    }
+  }
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/widget/projects/{project}/session/revoke": {
     get?: never
     put?: never
     post: {
