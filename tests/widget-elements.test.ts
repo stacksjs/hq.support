@@ -29,12 +29,25 @@ describe('native support element artifacts', () => {
     expect(typeof module.Messenger.prototype.boot).toBe('function')
     expect(typeof module.Messenger.prototype.shutdown).toBe('function')
   })
+  test('compiled ticket form only reads public scoped form definitions', async () => {
+    const source = await Bun.file(resolve(dist, 'hq-support-ticket-form.js')).text()
+    expect(source).toContain('/api/widget/projects/')
+    expect(source).toContain('/ticket-types')
+    expect(source).not.toContain('/ticket-configuration')
+    const module = await import(resolve(dist, 'hq-support-ticket-form.js'))
+    expect(module.TicketForm.definition.properties.sessionToken.attribute).toBe(false)
+    expect(module.TicketForm.definition.properties.sessionToken.reflect).toBe(false)
+    expect(typeof module.TicketForm.prototype.refresh).toBe('function')
+    expect(typeof module.TicketForm.prototype.shutdown).toBe('function')
+  })
   test('a standalone strict TypeScript host can use the generated messenger lifecycle', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'hq-support-widget-types-'))
     try {
       const types = resolve(dist, 'hq-support-messenger.js')
+      const ticketTypes = resolve(dist, 'hq-support-ticket-form.js')
       await Bun.write(resolve(directory, 'consumer.ts'), `
 import type { Messenger } from ${JSON.stringify(types)}
+import type { TicketForm } from ${JSON.stringify(ticketTypes)}
 const messenger: Messenger = document.createElement('hq-support-messenger')
 const boot: Promise<void> = messenger.boot({ url: 'https://hq.support', project: 'public-id', token: 'session' })
 const update: Promise<void> = messenger.update({ token: 'new-session' })
@@ -46,7 +59,10 @@ const shutdown: void = messenger.shutdown()
 messenger.boot({ token: 123 })
 // @ts-expect-error Tracking requires an event name.
 messenger.track({ attributes: {} })
-void [boot, update, track, open, close, shutdown]
+const form: TicketForm = document.createElement('hq-support-ticket-form')
+const refreshForm: Promise<void> = form.refresh()
+const shutdownForm: void = form.shutdown()
+void [boot, update, track, open, close, shutdown, refreshForm, shutdownForm]
 `)
       await Bun.write(resolve(directory, 'tsconfig.json'), JSON.stringify({ compilerOptions: { noEmit: true, strict: true, skipLibCheck: false, target: 'esnext', lib: ['esnext', 'dom'], module: 'esnext', moduleResolution: 'bundler', types: [] }, files: ['consumer.ts'] }))
       const compiler = Bun.spawn(['bun', 'x', '--bun', 'tsc', '-p', resolve(directory, 'tsconfig.json'), '--pretty', 'false'], { cwd: root, stdout: 'pipe', stderr: 'pipe' })
