@@ -5,6 +5,7 @@ import type { Row } from './database'
 import { fail, text } from './errors'
 import { plans } from './limits'
 import { member, workspace } from './service'
+import { requireHostedSubscription, selfHostedDeployment } from './deployment'
 
 type PaidPlan = 'starter' | 'growth' | 'enterprise'
 function paidPlan(value: unknown): PaidPlan {
@@ -23,13 +24,14 @@ export async function subscriptionOverview(userId: number, workspaceId: number) 
   const checkout = current?.status === 'pending' ? await one('SELECT url, plan, interval, operation_key FROM support_billing_checkouts WHERE public_id = ? AND workspace_id = ?', [current.checkout_id, workspaceId]) : undefined
   return { subscription: current ? { status: current.status, plan: current.plan, interval: current.interval, current_period_end: current.current_period_end, cancel_at_period_end: current.cancel_at_period_end } : null,
     pendingCheckout: checkout ? { url: checkout.url || null, plan: checkout.plan, interval: checkout.interval, operationKey: checkout.operation_key } : null,
-    portalAvailable: Boolean(current?.provider_customer && env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET),
-    plans: { starter: plans.starter, growth: plans.growth, enterprise: plans.enterprise }, checkoutAvailable: Boolean(env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET) }
+    portalAvailable: !selfHostedDeployment() && Boolean(current?.provider_customer && env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET),
+    plans: { starter: plans.starter, growth: plans.growth, enterprise: plans.enterprise }, deploymentMode: selfHostedDeployment() ? 'selfhost' : 'hosted', checkoutAvailable: !selfHostedDeployment() && Boolean(env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET) }
 }
 
 /** Checkout prepares payment only; entitlement follows a signed event and fresh provider read. */
 export async function createSubscriptionCheckout(userId: number, workspaceId: number, input: Row) {
   await member(userId, workspaceId, ['owner', 'admin'])
+  requireHostedSubscription()
   available()
   const plan = paidPlan(input.plan)
   const interval = input.interval === undefined ? 'month' : input.interval
@@ -72,6 +74,7 @@ export async function createSubscriptionCheckout(userId: number, workspaceId: nu
 
 export async function subscriptionPortal(userId: number, workspaceId: number) {
   await member(userId, workspaceId, ['owner', 'admin'])
+  requireHostedSubscription()
   available()
   const current = await one('SELECT * FROM support_subscriptions WHERE workspace_id = ?', [workspaceId])
   if (!current?.provider_customer) fail(409, 'subscription_required', 'Complete a subscription checkout first.')

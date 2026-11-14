@@ -4,6 +4,7 @@ import type { Plan } from './limits'
 import { db, insert, one, query, workspaceTransaction } from './database'
 import { billingPolicy, limitsFor, periodOf } from './limits'
 import { fail, identifier, text } from './errors'
+import { initialWorkspaceEntitlement } from './deployment'
 
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 export const secret = () => randomBytes(32).toString('hex')
@@ -53,7 +54,7 @@ export async function readPrincipal(key: string) {
 }
 export async function createWorkspace(user: { id: number, email: string }, name: string) {
   return await db.transaction(async () => {
-    const row = await insert('support_workspaces', { public_id: crypto.randomUUID(), owner_id: user.id, name: text(name, 'name'), plan: 'trial', trial_ends_at: Date.now() + billingPolicy.trialDays * 86400000 })
+    const row = await insert('support_workspaces', { public_id: crypto.randomUUID(), owner_id: user.id, name: text(name, 'name'), ...initialWorkspaceEntitlement() })
     await insert('support_memberships', { workspace_id: row.id, user_id: user.id, email: user.email.toLowerCase(), role: 'owner', status: 'active' })
     return row
   })

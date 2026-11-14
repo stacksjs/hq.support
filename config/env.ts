@@ -15,6 +15,11 @@ import { schema } from '@stacksjs/validation/runtime'
  * deploy secrets is typed exactly like one in your local `.env`.
  */
 const envSchema = defineEnv({
+  SUPPORT_DEPLOYMENT_MODE: {
+    validation: schema.enum(['hosted', 'selfhost']),
+    default: 'hosted',
+  },
+
   APP_NAME: {
     validation: schema.string(),
     default: 'Stacks',
