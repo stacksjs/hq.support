@@ -26,7 +26,7 @@ export function createSupportConsole() {
       csrf = data.token
     }
     const response = await fetch(path, { ...options, credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}), ...options.headers } })
-    const data = await response.json().catch(() => ({}))
+    const data = await response.json().catch(() => { if (response.ok) throw new Error('The server returned an unreadable response. Refresh and try again.'); return {} })
     if (!response.ok) throw new Error(data.error?.message || data.message || (typeof data.error === 'string' ? data.error : '') || `Request failed (${response.status}).`)
     return data
   }
