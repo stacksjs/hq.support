@@ -116,7 +116,7 @@ export async function prepareCall(project: Row, input: Row, actorId: number | nu
       workspace_id: project.workspace_id, project_id: project.id, channel_id: channel.id, public_id: publicId, operation_key: operation, fingerprint, actor_id: actorId, contact_id: person.id, conversation_id: thread.conversation.id,
       provider_sid: options.inboundSid ?? null, direction: options.inboundSid ? 'inbound' : 'outbound', from_number: options.inboundSid ? destination.number : owned.number, to_number: options.inboundSid ? owned.number : destination.number, country: destination.country,
       mode, status: options.inboundSid ? 'ringing' : 'pending', provider_state: options.inboundSid ? 'succeeded' : 'pending', max_duration_seconds: maximum, reservation_id: providerReservation.public_id, ai_reservation_id: aiReservation.public_id,
-      reserved_cents: reserved, ai_reserved_cents: aiReserved, stream_state: 'pending', stream_digest: digest(streamToken(String(credentials.authToken), publicId)), notice: String(credentials.recordingNotice || 'This call uses an AI assistant and a text transcript. Press 1 to consent, or hang up.'), callback_origin: origin,
+      reserved_cents: reserved, ai_reserved_cents: aiReserved, stream_state: 'pending', stream_digest: digest(streamToken(String(credentials.authToken), publicId)), notice: String(credentials.recordingNotice || 'This call uses an AI assistant. Assistant responses are saved as text. Press 1 to consent, or hang up.'), callback_origin: origin,
     })
   })
   return { row, channel, credentials }

@@ -42,6 +42,12 @@ input/output backpressure and acknowledged playback marks. Overflow closes the
 call with a durable error instead of silently dropping audio. Barge-in cancels
 AI output, clears Twilio playback and truncates only acknowledged played audio.
 
+Assistant output transcript fragments are persisted. Separate customer speech-to-text
+is not enabled in this bridge: it needs its own configured transcription model
+and verified usage pricing before adding that paid service. The native transport
+can receive customer transcription events, and fixtures exercise that boundary,
+but that is not a claim that live caller transcription is configured.
+
 The shared tool executor derives project, contact, conversation and call authority
 from SQL. It permits published public knowledge search, a caller-bound ticket,
 and a human request. Tool arguments cannot supply workspace/customer IDs or a
@@ -147,7 +153,7 @@ actual cost settlement. The optional localhost browser fixture keeps the same
 native HTTP/SQL server alive; the official Device can be substituted only in the
 native test compile.
 
-US/Canada number purchase, direct outbound human-browser dialing, a full IVR
+Live caller speech-to-text, US/Canada number purchase, direct outbound human-browser dialing, a full IVR
 editor, advanced call queues/hold, voicemail, raw recordings, provider recording
 retention, live provider account approval, real microphone/PSTN interoperability,
 operator reconciliation for unresolved AI invoices, and immediate provider-leg
