@@ -1,14 +1,24 @@
-import { assertIsolatedOk, runIsolated, withDisposableDatabase } from '@stacksjs/testing'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { resolve } from 'node:path'
 
-// Uses installed native packages, a disposable SQLite DB, native auth, actual
-// production Settings STX and Chromium. No source aliases or provider traffic.
-await withDisposableDatabase('sqlite', async database => {
-  const result = await runIsolated('tests/fixtures/credentials.ts', {
-    env: { ...database.env, APP_ENV: 'test', APP_URL: 'https://support.example.test', APP_KEY: 'base64:' + Buffer.alloc(32, 7).toString('base64'), STACKS_DEFAULT_ROUTES: 'auth', STACKS_RATE_LIMIT_SCALE: '100', DB_QUERY_LOGGING_ENABLED: 'false', MAIL_MAILER: 'capture', SUPPORT_CREDENTIAL_BROWSER: '1', CHROME_PATH: process.env.CHROME_PATH },
-    envFile: false, preload: [], timeoutMs: 180000,
-  })
-  assertIsolatedOk(result, 'PASS credential browser')
-  console.info(result.stdout.match(/PASS credential browser \(\d+ checks\)/)?.[0])
-  console.info(result.stdout.match(/PASS credential Settings response boundaries \(\d+ checks\)/)?.[0])
-  console.info(result.stdout.match(/PASS credential HTTP \(\d+ checks\)/)?.[0])
-})
+// @stacksjs/testing owns Bun test hooks, so enter its actual test runner.
+// No app preload, source aliases, persistent database or provider traffic.
+const root = resolve(import.meta.dir, '..'), temporary = await mkdtemp(resolve(tmpdir(), 'hq-support-credential-runner-'))
+let child: ReturnType<typeof Bun.spawn> | undefined
+function stop() {
+  if (child?.exitCode === null) {
+    try { process.kill(-child.pid, 'SIGTERM') } catch { child.kill() }
+  }
+}
+process.once('SIGINT', stop)
+process.once('SIGTERM', stop)
+try {
+  const config = resolve(temporary, 'bunfig.toml')
+  await Bun.write(config, '[test]\npreload = []\n')
+  child = Bun.spawn([process.execPath, `--config=${config}`, '--no-env-file', 'test', './tests/feature/credentials.test.ts'], { cwd: root, env: { ...process.env, SUPPORT_CREDENTIAL_BROWSER: '1' }, stdout: 'inherit', stderr: 'inherit', detached: true })
+  const timeout = setTimeout(stop, 220000)
+  try { process.exitCode = await child.exited }
+  finally { clearTimeout(timeout) }
+}
+finally { stop(); process.off('SIGINT', stop); process.off('SIGTERM', stop); await rm(temporary, { recursive: true, force: true }) }
