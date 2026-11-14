@@ -7,6 +7,12 @@ export default defineModel({
   traits: { useTimestamps: true },
   dashboard: { access: false },
   attributes: {
+    typeId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },
+    kind: { fillable: true, required: true, validation: { rule: schema.string() }, default: 'customer' },
+    state: { fillable: true, required: true, validation: { rule: schema.string() }, default: 'open' },
+    customFields: { type: 'text', fillable: true, required: true, validation: { rule: schema.string() }, default: '{}' },
+    typeSnapshot: { type: 'text', fillable: true, required: true, validation: { rule: schema.string() }, default: '{}' },
+    slaCycle: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 1 },
     workspaceId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     projectId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     contactId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },

@@ -1,6 +1,6 @@
 import type { RequestInstance } from '@stacksjs/types'
 import type { Row } from './database'
-import { insert, one, query, workspaceTransaction } from './database'
+import { one, query, workspaceTransaction } from './database'
 import { SupportError, fail, identifier, text } from './errors'
 import { billingPolicy, limitsFor, plans } from './limits'
 import type { Plan } from './limits'
@@ -10,7 +10,7 @@ import { createWorkflow, listWorkflows } from './workflows'
 import { createArticle, searchArticles, updateArticle } from './knowledge'
 import { confirmationCode } from '@stacksjs/hq/service'
 
-export type Operation = 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.create' | 'widget.tickets.detail' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
+export type Operation = 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.create' | 'widget.tickets.detail' | 'widget.ticket-types' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
 
 const response = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } })
 function bearer(request: RequestInstance): string { return /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') || '')?.[1] ?? '' }
@@ -104,28 +104,21 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
       await query('UPDATE support_projects SET allowed_origins = ?, anonymous_enabled = ?, updated_at = ? WHERE id = ?', [JSON.stringify(origins), data.anonymousEnabled === true, new Date().toISOString(), project.id])
       body = { project: await support.project(String(project.public_id)) }
     }
-    else if (operation === 'tickets.list') body = { tickets: await query('SELECT * FROM support_tickets WHERE project_id = ? ORDER BY id DESC LIMIT 100', [project.id]) }
+    else if (operation === 'widget.ticket-types') {
+      const { publicForm, storedJson } = await import('./ticket-forms')
+      body = { types: (await query("SELECT * FROM support_ticket_types WHERE project_id = ? AND kind = 'customer' ORDER BY id LIMIT 100", [project.id])).map(row => ({ id: String(row.id), name: row.name, ...publicForm({ fields: storedJson(row.fields, []), states: storedJson(row.states, []) }) })) }
+    }
+    else if (operation === 'tickets.list') {
+      const { ticketView } = await import('./tickets')
+      body = { tickets: await Promise.all((await query('SELECT * FROM support_tickets WHERE project_id = ? ORDER BY id DESC LIMIT 100', [project.id])).map(row => ticketView(row))) }
+    }
     else if (operation === 'tickets.create' || operation === 'widget.tickets.create') {
-      body = await support.idempotent(project, `ticket:${person?.id ?? account?.id}`, data.idempotencyKey, data, async () => {
-        const contactId = person?.id ?? identifier(data.contactId)
-        if (!await one('SELECT id FROM support_contacts WHERE id = ? AND project_id = ?', [contactId, project.id])) fail(404, 'not_found', 'Contact not found.')
-        if (data.conversationId) { const row = await support.conversation(project, data.conversationId, person); if (row.contact_id !== contactId) fail(422, 'contact_mismatch', 'Ticket and conversation must belong to the same contact.') }
-        const ticket = await insert('support_tickets', { workspace_id: project.workspace_id, project_id: project.id, contact_id: contactId, conversation_id: data.conversationId ? identifier(data.conversationId) : null, title: text(data.title, 'title', 200), description: typeof data.description === 'string' ? data.description.slice(0, 20000) : '' })
-        await support.enqueue(project, 'ticket.created', { ticketId: ticket.id })
-        return { ticket }
-      }); status = 201
+      const { createTicket } = await import('./tickets')
+      body = await support.idempotent(project, `ticket:${person?.id ?? account?.id}`, data.idempotencyKey, data, async () => ({ ticket: await createTicket(project, data, person) })); status = 201
     }
     else if (operation === 'widget.tickets.detail' || operation === 'tickets.update') {
-      const ticket = await one('SELECT * FROM support_tickets WHERE id = ? AND project_id = ?', [identifier(params.id), project.id])
-      if (!ticket || (person && ticket.contact_id !== person.id)) fail(404, 'not_found', 'Ticket not found.')
-      if (operation === 'tickets.update') {
-        const status = data.status ?? ticket.status, priority = data.priority ?? ticket.priority
-        if (!['open', 'pending', 'resolved'].includes(String(status)) || !['low', 'normal', 'high', 'urgent'].includes(String(priority))) fail(422, 'invalid_input', 'Unknown ticket status or priority.')
-        const assignee = data.assigneeId === undefined ? ticket.assignee_id : Number(data.assigneeId)
-        if (assignee) await support.member(Number(assignee), Number(project.workspace_id))
-        await query('UPDATE support_tickets SET status = ?, priority = ?, assignee_id = ?, updated_at = ? WHERE id = ? AND project_id = ?', [status, priority, assignee, new Date().toISOString(), ticket.id, project.id])
-      }
-      body = { ticket: await one('SELECT * FROM support_tickets WHERE id = ? AND project_id = ?', [ticket.id, project.id]) }
+      const { ticket, ticketView, updateTicket } = await import('./tickets')
+      body = { ticket: operation === 'tickets.update' ? await updateTicket(project, params.id, data) : await ticketView(await ticket(project, params.id, person), true) }
     }
     else if (operation === 'articles.list' || operation === 'widget.articles') {
       const url = new URL(request.url)
