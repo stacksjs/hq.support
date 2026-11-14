@@ -7,6 +7,7 @@ export default defineModel({
   traits: { useTimestamps: true },
   dashboard: { access: false },
   indexes: [
+    { name: 'support_workspace_human', columns: ['workspace_id', 'user_id'], unique: true },
     { name: 'support_membership_identity', columns: ['workspace_id', 'email'], unique: true },
   ],
   attributes: {

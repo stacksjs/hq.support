@@ -52,6 +52,8 @@ try {
   const keysResult = await request(`${agent}/keys`, 'POST', {}, token)
   check(keysResult.status === 201, 'keys issued')
   const keys = keysResult.data
+  const agents = await request(`${agent}/agents`, 'GET', undefined, token)
+  check(agents.status === 200 && agents.data.agents.length === 1 && agents.data.agents[0].email === 'owner@example.test', 'agent picker lists active humans in the workspace only')
   check((await request(`${agent}/inbox`, 'GET', undefined, otherToken)).status === 403, 'tenant isolation denies other owner')
   check((await request(prefix + '/sessions', 'POST', { externalId: 'c1' }, keys.readKey)).status === 401, 'read key cannot issue customer session')
   const session = await request(prefix + '/sessions', 'POST', { externalId: 'c1', name: 'Ada', email: 'ada@example.test' }, keys.ingestKey)
@@ -84,6 +86,12 @@ try {
   check(customerDetail.status === 200 && customerDetail.data.messages.length === 1, 'internal note excluded from customer detail')
   const privatePost = await request(`${widget}/conversations/${conversation.id}/messages`, 'POST', { body: 'forged note', visibility: 'internal', idempotencyKey: 'forged' }, session.data.token, 'https://customer.example')
   check(privatePost.status === 403, 'customer cannot send internal note')
+  const agentBeforeRead = await request(`${agent}/inbox`, 'GET', undefined, token)
+  check(agentBeforeRead.data.conversations[0].unread_count === 1, 'agent unread count begins at unread customer public messages')
+  const read = await request(`${agent}/conversations/${conversation.id}/read`, 'POST', { lastMessageId: customerDetail.data.messages[0].id }, token)
+  check(read.status === 200 && read.data.unreadCount === 0, 'agent last-seen cursor marks displayed messages read')
+  check((await request(`${agent}/inbox`, 'GET', undefined, token)).data.conversations[0].unread_count === 0, 'inbox uses per-agent read cursor')
+
   const sessionTwo = await request(prefix + '/sessions', 'POST', { externalId: 'c2' }, keys.ingestKey)
   check((await request(`${widget}/conversations/${conversation.id}`, 'GET', undefined, sessionTwo.data.token, 'https://customer.example')).status === 404, 'customer cannot read another contact conversation')
   const listing = await request(prefix + '/conversations', 'GET', undefined, keys.readKey)

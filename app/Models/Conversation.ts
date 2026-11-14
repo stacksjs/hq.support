@@ -6,6 +6,7 @@ export default defineModel({
   table: 'support_conversations',
   traits: { useTimestamps: true },
   dashboard: { access: false },
+  indexes: [{ name: 'support_conversation_cursor', columns: ['project_id', 'id'] }],
   attributes: {
     workspaceId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     projectId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },

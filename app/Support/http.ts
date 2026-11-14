@@ -6,6 +6,8 @@ import { billingPolicy, limitsFor, plans } from './limits'
 import type { Plan } from './limits'
 import * as support from './service'
 import { approve, hq } from './hq'
+import { createWorkflow, listWorkflows } from './workflows'
+import { createArticle, searchArticles, updateArticle } from './knowledge'
 import { confirmationCode } from '@stacksjs/hq/service'
 
 export type Operation = 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.create' | 'widget.tickets.detail' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
@@ -15,7 +17,7 @@ function bearer(request: RequestInstance): string { return /^Bearer\s+(\S+)$/i.e
 async function user(request: RequestInstance) {
   const row = await request.user()
   if (!row) fail(401, 'unauthorized', 'Sign in to continue.')
-  return { id: Number(row.id), name: String(row.name), email: row.email }
+  return { id: Number(row.id), name: String(row.name), email: row.email, emailVerified: Boolean(row.email_verified_at) }
 }
 function input(request: RequestInstance): Row {
   const value = support.object(request.all())
@@ -60,6 +62,7 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
     }
     if (operation === 'invitations.accept') {
       const account = await user(request)
+      if (!account.emailVerified) fail(403, 'email_verification_required', 'Verify your email before accepting a workspace invitation.')
       const invitation = await one("SELECT * FROM support_memberships WHERE id = ? AND email = ? AND status = 'pending'", [identifier(params.id), account.email.toLowerCase()])
       if (!invitation) fail(404, 'not_found', 'Invitation not found for this account.')
       await workspaceTransaction(Number(invitation.workspace_id), async () => {
@@ -89,7 +92,7 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
     if (operation === 'sessions') body = await support.createSession(project, data)
     else if (operation === 'events' || operation === 'widget.events') body = await support.track(project, { ...data, ...(person ? { externalId: person.external_id } : {}) })
     else if (operation === 'conversations.create' || operation === 'widget.create') { body = await support.createConversation(project, data, data, person); status = 201 }
-    else if (operation === 'inbox' || operation === 'conversations.list' || operation === 'widget.conversations') body = await support.conversations(project, person, new URL(request.url).searchParams.get('cursor'))
+    else if (operation === 'inbox' || operation === 'conversations.list' || operation === 'widget.conversations') body = await support.conversations(project, person, new URL(request.url).searchParams.get('cursor'), operation === 'inbox' ? account?.id : undefined)
     else if (operation === 'conversation.detail' || operation === 'widget.detail') body = await support.detail(project, params.id, person)
     else if (operation === 'messages.create' || operation === 'agent.reply' || operation === 'widget.reply') { body = await support.reply(project, params.id, data, { customer: person, userId: account?.id }); status = 201 }
     else if (operation === 'conversation.update') body = await support.updateConversation(project, params.id, data)
@@ -125,31 +128,18 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
       body = { ticket: await one('SELECT * FROM support_tickets WHERE id = ? AND project_id = ?', [ticket.id, project.id]) }
     }
     else if (operation === 'articles.list' || operation === 'widget.articles') {
-      const search = new URL(request.url).searchParams.get('q')?.slice(0, 200) || ''
-      body = { articles: await query(`SELECT id, slug, title, body, locale, collection, revision, updated_at, status, visibility FROM support_articles WHERE project_id = ?${widget ? " AND status = 'published' AND visibility = 'public'" : ''} AND (LOWER(title) LIKE ? OR LOWER(body) LIKE ?) ORDER BY id DESC LIMIT 50`, [project.id, `%${search.toLowerCase()}%`, `%${search.toLowerCase()}%`]) }
+      const url = new URL(request.url)
+      body = await searchArticles(project, url.searchParams.get('q') || '', { internal: !widget, locale: url.searchParams.get('locale') || undefined })
     }
-    else if (operation === 'articles.create') {
-      const article = await insert('support_articles', { workspace_id: project.workspace_id, project_id: project.id, slug: text(data.slug, 'slug', 200), title: text(data.title, 'title', 200), body: text(data.body, 'body', 100000), status: 'draft', visibility: data.visibility === 'internal' ? 'internal' : 'public', locale: data.locale || 'en', collection: data.collection || 'General' })
-      body = { article }; status = 201
-    }
-    else if (operation === 'articles.update') {
-      const article = await one('SELECT * FROM support_articles WHERE id = ? AND project_id = ?', [identifier(params.id), project.id])
-      if (!article) fail(404, 'not_found', 'Article not found.')
-      const state = data.status ?? article.status
-      if (!['draft', 'published', 'archived'].includes(String(state))) fail(422, 'invalid_input', 'Unknown article status.')
-      await query('UPDATE support_articles SET title = ?, body = ?, status = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND project_id = ?', [data.title === undefined ? article.title : text(data.title, 'title'), data.body === undefined ? article.body : text(data.body, 'body', 100000), state, new Date().toISOString(), article.id, project.id])
-      body = { article: await one('SELECT * FROM support_articles WHERE id = ? AND project_id = ?', [article.id, project.id]) }
-    }
+    else if (operation === 'articles.create') { body = { article: await createArticle(project, data, account!.id) }; status = 201 }
+    else if (operation === 'articles.update') body = { article: await updateArticle(project, params.id, data, account!.id) }
     else if (operation === 'billing') {
       const owner = await support.workspace(Number(project.workspace_id))
       body = { workspace: { id: owner.id, plan: owner.plan, trialEndsAt: owner.trial_ends_at, overagesEnabled: Boolean(owner.overages_enabled), spendingCapCents: Number(owner.spending_cap_cents), walletCents: Number(owner.wallet_cents) }, limits: limitsFor(owner.plan as Plan), plans, policy: billingPolicy, checkoutAvailable: false, usage: { conversations: await support.usage(Number(owner.id), 'conversations'), ai: await support.usage(Number(owner.id), 'ai'), storageBytes: Number(owner.storage_bytes) } }
     }
     else if (operation === 'reports') body = { conversations: await query('SELECT status, COUNT(*) AS total FROM support_conversations WHERE project_id = ? GROUP BY status', [project.id]), messages: await query('SELECT author_type, COUNT(*) AS total FROM support_messages WHERE project_id = ? GROUP BY author_type', [project.id]), tickets: await query('SELECT status, COUNT(*) AS total FROM support_tickets WHERE project_id = ? GROUP BY status', [project.id]) }
-    else if (operation === 'workflows.list') body = { workflows: await query('SELECT * FROM support_workflows WHERE project_id = ? ORDER BY id DESC', [project.id]), executionAvailable: false }
-    else if (operation === 'workflows.create') {
-      await support.member(account!.id, Number(project.workspace_id), ['owner', 'admin'])
-      body = { workflow: await insert('support_workflows', { workspace_id: project.workspace_id, project_id: project.id, name: text(data.name, 'name'), event: text(data.event, 'event'), enabled: false, definition: support.jsonText(data.definition) }), executionAvailable: false }; status = 201
-    }
+    else if (operation === 'workflows.list') body = await listWorkflows(project)
+    else if (operation === 'workflows.create') { body = { workflow: await createWorkflow(project, data, account!.id), executionAvailable: true, workerRequired: true }; status = 201 }
     else fail(404, 'not_found', 'Endpoint not found.')
     const result = response(body, status)
     if (cors) { result.headers.set('Access-Control-Allow-Origin', cors); result.headers.set('Vary', 'Origin') }

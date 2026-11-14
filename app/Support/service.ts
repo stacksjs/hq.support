@@ -87,7 +87,7 @@ export async function contact(projectRow: Row, identity: Row) {
   const found = await one('SELECT * FROM support_contacts WHERE project_id = ? AND external_id = ?', [projectRow.id, externalId])
   const fields = { name: typeof identity.name === 'string' ? identity.name.slice(0, 200) : '', email: typeof identity.email === 'string' ? identity.email.slice(0, 254) : '', company: typeof identity.company === 'string' ? identity.company.slice(0, 200) : '', attributes: jsonText(identity.attributes) }
   if (found) {
-    await query('UPDATE support_contacts SET name = ?, email = ?, company = ?, attributes = ?, updated_at = ? WHERE id = ? AND project_id = ?', [fields.name || found.name, fields.email || found.email, fields.company || found.company, fields.attributes, new Date().toISOString(), found.id, projectRow.id])
+    await query('UPDATE support_contacts SET name = ?, email = ?, company = ?, attributes = ?, updated_at = ? WHERE id = ? AND project_id = ?', [fields.name || found.name, fields.email || found.email, fields.company || found.company, identity.attributes === undefined ? found.attributes : fields.attributes, new Date().toISOString(), found.id, projectRow.id])
     return (await one('SELECT * FROM support_contacts WHERE id = ?', [found.id]))!
   }
   return await insert('support_contacts', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, external_id: externalId, ...fields })
@@ -138,7 +138,7 @@ export async function enqueue(projectRow: Row, kind: string, payload: Row) {
 }
 const isoTime = (value: unknown) => value instanceof Date ? value.toISOString() : String(value)
 export function summary(row: Row) {
-  return { id: String(row.id), subject: String(row.subject), status: String(row.status), customer_id: String(row.contact_id), updated_at: isoTime(row.updated_at), unread_count: Number(row.unread_count) }
+  return { id: String(row.id), subject: String(row.subject), status: String(row.status), customer_id: String(row.contact_id), updated_at: isoTime(row.updated_at), unread_count: Number(row.agent_unread_count ?? row.unread_count) }
 }
 export function messageView(row: Row) {
   return { id: String(row.id), conversation_id: String(row.conversation_id), body: String(row.body), visibility: String(row.visibility), author_type: String(row.author_type), created_at: isoTime(row.created_at), delivery_status: String(row.delivery_status) }
@@ -148,9 +148,10 @@ export async function conversation(projectRow: Row, id: unknown, person?: Row): 
   if (!row || (person && row.contact_id !== person.id)) fail(404, 'not_found', 'Conversation not found.')
   return row
 }
-export async function conversations(projectRow: Row, person?: Row, cursor?: string | null) {
+export async function conversations(projectRow: Row, person?: Row, cursor?: string | null, agentId?: number) {
   const before = cursor ? identifier(cursor) : Number.MAX_SAFE_INTEGER
-  const rows = await query(`SELECT * FROM support_conversations WHERE project_id = ? AND id < ?${person ? ' AND contact_id = ?' : ''} ORDER BY id DESC LIMIT 51`, [projectRow.id, before, ...(person ? [person.id] : [])])
+  const readProjection = agentId ? `, (SELECT COUNT(*) FROM support_messages m WHERE m.conversation_id = support_conversations.id AND m.project_id = support_conversations.project_id AND m.author_type = 'customer' AND m.visibility = 'public' AND m.id > COALESCE((SELECT last_message_id FROM support_conversation_reads r WHERE r.conversation_id = support_conversations.id AND r.user_id = ?), 0)) AS agent_unread_count` : ''
+  const rows = await query(`SELECT support_conversations.*${readProjection} FROM support_conversations WHERE project_id = ? AND id < ?${person ? ' AND contact_id = ?' : ''} ORDER BY id DESC LIMIT 51`, [...(agentId ? [agentId] : []), projectRow.id, before, ...(person ? [person.id] : [])])
   return { conversations: rows.slice(0, 50).map(summary), nextCursor: rows.length > 50 ? String(rows[49]!.id) : null }
 }
 export async function detail(projectRow: Row, id: unknown, person?: Row) {
@@ -159,14 +160,14 @@ export async function detail(projectRow: Row, id: unknown, person?: Row) {
   const personRow = await one('SELECT * FROM support_contacts WHERE id = ? AND project_id = ?', [row.contact_id, projectRow.id])
   return { conversation: summary(row), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.map(messageView) }
 }
-export async function createConversation(projectRow: Row, identity: Row, input: Row, person?: Row) {
+export async function createConversation(projectRow: Row, identity: Row, input: Row, person?: Row, automation?: { workflowRunId: number, automationDepth: number }) {
   return await idempotent(projectRow, `conversation:${person?.id ?? identity.externalId}`, input.idempotencyKey, input, async () => {
     const owner = await entitled(number(projectRow, 'workspace_id'))
     const who = person ?? await contact(projectRow, identity)
     await consume(number(projectRow, 'workspace_id'), 'conversations', limitsFor(owner.plan as Plan).conversationCeiling)
     const row = await insert('support_conversations', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, contact_id: who.id, subject: text(input.subject, 'subject', 200), status: 'open', unread_count: 1 })
     const message = await insert('support_messages', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, conversation_id: row.id, contact_id: who.id, body: text(input.body, 'body', 20000), visibility: 'public', author_type: 'customer' })
-    await enqueue(projectRow, 'conversation.created', { conversationId: row.id, messageId: message.id })
+    await enqueue(projectRow, 'conversation.created', { conversationId: row.id, messageId: message.id, ...(automation || {}) })
     return { conversation: summary(row) }
   })
 }

@@ -6,6 +6,7 @@ export default defineModel({
   table: 'support_messages',
   traits: { useTimestamps: true },
   dashboard: { access: false },
+  indexes: [{ name: 'support_message_thread', columns: ['project_id', 'conversation_id', 'id'] }],
   attributes: {
     workspaceId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     projectId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },

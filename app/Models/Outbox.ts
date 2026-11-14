@@ -6,6 +6,7 @@ export default defineModel({
   table: 'support_outbox',
   traits: { useTimestamps: true },
   dashboard: { access: false },
+  indexes: [{ name: 'support_outbox_due', columns: ['status', 'available_at', 'lease_until', 'id'] }],
   attributes: {
     providerReceipt: { fillable: true, required: true, default: '', validation: { rule: schema.string() } },
     deliveredAt: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
