@@ -40,6 +40,18 @@ try {
  check(second.thread !== messenger.thread && second.sessionToken === '', 'two widget instances keep independent state')
  check(!messenger.shadowRoot.querySelector('script'), 'no executable scripts leak into the shadow markup')
  check(!!getComputedStyle(document.querySelector('hq-support-launcher').shadowRoot.querySelector('button')).backgroundColor, 'shadow styling is self contained')
+ const ticket = document.querySelector('hq-support-ticket-form')
+ check(ticket.shadowRoot.querySelector('fieldset').disabled, 'ticket controls remain disabled before a scoped customer session loads')
+ ticket.apiUrl = location.origin; ticket.projectId = 'proof'; ticket.sessionToken = 'fixture-session'
+ await ticket.refresh(); await ticket.updateComplete
+ check(!ticket.shadowRoot.querySelector('fieldset').disabled, 'ticket controls enable after scoped form definitions load')
+ for (const [key, value] of [['quantity', '3.5'], ['reply_email', 'customer@example.test'], ['incident_date', '2026-11-13']]) {
+   const field = ticket.shadowRoot.querySelector('#custom__' + key)
+   field.value = value; field.focus(); field.dispatchEvent(new Event('input', { bubbles: true }))
+   await ticket.refresh(); await ticket.updateComplete
+   check(ticket.shadowRoot.querySelector('#custom__' + key).value === value, 'focused ' + field.type + ' ticket draft survives asynchronous form refresh')
+ }
+ ticket.sessionToken = ''; await ticket.updateComplete
  document.title = failures.length ? failures.length + ' widget checks failed' : 'All native widget checks passed'
  const done = document.createElement('strong'); done.textContent = document.title; output.append(done)
 } catch(error) { check(false, error.stack || error.message); document.title = 'Widget proof failed' }

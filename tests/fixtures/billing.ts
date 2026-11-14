@@ -46,7 +46,7 @@ try {
   assert.equal(typeof token, 'string')
   const created = await request('/support/workspaces', 'POST', { name: 'Billing team' }, token)
   assert.equal(created.status, 201)
-  const workspaceId = created.data.workspace.id
+  const workspaceId = Number(created.data.workspace.id)
   const path = `/support/workspaces/${workspaceId}/wallet`
   assert.equal((await request(path, 'GET')).status, 401)
   assert.equal((await request(path + '/checkout', 'POST', { amountCents: 1999, idempotencyKey: 'small' }, token)).status, 422)

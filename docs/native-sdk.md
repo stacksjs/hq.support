@@ -68,9 +68,12 @@ isolation, public/internal messages, filtered pagination, input bounds and a
 real committed request with simulated acknowledgement loss. It also caught and
 fixed the PostgreSQL `assignee_id = '0'` truthiness issue during status changes.
 
-Qualification used reviewed native source aliases while publication/install was
-pending. The parent release workflow must rerun this feature test with installed
-published packages before claiming installed-consumer readiness:
+Initial qualification used reviewed native source aliases while publication was
+pending. The complete application suite subsequently passed with registry-installed
+native 0.75.581 on both databases, including this SDK fixture, in
+[CI for the integrated application](https://github.com/stacksjs/hq.support/actions/runs/43567673314).
+Later dependency or contract changes require fresh evidence. Run the focused
+fixture with an owned PostgreSQL service:
 
 ```sh
 STACKS_TEST_POSTGRES_URL=postgres://postgres@127.0.0.1:55439/postgres \

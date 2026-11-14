@@ -114,7 +114,7 @@ async function qualify(assets: string, path: '/proof' | '/loader-proof', viewpor
       const state = await cdp.evaluate<{ title: string, checks: string[], violations: unknown[] }>(`({title:document.title,checks:[...document.querySelectorAll('#checks > *')].map(node=>node.textContent),violations:globalThis.__hqCompilerCsp})`)
       const failed = state.checks.filter(check => check.startsWith('FAIL'))
       if (failed.length) throw new Error(failed.join('\n'))
-      return state.title === expectedTitle && state.checks.filter(check => check.startsWith('PASS')).length >= (path === '/proof' ? 20 : 19) ? state : undefined
+      return state.title === expectedTitle && state.checks.filter(check => check.startsWith('PASS')).length >= (path === '/proof' ? 25 : 19) ? state : undefined
     }, 30000, { label: `${label} ${path} rendered checks`, intervalMs: 50 })
     assert.ok(await settle(cdp, { quietMs: 150, timeoutMs: 5000 }))
     assert.deepEqual(proof.violations, [], 'No CSP violation may be hidden by proof completion')

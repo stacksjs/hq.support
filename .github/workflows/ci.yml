@@ -18,6 +18,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
+      redis:
+        image: redis:8.2.2
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
       postgres:
         image: pgvector/pgvector:0.8.1-pg17@sha256:3e8b3adfd27b5707128f60956f62a793c3c9326ea8cfaf0eab7adccb5d700b21
         env:
@@ -34,6 +42,7 @@ jobs:
       DB_CONNECTION: sqlite
       DB_DATABASE: database/ci.sqlite
       STACKS_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+      SUPPORT_TEST_REDIS_URL: redis://127.0.0.1:6379
       MAIL_MAILER: capture
     steps:
       - uses: actions/checkout@v6
@@ -76,6 +85,8 @@ jobs:
           retention-days: 14
       - run: ./buddy lint
       - run: ./buddy typecheck
+      - name: Typecheck authored stx views and component contracts
+        run: bun run typecheck:views
       - run: ./buddy migrate
       - name: Verify model migration freshness
         run: |
@@ -89,3 +100,35 @@ jobs:
           NODE_ENV: production
           APP_URL: https://hq.support
           APP_DOMAIN: hq.support
+      - name: Qualify native agent team and search journeys
+        timeout-minutes: 5
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: bun --no-env-file scripts/qualify-team-browser.ts
+      - name: Qualify native credential lifecycle journeys
+        timeout-minutes: 5
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: bun --no-env-file scripts/qualify-credential-browser.ts
+      - name: Qualify native customer satisfaction journeys
+        timeout-minutes: 5
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: bun --no-env-file scripts/qualify-csat-browser.ts
+      - name: Qualify customer request continuations and agent drafts
+        timeout-minutes: 5
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: bun --no-env-file scripts/qualify-reopening-browser.ts
+      - name: Retain native application browser evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: support-application-browser-${{ github.run_attempt }}
+          path: |
+            storage/framework/runtime/team-browser
+            storage/framework/runtime/credential-browser
+            storage/framework/runtime/csat-browser
+            storage/framework/runtime/reopening-browser
+          if-no-files-found: warn
+          retention-days: 7

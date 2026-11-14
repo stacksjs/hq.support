@@ -2291,6 +2291,32 @@ declare module '@stacksjs/database' {
       charged_cents: number | bigint
       rate_version: string
     }
+    support_replay_channels: {
+      // columns
+      id: number
+      workspace_id: number | bigint
+      project_id: number | bigint
+      name: string
+      incarnation: string
+      high_water_mark: number | bigint
+      pruned_through: number | bigint
+      last_recorded_at: number | bigint
+      lease_until: number | bigint
+      policy: string
+    }
+    support_replay_events: {
+      // columns
+      id: number
+      workspace_id: number | bigint
+      project_id: number | bigint
+      channel_id: number | bigint
+      seq: number | bigint
+      operation_key: string
+      fingerprint: string
+      event: string
+      payload: string
+      recorded_at: number | bigint
+    }
     support_routing_agents: {
       // columns
       id: number

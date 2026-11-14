@@ -45,7 +45,7 @@ try {
   const otherToken = otherLogin.data.token ?? otherLogin.data.access_token ?? otherLogin.data.data?.token
   const workspace = await request('/support/workspaces', 'POST', { name: 'Support company' }, token)
   check(workspace.status === 201, `workspace created: ${JSON.stringify(workspace.data)}`)
-  const workspaceId = workspace.data.workspace.id
+  const workspaceId = Number(workspace.data.workspace.id)
   const selected = await request(`/support/workspaces/${workspaceId}/projects`, 'POST', { name: 'Main app' }, token)
   check(selected.status === 201, `project created: ${JSON.stringify(selected.data)}`)
   const project = selected.data.project, prefix = `/v1/projects/${project.public_id}`, agent = `/support/projects/${project.public_id}`, widget = `/widget/projects/${project.public_id}`
