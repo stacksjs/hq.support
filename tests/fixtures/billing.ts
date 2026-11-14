@@ -6,7 +6,7 @@ import { injectGlobalAutoImports } from '@stacksjs/server'
 import { route } from '@stacksjs/router'
 import { stripe } from '@stacksjs/payments'
 import { one } from '../../app/Support/database'
-import { managedCostCents, reserveWallet, settleWallet } from '../../app/Support/billing'
+import { managedCostCents, managedCostFromMicros, reserveWallet, settleProviderWallet, settleWallet } from '../../app/Support/billing'
 
 await overridesReady
 config.database.queryLogging.enabled = false
@@ -64,6 +64,8 @@ try {
   assert.equal((await webhook(event)).status, 200)
   assert.equal((await webhook({ ...event, id: 'evt_second_notification' })).status, 200)
   assert.equal((await request(path, 'GET', undefined, token)).data.balanceCents, 2000)
+  await assert.rejects(reserveWallet(workspaceId, 'unconfigured-cap', 1, 'twilio'), /spending ceilings/)
+  assert.equal((await request(path + '/limits', 'POST', { dailyLimitCents: 10000, monthlyLimitCents: 20000 }, token)).status, 200)
   const foreignPayment = await webhook({ ...event, id: 'evt_other_hq_product', data: { object: { ...event.data.object, metadata: { service: 'commshq' } } } })
   assert.equal(foreignPayment.status, 200)
   assert.equal(foreignPayment.data.ignored, true)
@@ -83,6 +85,28 @@ try {
   assert.equal((await webhook(refund)).status, 200)
   assert.equal((await request(path, 'GET', undefined, token)).data.balanceCents, 200)
   assert.equal(managedCostCents(101), 117, '15% provider margin rounds once in cents')
+  assert.equal(managedCostFromMicros(7900), 1, 'fractional provider cents receive margin before a single rounding')
+  const fractional = await reserveWallet(workspaceId, 'fractional-cost', 100, 'twilio')
+  await settleProviderWallet(workspaceId, String(fractional.public_id), 7900, 'fractional-receipt')
+  await settleProviderWallet(workspaceId, String(fractional.public_id), 7900, 'fractional-receipt')
+  await assert.rejects(settleProviderWallet(workspaceId, String(fractional.public_id), 7901, 'fractional-receipt'), /cost changed/)
+  assert.equal((await request(path, 'GET', undefined, token)).data.balanceCents, 199)
+  assert.equal((await request(path + '/limits', 'POST', { dailyLimitCents: 1002, monthlyLimitCents: 1002 }, token)).status, 200)
+  const capped = await Promise.allSettled([reserveWallet(workspaceId, 'cap-final-a', 1, 'twilio'), reserveWallet(workspaceId, 'cap-final-b', 1, 'twilio')])
+  assert.equal(capped.filter(result => result.status === 'fulfilled').length, 1, 'concurrent final ceiling slot is exact even with sufficient wallet balance')
+  assert.equal((await request(path, 'GET', undefined, token)).data.spending.dailyCents, 1002)
+  await request(path + '/limits', 'POST', { dailyLimitCents: 5000, monthlyLimitCents: 5000 }, token)
+  const beforeMicroOperations = (await request(path, 'GET', undefined, token)).data.balanceCents
+  for (let index = 0; index < 4; index++) {
+    const held = await reserveWallet(workspaceId, `micro-operation-${index}`, 1, 'twilio')
+    const settled = await settleProviderWallet(workspaceId, String(held.public_id), 100, `micro-receipt-${index}`)
+    assert.equal(settled.status, 'settled')
+    assert.equal(Number(settled.actual_cents), 0, 'fine-grained usage aggregates before monthly cents rounding')
+  }
+  assert.equal((await request(path, 'GET', undefined, token)).data.balanceCents, beforeMicroOperations)
+  const bucket = (await one("SELECT * FROM support_provider_cost_buckets WHERE workspace_id = ? AND provider = 'twilio'", [workspaceId]))!
+  assert.equal(Number(bucket.provider_cost_micros), 8300)
+  assert.equal(Number(bucket.charged_cents), 1)
   console.info('PASS support billing')
 }
 finally { server.stop(true) }

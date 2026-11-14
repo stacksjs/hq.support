@@ -1,9 +1,9 @@
 import { Action } from '@stacksjs/actions/runtime'
 import { SupportError, fail, identifier } from '../../Support/errors'
-import { createWalletCheckout, receivePayment, walletOverview } from '../../Support/billing'
+import { configureWalletLimits, createWalletCheckout, receivePayment, walletOverview } from '../../Support/billing'
 import { createSubscriptionCheckout, subscriptionOverview, subscriptionPortal } from '../../Support/subscriptions'
 
-export function billingAction(operation: 'overview' | 'checkout' | 'webhook' | 'subscription' | 'subscribe' | 'portal') {
+export function billingAction(operation: 'overview' | 'checkout' | 'webhook' | 'subscription' | 'subscribe' | 'portal' | 'limits') {
   return new Action({
     name: `Support billing ${operation}`, method: ['overview', 'subscription'].includes(operation) ? 'GET' : 'POST', apiResponse: false,
     async handle(request) {
@@ -18,6 +18,7 @@ export function billingAction(operation: 'overview' | 'checkout' | 'webhook' | '
         const user = Number(account.id)
         const result = operation === 'overview' ? await walletOverview(user, workspace)
           : operation === 'subscription' ? await subscriptionOverview(user, workspace)
+            : operation === 'limits' ? await configureWalletLimits(user, workspace, request.all())
             : operation === 'subscribe' ? await createSubscriptionCheckout(user, workspace, request.all())
               : operation === 'portal' ? await subscriptionPortal(user, workspace)
                 : await createWalletCheckout(user, workspace, request.all())

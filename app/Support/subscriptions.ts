@@ -19,7 +19,11 @@ function returnUrl() { return String(env.APP_URL || 'https://hq.support').replac
 
 export async function subscriptionOverview(userId: number, workspaceId: number) {
   await member(userId, workspaceId, ['owner', 'admin'])
-  return { subscription: await one('SELECT status, plan, interval, current_period_end, cancel_at_period_end FROM support_subscriptions WHERE workspace_id = ?', [workspaceId]) ?? null,
+  const current = await one('SELECT * FROM support_subscriptions WHERE workspace_id = ?', [workspaceId])
+  const checkout = current?.status === 'pending' ? await one('SELECT url, plan, interval, operation_key FROM support_billing_checkouts WHERE public_id = ? AND workspace_id = ?', [current.checkout_id, workspaceId]) : undefined
+  return { subscription: current ? { status: current.status, plan: current.plan, interval: current.interval, current_period_end: current.current_period_end, cancel_at_period_end: current.cancel_at_period_end } : null,
+    pendingCheckout: checkout ? { url: checkout.url || null, plan: checkout.plan, interval: checkout.interval, operationKey: checkout.operation_key } : null,
+    portalAvailable: Boolean(current?.provider_customer && env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET),
     plans: { starter: plans.starter, growth: plans.growth, enterprise: plans.enterprise }, checkoutAvailable: Boolean(env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET) }
 }
 
@@ -53,7 +57,7 @@ export async function createSubscriptionCheckout(userId: number, workspaceId: nu
       mode: 'subscription', client_reference_id: String(workspaceId), metadata,
       subscription_data: { metadata },
       line_items: [{ quantity: 1, price_data: { currency: 'usd', unit_amount: amount(plan, interval), recurring: { interval }, product_data: { name: `HQ.support ${plan}` } } }],
-      success_url: `${returnUrl()}/inbox?billing=success`, cancel_url: `${returnUrl()}/inbox?billing=cancelled`,
+      success_url: `${returnUrl()}/app/usage?billing=success`, cancel_url: `${returnUrl()}/app/usage?billing=cancelled`,
     }, { idempotencyKey: `hq-support:subscription:${pending.public_id}` })
   }
   catch { fail(503, 'checkout_uncertain', 'Checkout is unavailable. Retry with the same operation key.') }
@@ -71,7 +75,7 @@ export async function subscriptionPortal(userId: number, workspaceId: number) {
   available()
   const current = await one('SELECT * FROM support_subscriptions WHERE workspace_id = ?', [workspaceId])
   if (!current?.provider_customer) fail(409, 'subscription_required', 'Complete a subscription checkout first.')
-  const session = await stripe.billingPortal.sessions.create({ customer: String(current.provider_customer), return_url: `${returnUrl()}/usage` })
+  const session = await stripe.billingPortal.sessions.create({ customer: String(current.provider_customer), return_url: `${returnUrl()}/app/usage` })
   return { url: session.url }
 }
 

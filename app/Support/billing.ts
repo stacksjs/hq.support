@@ -26,7 +26,7 @@ async function gateway(): Promise<BillingGateway> {
         line_items: [{ quantity: 1, price_data: { currency: 'usd', unit_amount: input.amountCents, product_data: { name: 'HQ.support communications credit' } } }],
         metadata: { service: 'supporthq', checkout_id: input.checkoutId },
         payment_intent_data: { metadata: { service: 'supporthq', checkout_id: input.checkoutId } },
-        success_url: `${input.returnUrl}/inbox?billing=success`, cancel_url: `${input.returnUrl}/inbox?billing=cancelled`,
+        success_url: `${input.returnUrl}/app/usage?billing=success`, cancel_url: `${input.returnUrl}/app/usage?billing=cancelled`,
       }, { idempotencyKey: `hq-support:wallet:${input.checkoutId}` })
       if (!session.url) fail(502, 'billing_unavailable', 'Checkout could not be opened.')
       return { id: session.id, url: session.url }
@@ -68,8 +68,28 @@ export async function walletOverview(userId: number, workspaceId: number) {
     balanceCents: balance(current), currency: 'usd', minimumTopupCents: billingPolicy.minimumWalletTopupCents,
     checkoutAvailable: Boolean(configuredGateway || (env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET)),
     autoTopupEnabled: false,
+    dailyLimitCents: Number(current.managed_daily_cap_cents), monthlyLimitCents: Number(current.managed_monthly_cap_cents),
+    spending: await walletSpending(workspaceId),
     entries: await query('SELECT reference, kind, amount_cents, balance_cents, provider, provider_reference, created_at FROM support_wallet_entries WHERE workspace_id = ? ORDER BY id DESC LIMIT 100', [workspaceId]),
   }
+}
+
+async function walletSpending(workspaceId: number) {
+  const now = new Date()
+  const day = `${now.toISOString().slice(0, 10)}T00:00:00.000Z`
+  const month = `${now.toISOString().slice(0, 7)}-01T00:00:00.000Z`
+  const total = async (since: string) => Number((await one("SELECT COALESCE(SUM(CASE WHEN status = 'reserved' THEN reserved_cents ELSE actual_cents END), 0) AS total FROM support_wallet_reservations WHERE workspace_id = ? AND created_at >= ?", [workspaceId, since]))?.total ?? 0)
+  return { dailyCents: await total(day), monthlyCents: await total(month), period: now.toISOString().slice(0, 7) }
+}
+
+export async function configureWalletLimits(userId: number, workspaceId: number, input: Row) {
+  await member(userId, workspaceId, ['owner', 'admin'])
+  const daily = cents(input.dailyLimitCents, 0), monthly = cents(input.monthlyLimitCents, 0)
+  if (daily > monthly) fail(422, 'invalid_limit', 'The monthly ceiling must cover the daily ceiling.')
+  await workspaceTransaction(workspaceId, async () => {
+    await query('UPDATE support_workspaces SET managed_daily_cap_cents = ?, managed_monthly_cap_cents = ?, updated_at = ? WHERE id = ?', [daily, monthly, new Date().toISOString(), workspaceId])
+  })
+  return await walletOverview(userId, workspaceId)
 }
 
 export async function createWalletCheckout(userId: number, workspaceId: number, input: Row) {
@@ -164,7 +184,11 @@ export async function reserveWallet(workspaceId: number, operationKey: string, a
       if (Number(existing.reserved_cents) !== amount || existing.provider !== provider) fail(409, 'idempotency_conflict', 'Reservation input changed.')
       return existing
     }
-    if (balance(await workspace(workspaceId)) < amount) fail(402, 'wallet_exhausted', 'Add prepaid credit before using this channel.')
+    const current = await workspace(workspaceId)
+    if (balance(current) < amount) fail(402, 'wallet_exhausted', 'Add prepaid credit before using this channel.')
+    const spending = await walletSpending(workspaceId)
+    if (Number(current.managed_daily_cap_cents) <= 0 || Number(current.managed_monthly_cap_cents) <= 0) fail(402, 'wallet_limit', 'Configure daily and monthly managed-channel spending ceilings first.')
+    if (spending.dailyCents + amount > Number(current.managed_daily_cap_cents) || spending.monthlyCents + amount > Number(current.managed_monthly_cap_cents)) fail(402, 'wallet_limit', 'The managed-channel spending ceiling has been reached.')
     const reservation = await insert('support_wallet_reservations', { workspace_id: workspaceId, public_id: crypto.randomUUID(), operation_key: operation, provider: text(provider, 'provider'), reserved_cents: amount })
     await entry(workspaceId, `reserve:${reservation.public_id}`, 'reserve', -amount, provider)
     return reservation
@@ -190,4 +214,40 @@ export function managedCostCents(providerCents: number): number {
   if (providerCents === 0) return 0
   const value = cents(providerCents)
   return Math.ceil(value * (100 + billingPolicy.managedMarkupPercent) / 100)
+}
+
+/** USD provider microdollars are aggregated before margin and the single cents rounding. */
+export function managedCostFromMicros(providerCostMicros: number): number {
+  if (!Number.isSafeInteger(providerCostMicros) || providerCostMicros < 0 || providerCostMicros > 1_000_000_000_000) fail(422, 'invalid_amount', 'A verified whole number of USD microdollars is required.')
+  return Math.ceil(providerCostMicros * (100 + billingPolicy.managedMarkupPercent) / 1_000_000)
+}
+
+export async function settleProviderWallet(workspaceId: number, reservationId: string, providerCostMicros: number, providerReference: string) {
+  managedCostFromMicros(providerCostMicros)
+  return await workspaceTransaction(workspaceId, async () => {
+    const reservation = await one('SELECT * FROM support_wallet_reservations WHERE workspace_id = ? AND public_id = ?', [workspaceId, reservationId])
+    if (!reservation) fail(404, 'not_found', 'Reservation not found.')
+    if (Number(reservation.provider_cost_micros) !== -1 && Number(reservation.provider_cost_micros) !== providerCostMicros) fail(409, 'settlement_conflict', 'Verified provider cost changed.')
+    if (reservation.status !== 'reserved') {
+      if (reservation.provider_reference !== providerReference) fail(409, 'settlement_conflict', 'Provider receipt changed.')
+      return reservation
+    }
+    const createdAt = reservation.created_at instanceof Date ? reservation.created_at : new Date(String(reservation.created_at))
+    if (!Number.isFinite(createdAt.getTime())) fail(503, 'wallet_unavailable', 'The billing period could not be read.')
+    const period = createdAt.toISOString().slice(0, 7)
+    const bucket = await one('SELECT * FROM support_provider_cost_buckets WHERE workspace_id = ? AND provider = ? AND period = ?', [workspaceId, reservation.provider, period])
+    const aggregate = Number(bucket?.provider_cost_micros ?? 0) + providerCostMicros
+    const billed = managedCostFromMicros(aggregate)
+    const actual = billed - Number(bucket?.charged_cents ?? 0)
+    if (bucket) await query('UPDATE support_provider_cost_buckets SET provider_cost_micros = ?, charged_cents = ?, updated_at = ? WHERE id = ?', [aggregate, billed, new Date().toISOString(), bucket.id])
+    else await insert('support_provider_cost_buckets', { workspace_id: workspaceId, provider: reservation.provider, period, provider_cost_micros: aggregate, charged_cents: billed })
+    await query('UPDATE support_wallet_reservations SET provider_cost_micros = ? WHERE id = ?', [providerCostMicros, reservation.id])
+    await settleWallet(workspaceId, reservationId, actual, providerReference)
+    // An operation may have a positive fractional cost and zero additional cents after aggregation.
+    if (providerCostMicros > 0 && actual === 0) {
+      await query("UPDATE support_wallet_reservations SET status = 'settled' WHERE id = ?", [reservation.id])
+      await query("UPDATE support_wallet_entries SET kind = 'settle' WHERE workspace_id = ? AND reference = ?", [workspaceId, `settle:${reservationId}`])
+    }
+    return (await one('SELECT * FROM support_wallet_reservations WHERE id = ?', [reservation.id]))!
+  })
 }
