@@ -1,0 +1,18 @@
+import { enterpriseAction } from '../app/Actions/Support/EnterpriseAction'
+
+route.get('/support/workspaces/{workspace}/enterprise', enterpriseAction('status', 'GET')).middleware('auth')
+route.post('/support/workspaces/{workspace}/enterprise/provider', enterpriseAction('configure', 'POST')).middleware('auth')
+route.post('/support/workspaces/{workspace}/enterprise/scim-tokens', enterpriseAction('token.issue', 'POST')).middleware('auth')
+route.delete('/support/workspaces/{workspace}/enterprise/scim-tokens/{id}', enterpriseAction('token.revoke', 'DELETE')).middleware('auth')
+route.get('/support/workspaces/{workspace}/enterprise/audit', enterpriseAction('audit', 'GET')).middleware('auth')
+route.get('/enterprise/providers/{provider}/login', enterpriseAction('oidc.start', 'GET')).rateLimit(20, 'minute')
+route.post('/enterprise/providers/{provider}/link', enterpriseAction('oidc.link', 'POST')).middleware('auth').rateLimit(10, 'minute')
+route.get('/enterprise/providers/{provider}/callback', enterpriseAction('oidc.callback', 'GET')).rateLimit(30, 'minute')
+route.post('/enterprise/providers/{provider}/saml/acs', enterpriseAction('saml', 'POST')).skipCsrf().rateLimit(10, 'minute')
+route.get('/scim/v2/{workspace}/ServiceProviderConfig', enterpriseAction('scim.config', 'GET')).rateLimit(120, 'minute')
+route.get('/scim/v2/{workspace}/Users', enterpriseAction('scim.list', 'GET')).rateLimit(120, 'minute')
+route.get('/scim/v2/{workspace}/Users/{id}', enterpriseAction('scim.get', 'GET')).rateLimit(120, 'minute')
+route.post('/scim/v2/{workspace}/Users', enterpriseAction('scim.create', 'POST')).skipCsrf().rateLimit(60, 'minute')
+route.patch('/scim/v2/{workspace}/Users/{id}', enterpriseAction('scim.patch', 'PATCH')).skipCsrf().rateLimit(60, 'minute')
+route.put('/scim/v2/{workspace}/Users/{id}', enterpriseAction('scim.replace', 'PUT')).skipCsrf().rateLimit(60, 'minute')
+route.delete('/scim/v2/{workspace}/Users/{id}', enterpriseAction('scim.delete', 'DELETE')).skipCsrf().rateLimit(60, 'minute')

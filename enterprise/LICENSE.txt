@@ -1,0 +1,18 @@
+HQ.support Enterprise License
+Copyright (c) 2026 Chris Breuer
+
+The files in this enterprise directory and its descendants are excluded from
+the repository's MIT license. All rights are reserved.
+
+You may read this source and modify it for evaluation in a non-production
+installation. Production use, redistribution, sublicensing, and providing it
+as a hosted service require a separate written commercial license from the
+copyright holder. A valid signed entitlement records the licensed installation,
+workspace, features, and term; it does not grant rights beyond that agreement.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+NONINFRINGEMENT. THE COPYRIGHT HOLDER IS NOT LIABLE FOR ANY CLAIM OR DAMAGES
+ARISING FROM USE OF THIS SOFTWARE.
+
+Contact: chris@stacksjs.com
