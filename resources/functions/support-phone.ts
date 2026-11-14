@@ -34,7 +34,13 @@ export function createSupportPhone(options: { token: () => Promise<{ token: stri
         })
         await selected.register()
       }
-      catch { if (current === generation) state({ status: 'error', message: 'The browser phone could not be enabled.' }) }
+      catch {
+        if (current === generation) {
+          call?.disconnect(); call = undefined
+          device?.destroy(); device = undefined
+          state({ status: 'error', message: 'The browser phone could not be enabled.' })
+        }
+      }
     },
     accept() { call?.accept() },
     reject() { call?.reject(); call = undefined; state({ status: device ? 'ready' : 'offline' }) },
