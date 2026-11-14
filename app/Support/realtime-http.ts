@@ -18,7 +18,7 @@ export type RealtimeOperation = 'snapshot' | 'replay' | 'stream'
 const leaseMs = 120_000, renewalMs = 30_000
 const caps = { project: 1536, workspace: 2048, operator: 3072 } as const
 const json = (body: unknown, status = 200) => Response.json(boundedEnvelope(body), { status, headers: { 'Cache-Control': 'no-store' } })
-const snapshotRequired = () => json({ cursor: null, snapshotRequired: true }, 409)
+const snapshotRequired = (status = 409, body: Row = {}) => json({ ...body, cursor: null, snapshotRequired: true }, status)
 interface Principal { project: Row, person?: Row, agentId?: number, channel: string, origin: string }
 
 function exactOrigin(value: unknown): value is string {
@@ -162,7 +162,7 @@ async function replay(request: RequestInstance, widget: boolean, principal: Prin
     await authority(request, widget, principal)
     if (result.status === 200) await renew(fresh, tx, row)
     const body = await result.json() as Row
-    const response = json({ ...body, ...(result.status === 409 || result.status === 503 ? { cursor: null, snapshotRequired: true } : {}) }, result.status)
+    const response = result.status === 409 || result.status === 503 ? snapshotRequired(result.status, body) : json(body, result.status)
     await authority(request, widget, principal)
     return response
   })
@@ -204,9 +204,15 @@ export async function handleRealtime(request: RequestInstance, widget: boolean, 
     if (widget) { result.headers.set('Access-Control-Allow-Origin', principal.origin); result.headers.set('Vary', 'Origin') }
     return result
   }
-  catch (error) {
+  catch (caught) {
+    let error = caught
+    // Renewal may lose the lease after a live selection. Recovery still requires current authority.
+    if (error instanceof SupportError && error.status === 409 && error.code === 'snapshot_required' && principal) {
+      try { await authority(request, widget, principal) }
+      catch (current) { error = current }
+    }
     const status = error instanceof SupportError ? error.status : error instanceof RequestBodyError ? error.status : typeof error === 'object' && error && 'statusCode' in error && error.statusCode === 403 ? 403 : 503
-    const result = json({ error: { code: error instanceof SupportError ? error.code : error instanceof RequestBodyError ? 'invalid_input' : 'realtime_unavailable', message: 'Realtime request could not be completed.' } }, status)
+    const result = error instanceof SupportError && error.status === 409 && error.code === 'snapshot_required' ? snapshotRequired() : json({ error: { code: error instanceof SupportError ? error.code : error instanceof RequestBodyError ? 'invalid_input' : 'realtime_unavailable', message: 'Realtime request could not be completed.' } }, status)
     // A stale allowlist must never be reused on an authorization failure.
     if (widget && principal) {
       try { const current = await authority(request, true, principal); result.headers.set('Access-Control-Allow-Origin', current.origin) }

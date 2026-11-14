@@ -9,6 +9,7 @@ import { sessionLogout } from '@stacksjs/auth/session-auth'
 import { Auth } from '@stacksjs/auth/authentication'
 import { startBrowserSession } from '@stacksjs/auth/browser-session-store'
 import { emit } from '@stacksjs/realtime'
+import { freezeTime, travelTo, useRealTime } from '@stacksjs/testing/time'
 import { route } from '@stacksjs/router'
 import { overridesReady, config } from '@stacksjs/config'
 import { injectGlobalAutoImports } from '@stacksjs/server'
@@ -117,6 +118,44 @@ try {
   await request(agent + '/conversations/' + conversation.id + '/messages', 'POST', publicInput, token)
   const retry = await request(widget + '/realtime/replay', 'POST', { checkpoint: finite.data.cursor }, session.token, 'https://customer.example')
   check(retry.status === 200 && retry.data.messages.length === 0 && retry.data.cursor.seq === finite.data.cursor.seq, 'idempotent retry never appends duplicate durable replay')
+  // Clock control proves cadence; a test-owned SQL trigger expires the real selected row.
+  // The route, native replay adapter and renewal SQL are never replaced.
+  const channelName = `support.customer.${project.id}.${session.contact.id}`
+  const leaseStarted = Date.now()
+  const boundaryTrigger = async (statement: string, targetChannel = channelName) => {
+    const safeName = targetChannel.replace(/'/g, "''")
+    if (config.database.default === 'postgres') {
+      await query(`CREATE FUNCTION realtime_boundary() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN ${statement}; RETURN NEW; END $$`)
+      await query(`CREATE TRIGGER realtime_boundary AFTER UPDATE OF name ON support_replay_channels FOR EACH ROW WHEN (NEW.name = '${safeName}' AND NEW.lease_until > 0) EXECUTE FUNCTION realtime_boundary()`)
+      return async () => { await query('DROP TRIGGER realtime_boundary ON support_replay_channels'); await query('DROP FUNCTION realtime_boundary()') }
+    }
+    await query(`CREATE TRIGGER realtime_boundary AFTER UPDATE OF name ON support_replay_channels WHEN NEW.name = '${safeName}' AND NEW.lease_until > 0 BEGIN ${statement}; END`)
+    return async () => { await query('DROP TRIGGER realtime_boundary') }
+  }
+  freezeTime(leaseStarted)
+  try {
+    await query('UPDATE support_replay_channels SET lease_until = ? WHERE name = ?', [leaseStarted + 120000, channelName])
+    const lease = async () => Number((await one('SELECT lease_until FROM support_replay_channels WHERE name = ?', [channelName]))!.lease_until)
+    travelTo(leaseStarted + 29999)
+    check((await request(widget + '/realtime/replay', 'POST', { checkpoint: finite.data.cursor }, session.token, 'https://customer.example')).status === 200 && await lease() === leaseStarted + 120000, 'replay cannot renew a lease before 30 seconds')
+    travelTo(leaseStarted + 30000)
+    check((await request(widget + '/realtime/replay', 'POST', { checkpoint: finite.data.cursor }, session.token, 'https://customer.example')).status === 200 && await lease() === leaseStarted + 150000, 'replay renews at 30 seconds for exactly another 120 seconds')
+    for (const operation of ['replay', 'snapshot', 'stream']) {
+      travelTo(leaseStarted + 119999)
+      await query('UPDATE support_replay_channels SET lease_until = ? WHERE name = ?', [leaseStarted + 120000, channelName])
+      const remove = await boundaryTrigger('UPDATE support_replay_channels SET lease_until = 0 WHERE id = NEW.id')
+      try {
+        const boundary = await request(widget + '/realtime/' + operation, 'POST', operation === 'snapshot' ? {} : { checkpoint: finite.data.cursor }, session.token, 'https://customer.example')
+        check(boundary.status === 409 && boundary.data.cursor === null && boundary.data.snapshotRequired === true && !('checkpoint' in boundary.data) && !('snapshot' in boundary.data), operation + ' expiry after live selection returns the recovery envelope without state or advancement')
+        check(await lease() === leaseStarted + 120000, 'expiry failure rolls back the trigger and cannot renew the persisted lease')
+      }
+      finally { await remove() }
+    }
+  }
+  finally {
+    useRealTime()
+    await query('UPDATE support_replay_channels SET lease_until = ? WHERE name = ?', [Date.now() + 120000, channelName])
+  }
   const ahead = await request(widget + '/realtime/replay', 'POST', { checkpoint: { ...finite.data.cursor, seq: finite.data.cursor.seq + 1 } }, session.token, 'https://customer.example')
   check(ahead.status === 409 && ahead.data.cursor === null && ahead.data.snapshotRequired, 'cursor ahead requires new snapshot without advancement')
   await query('UPDATE support_replay_channels SET lease_until = ? WHERE name = ?', [Date.now() - 1, `support.customer.${project.id}.${session.contact.id}`])
@@ -144,6 +183,31 @@ try {
     return snap
   }))
   for (const snap of races) check(snap.status === 200 && snap.data.snapshot.detail.messages.length - baseMessages === snap.data.checkpoint.seq - baseSnapshot.data.checkpoint.seq, 'snapshot and matching head are atomic against simultaneous public mutations')
+  // Test-only SQL triggers synchronize after projection reads, at the matching head read.
+  // Two live-lease name updates reach the head read, including a newly leased enrollment.
+  const lateSession = (await request(prefix + '/sessions', 'POST', { externalId: 'realtime-late-enrollment' }, keys.ingestKey)).data
+  for (const scenario of ['expiry', 'origin', 'membership', 'new-enrollment']) {
+    const isNew = scenario === 'new-enrollment', isAgent = scenario === 'membership'
+    const credential = isNew ? lateSession.token : session.token
+    const targetChannel = isAgent ? `support.agent.${project.id}` : isNew ? `support.customer.${project.id}.${lateSession.contact.id}` : channelName
+    const mutation = scenario === 'origin'
+      ? `UPDATE support_projects SET allowed_origins = '[]' WHERE id = ${Number(project.id)}`
+      : isAgent ? `UPDATE support_memberships SET status = 'revoked' WHERE workspace_id = ${Number(workspaceId)} AND user_id = ${ownerId}`
+        : `UPDATE support_customer_sessions SET expires_at = 0 WHERE digest = '${digest(credential)}'`
+    await query('CREATE TABLE realtime_boundary_steps (steps INTEGER NOT NULL)')
+    await query('INSERT INTO realtime_boundary_steps (steps) VALUES (0)')
+    const remove = await boundaryTrigger(`UPDATE realtime_boundary_steps SET steps = steps + 1; ${mutation} AND (SELECT steps FROM realtime_boundary_steps) = 2`, targetChannel)
+    try {
+      const refused = isAgent ? await browserRequest(agent + '/realtime/snapshot', { conversationId: conversation.id }) : await request(widget + '/realtime/snapshot', 'POST', isNew ? {} : { conversationId: conversation.id }, credential, 'https://customer.example')
+      check(refused.status === (scenario === 'expiry' || isNew ? 401 : 403) && !('snapshot' in refused.data) && !('checkpoint' in refused.data) && !('cursor' in refused.data) && !('snapshotRequired' in refused.data), 'post-read ' + scenario + ' change discards snapshot and checkpoint without masking authority failure')
+      if (!isAgent) check(refused.headers.get('access-control-allow-origin') === 'https://customer.example', 'error CORS follows the current allowlist restored by transaction rollback')
+    }
+    finally { await remove(); await query('DROP TABLE realtime_boundary_steps') }
+    if (isNew) {
+      const noEnrollment = await request(widget + '/realtime/replay', 'POST', { checkpoint }, credential, 'https://customer.example')
+      check(noEnrollment.status === 409 && noEnrollment.data.cursor === null && noEnrollment.data.snapshotRequired, 'failed post-read authorization rolls back a newly created enrollment')
+    }
+  }
   // A held workspace lock makes the HTTP principal stale before read/enrollment.
   let started!: () => void, release!: () => void
   const held = new Promise<void>(resolve => { started = resolve }), gate = new Promise<void>(resolve => { release = resolve })
@@ -163,6 +227,39 @@ try {
     let timer: ReturnType<typeof setTimeout> | undefined
     try { return await Promise.race([reader.read(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('SSE read deadline')), timeout) })]) }
     finally { clearTimeout(timer) }
+  }
+  const openAgentStream = async (cursor: any, credentialCookie: string) => {
+    const abort = new AbortController()
+    const response = await fetch(base + agent + '/realtime/stream', { method: 'POST', signal: abort.signal, headers: { 'content-type': 'application/json', origin: 'https://operator.example', cookie: savedCookie + '; ' + credentialCookie, 'x-csrf-token': csrfToken }, body: JSON.stringify({ checkpoint: cursor }) })
+    check(response.status === 200 && response.headers.get('content-type') === 'text/event-stream', 'current native browser credential opens agent SSE')
+    const reader = response.body!.getReader()
+    check(new TextDecoder().decode((await read(reader)).value).includes(': connected'), 'agent SSE is established before authority changes')
+    return { abort, reader }
+  }
+  // Established streams must read current primary authority on both delivery and idle heartbeat.
+  for (const transition of ['membership', 'token', 'password', 'session']) {
+    for (const checkpointKind of ['event', 'heartbeat']) {
+      const credentialLogin = await request('/login', 'POST', { email: 'owner@example.test', password: 'SecureSupport2026!' })
+      const credential = credentialLogin.data.token ?? credentialLogin.data.access_token ?? credentialLogin.data.data?.token
+      const browserSession = transition === 'session' ? (await startBrowserSession(credential))! : undefined
+      const credentialCookie = browserSession ? 'session_id=' + encodeURIComponent(browserSession.sessionId) : authCookie(credential).split(';')[0]!
+      const enrolled = await browserRequest(agent + '/realtime/snapshot', {})
+      const established = await openAgentStream(enrolled.data.checkpoint, credentialCookie)
+      try {
+        if (transition === 'membership') await query("UPDATE support_memberships SET status = 'revoked' WHERE workspace_id = ? AND user_id = ?", [workspaceId, ownerId])
+        if (transition === 'token') await Auth.revokeToken(credential)
+        if (transition === 'password') await query('UPDATE users SET password_changed_at = ? WHERE id = ?', ['2035-01-01T00:00:00.000', ownerId])
+        if (browserSession) await sessionLogout(browserSession.sessionId)
+        if (checkpointKind === 'event') await supportReplayInvalidations().publish(`support.agent.${project.id}`)
+        check((await read(established.reader, checkpointKind === 'heartbeat' ? 18000 : 3000)).done === true, 'agent ' + transition + ' revocation closes established SSE at ' + checkpointKind + ' without state or error events')
+      }
+      finally {
+        established.abort.abort(); await established.reader.cancel().catch(() => {})
+        if (transition === 'membership') await query("UPDATE support_memberships SET status = 'active' WHERE workspace_id = ? AND user_id = ?", [workspaceId, ownerId])
+        if (transition === 'password') await query('UPDATE users SET password_changed_at = NULL WHERE id = ?', [ownerId])
+        if (browserSession) await sessionLogout(browserSession.sessionId)
+      }
+    }
   }
   const current = await request(widget + '/realtime/snapshot', 'POST', {}, session.token, 'https://customer.example')
   const publicStream = await openStream(current.data.checkpoint)
@@ -223,6 +320,10 @@ try {
   await query('DELETE FROM support_replay_events WHERE channel_id IN (SELECT id FROM support_replay_channels WHERE name = ?) AND seq = ?', [`support.customer.${project.id}.${session.contact.id}`, snapshotBeforeGap.data.checkpoint.seq])
   const storageGap = await request(widget + '/realtime/replay', 'POST', { checkpoint: { ...snapshotBeforeGap.data.checkpoint, seq: snapshotBeforeGap.data.checkpoint.seq - 1 } }, session.token, 'https://customer.example')
   check(storageGap.status === 503 && storageGap.data.cursor === null && storageGap.data.snapshotRequired, 'unexplained storage gap fails boundedly without skipping sequence')
+  const beforeRetention = await request(widget + '/realtime/snapshot', 'POST', {}, session.token, 'https://customer.example')
+  for (let index = 0; index < 101; index++) await reply(fullProject, conversation.id, { body: 'Retained public ' + index, idempotencyKey: 'rt-retention-' + index }, { userId: ownerId })
+  const retainedGap = await request(widget + '/realtime/replay', 'POST', { checkpoint: beforeRetention.data.checkpoint }, session.token, 'https://customer.example')
+  check(retainedGap.status === 409 && retainedGap.data.cursor === null && retainedGap.data.snapshotRequired === true, 'native count-retention gap uses the same recovery envelope without advancing the omitted prefix')
   const bodyBefore = await request(widget + '/realtime/snapshot', 'POST', { conversationId: conversation.id }, session.token, 'https://customer.example')
   const huge = await insert('support_messages', { workspace_id: workspaceId, project_id: project.id, conversation_id: conversation.id, contact_id: Number(session.contact.id), body: '界'.repeat(100000), visibility: 'public', author_type: 'agent' })
   const oversized = await request(widget + '/realtime/snapshot', 'POST', { conversationId: conversation.id }, session.token, 'https://customer.example')
@@ -317,6 +418,25 @@ try {
   finally {
     await Promise.all(streams.map(async entry => { entry.abort.abort(); await entry.reader.cancel().catch(() => {}) }))
   }
+  // Native public subscriptions prove the physical bound and capacity reuse after routed cleanup.
+  // This observes bus registrations; it does not claim introspection of native timers or hooks.
+  const releases: (() => void)[] = []
+  const capacitySnapshot = await request(widget + '/realtime/snapshot', 'POST', {}, session.token, 'https://customer.example')
+  try {
+    for (let index = 0; index < 4096; index++) releases.push(await supportReplayInvalidations().subscribe({ channels: [channelName], onInvalidate() {} }))
+    const atCapacity = await fetch(base + widget + '/realtime/stream', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://customer.example', authorization: 'Bearer ' + session.token }, body: JSON.stringify({ checkpoint: capacitySnapshot.data.checkpoint }) })
+    try {
+      check(atCapacity.status === 503, 'native 4096 physical subscription cap refuses a routed stream after prior abort/backpressure cleanup')
+      const refused = await atCapacity.json() as any
+      check(refused.error?.code === 'realtime_unavailable' && Buffer.byteLength(JSON.stringify(refused)) < 1024, 'capacity failure is a bounded public error without state or enrollment counts')
+    }
+    finally { await atCapacity.body?.cancel().catch(() => {}) }
+    releases.pop()!()
+    const reused = await openStream(capacitySnapshot.data.checkpoint)
+    await read(reused.reader)
+    reused.abort.abort(); await reused.reader.cancel().catch(() => {})
+  }
+  finally { for (const releaseSubscription of releases) releaseSubscription() }
   let escapedOperator: (() => Promise<unknown>) | undefined
   await replayOperatorTransaction(async () => {
     const resource = new (await import('node:async_hooks')).AsyncResource('operator-owner-test')
