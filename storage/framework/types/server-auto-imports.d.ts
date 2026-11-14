@@ -69,6 +69,7 @@ declare global {
   const Challenge: typeof import('../../../app/Models/Challenge')['default']
   const Channel: typeof import('../../../app/Models/Channel')['default']
   const ChannelConsent: typeof import('../../../app/Models/ChannelConsent')['default']
+  const ChannelConversation: typeof import('../../../app/Models/ChannelConversation')['default']
   const ChannelCursor: typeof import('../../../app/Models/ChannelCursor')['default']
   const ChannelDelivery: typeof import('../../../app/Models/ChannelDelivery')['default']
   const ChannelThread: typeof import('../../../app/Models/ChannelThread')['default']

@@ -34,6 +34,7 @@
     "Challenge": true,
     "Channel": true,
     "ChannelConsent": true,
+    "ChannelConversation": true,
     "ChannelCursor": true,
     "ChannelDelivery": true,
     "ChannelThread": true,

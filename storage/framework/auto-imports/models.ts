@@ -10,6 +10,7 @@ export { default as BusinessCalendar } from '../../../app/Models/BusinessCalenda
 export { default as Challenge } from '../../../app/Models/Challenge'
 export { default as Channel } from '../../../app/Models/Channel'
 export { default as ChannelConsent } from '../../../app/Models/ChannelConsent'
+export { default as ChannelConversation } from '../../../app/Models/ChannelConversation'
 export { default as ChannelCursor } from '../../../app/Models/ChannelCursor'
 export { default as ChannelDelivery } from '../../../app/Models/ChannelDelivery'
 export { default as ChannelThread } from '../../../app/Models/ChannelThread'
