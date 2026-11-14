@@ -2,6 +2,23 @@
 {"tag":"hq-support-messenger","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"opened":{"type":"boolean","default":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"thread":{"type":"array","attribute":false,"reflect":false},"conversationId":{"type":"string","attribute":false,"reflect":false},"heading":{"type":"string","default":"How can we help?"}},"events":{"ready":{},"opened":{},"closed":{},"unread":{},"delivery":{},"error":{}}}
 </script>
 <script client>
+interface Message { id: string, body: string, author_type: string }
+interface ComponentState {
+  thread: Message[]
+  _generation?: number
+  _abort?: AbortController
+  _poll?: ReturnType<typeof setInterval>
+  _refreshing?: boolean
+  _unread?: number
+  _sendKey?: string | null
+  _draft?: string
+}
+interface ResponseError { message?: string, error?: { message?: string } | string }
+interface SessionResponse { token: string }
+interface ConversationsResponse { conversations?: { id: string }[] }
+interface ConversationResponse { messages?: Message[] }
+interface CreatedConversation { conversation?: { id: string }, id?: string }
+
 function onConnect() {
   this._generation = this._generation || 0
 }
@@ -23,15 +40,15 @@ async function boot(options: { url?: string, project?: string, token?: string } 
   this.pending = true
   this.notice = ''
   try {
-    const session = await this.request('/session', { method: 'POST', body: JSON.stringify({ token: suppliedToken || undefined }) }, false)
+    const session = await this.request<SessionResponse>('/session', { method: 'POST', body: JSON.stringify({ token: suppliedToken || undefined }) }, false)
     if (generation !== this._generation) return
     this.sessionToken = session.token
-    const result = await this.request('/conversations')
+    const result = await this.request<ConversationsResponse>('/conversations')
     if (generation !== this._generation) return
     const conversation = result.conversations?.[0]
     if (conversation) {
       this.conversationId = String(conversation.id)
-      const detail = await this.request('/conversations/' + encodeURIComponent(this.conversationId))
+      const detail = await this.request<ConversationResponse>('/conversations/' + encodeURIComponent(this.conversationId))
       if (generation !== this._generation) return
       this.thread = detail.messages || []
     }
@@ -40,8 +57,8 @@ async function boot(options: { url?: string, project?: string, token?: string } 
     this.emit('unread', { count: 0 })
   }
   catch (error) {
-    if (generation !== this._generation || error.name === 'AbortError') return
-    this.notice = error.message || 'Support is unavailable. Please try again.'
+    if (generation !== this._generation || (error instanceof Error && error.name === 'AbortError')) return
+    this.notice = error instanceof Error ? error.message : 'Support is unavailable. Please try again.'
     this.emit('error', { message: this.notice })
     throw error
   }
@@ -65,7 +82,7 @@ async function update(options: { url?: string, project?: string, token?: string 
 }
 async function track(event: { event: string, attributes?: Record<string, unknown>, idempotencyKey?: string }): Promise<{ id: string, accepted: boolean }> {
   if (!this.sessionToken) throw new Error('Boot the messenger before tracking events.')
-  return this.request('/events', { method: 'POST', body: JSON.stringify({ ...event, idempotencyKey: event.idempotencyKey || crypto.randomUUID() }) })
+  return this.request<{ id: string, accepted: boolean }>('/events', { method: 'POST', body: JSON.stringify({ ...event, idempotencyKey: event.idempotencyKey || crypto.randomUUID() }) })
 }
 function shutdown(): void {
   this._generation = (this._generation || 0) + 1
@@ -82,7 +99,7 @@ function shutdown(): void {
   this._sendKey = null
   this._draft = ''
 }
-async function request(path, options = {}, authenticated = true) {
+async function request<T = unknown>(path: string, options: RequestInit = {}, authenticated = true): Promise<T> {
   const response = await fetch(this.apiUrl + '/api/widget/projects/' + encodeURIComponent(this.projectId) + path, {
     ...options,
     credentials: 'omit',
@@ -90,12 +107,12 @@ async function request(path, options = {}, authenticated = true) {
     signal: this._abort?.signal,
     headers: { 'Content-Type': 'application/json', ...(authenticated ? { Authorization: 'Bearer ' + this.sessionToken } : {}) },
   })
-  const result = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(result.message || result.error?.message || (typeof result.error === 'string' ? result.error : '') || 'Support request failed (' + response.status + ').')
+  const result: T & ResponseError = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result.message || (typeof result.error === 'object' ? result.error?.message : '') || (typeof result.error === 'string' ? result.error : '') || 'Support request failed (' + response.status + ').')
   return result
 }
-function editDraft(event) {
-  this._draft = event.target.value
+function editDraft(event: Event) {
+  if (event.target instanceof HTMLTextAreaElement) this._draft = event.target.value
 }
 async function refresh(): Promise<void> {
   if (!this.sessionToken || this.pending || this._refreshing) return
@@ -103,7 +120,7 @@ async function refresh(): Promise<void> {
   this._refreshing = true
   try {
     if (!this.conversationId) return
-    const detail = await this.request('/conversations/' + encodeURIComponent(this.conversationId))
+    const detail = await this.request<ConversationResponse>('/conversations/' + encodeURIComponent(this.conversationId))
     if (generation !== this._generation) return
     const next = detail.messages || []
     if (JSON.stringify(next) !== JSON.stringify(this.thread)) {
@@ -115,12 +132,13 @@ async function refresh(): Promise<void> {
     }
   }
   catch (error) {
-    if (generation === this._generation && error.name !== 'AbortError') this.emit('error', { message: error.message || 'Messages could not be refreshed.' })
+    if (generation === this._generation && !(error instanceof Error && error.name === 'AbortError')) this.emit('error', { message: error instanceof Error ? error.message : 'Messages could not be refreshed.' })
   }
   finally { if (generation === this._generation) this._refreshing = false }
 }
-async function send(event) {
+async function send(event: Event) {
   event.preventDefault()
+  if (!(event.target instanceof HTMLFormElement)) return
   if (this.pending || !this.sessionToken) return
   const form = event.target
   const body = String(new FormData(form).get('body') || '').trim()
@@ -133,7 +151,7 @@ async function send(event) {
     const idempotencyKey = this._sendKey || crypto.randomUUID()
     this._sendKey = idempotencyKey
     if (!this.conversationId) {
-      const result = await this.request('/conversations', { method: 'POST', body: JSON.stringify({ subject: body.slice(0, 120), body, idempotencyKey }) })
+      const result = await this.request<CreatedConversation>('/conversations', { method: 'POST', body: JSON.stringify({ subject: body.slice(0, 120), body, idempotencyKey }) })
       if (generation !== this._generation) return
       this.conversationId = String(result.conversation?.id || result.id)
     }
@@ -144,14 +162,14 @@ async function send(event) {
     this._sendKey = null
     this._draft = ''
     form.reset()
-    const detail = await this.request('/conversations/' + encodeURIComponent(this.conversationId))
+    const detail = await this.request<ConversationResponse>('/conversations/' + encodeURIComponent(this.conversationId))
     if (generation !== this._generation) return
     this.thread = detail.messages || []
     this.emit('delivery', { conversationId: this.conversationId, status: 'sent' })
   }
   catch (error) {
-    if (generation !== this._generation || error.name === 'AbortError') return
-    this.notice = error.message || 'Your message could not be sent. Please retry.'
+    if (generation !== this._generation || (error instanceof Error && error.name === 'AbortError')) return
+    this.notice = error instanceof Error ? error.message : 'Your message could not be sent. Please retry.'
     this.emit('error', { message: this.notice })
   }
   finally {

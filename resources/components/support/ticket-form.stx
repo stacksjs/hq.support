@@ -2,6 +2,26 @@
 {"tag":"hq-support-ticket-form","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"typeId":{"type":"string","default":""},"types":{"type":"array","attribute":false,"reflect":false},"fields":{"type":"array","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"loading":{"type":"boolean","attribute":false,"reflect":false},"blocked":{"type":"boolean","default":true,"attribute":false,"reflect":false},"ready":{"type":"boolean","attribute":false,"reflect":false},"loadError":{"type":"boolean","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false}},"events":{"delivery":{},"error":{},"ready":{}}}
 </script>
 <script client>
+interface PublicField { key: string, label: string, type: string, visibility?: string, required?: boolean, default?: unknown, options?: string[] }
+interface PublicType { id: string, name: string, fields: PublicField[] }
+interface InputField { key: string, label: string, type: string, required: boolean, value: string, options: { value: string, selected: boolean }[] }
+interface ComponentState {
+  types: PublicType[]
+  fields: InputField[]
+  _observe?: () => void
+  _identity?: string
+  _currentType?: string
+  _generation?: number
+  _typesAbort?: AbortController
+  _submitAbort?: AbortController
+  _drafts?: Record<string, Record<string, string>>
+  _subject?: string
+  _body?: string
+  _key?: string | null
+  _fingerprint?: string
+}
+interface FormsResponse { types?: PublicType[], error?: { message?: string }, message?: string }
+
 function onConnect() {
   this._observe = () => { this.configure().catch(() => {}) }
   this.addEventListener('stx:updated', this._observe)
@@ -36,7 +56,7 @@ async function configure(force = false) {
   this._typesAbort = new AbortController()
   try {
     const response = await fetch(this.apiUrl.replace(/\/$/, '') + '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/ticket-types', { credentials: 'omit', signal: this._typesAbort.signal, headers: { Authorization: 'Bearer ' + this.sessionToken } })
-    const data = await response.json()
+    const data: FormsResponse = await response.json()
     if (!response.ok) throw new Error(data.error?.message || data.message || 'Ticket forms could not be loaded.')
     if (generation !== this._generation) return
     this.types = (data.types || []).map(type => ({ id: String(type.id), name: String(type.name), fields: (type.fields || []).filter(field => field.visibility === 'customer') }))
@@ -46,11 +66,11 @@ async function configure(force = false) {
     this.emit('ready', { types: this.types.length })
   }
   catch (error) {
-    if (generation !== this._generation || error.name === 'AbortError') return
+    if (generation !== this._generation || (error instanceof Error && error.name === 'AbortError')) return
     this.types = []
     this.fields = []
     this.loadError = true
-    this.notice = error.message || 'Ticket forms could not be loaded.'
+    this.notice = error instanceof Error ? error.message : 'Ticket forms could not be loaded.'
     this.emit('error', { message: this.notice })
   }
   finally { if (generation === this._generation) { this.loading = false; this.blocked = !this.ready } }
@@ -67,7 +87,7 @@ function updateFields() {
   })
   this._currentType = this.typeId
 }
-function capture(form) {
+function capture(form: HTMLFormElement | null | undefined) {
   if (!form) return
   const values = new FormData(form)
   this._subject = String(values.get('subject') || '')
@@ -75,15 +95,16 @@ function capture(form) {
   this._drafts = this._drafts || {}
   this._drafts[this.typeId] = Object.fromEntries(this.fields.map(field => [field.key, String(values.get('custom__' + field.key) || '')]))
 }
-function edit(event) { this.capture(event.target.form) }
-function chooseType(event) { this.capture(event.target.form); this.typeId = String(event.target.value); this.updateFields() }
-async function submit(event) {
+function edit(event: Event) { if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) this.capture(event.target.form) }
+function chooseType(event: Event) { if (!(event.target instanceof HTMLSelectElement)) return; this.capture(event.target.form); this.typeId = event.target.value; this.updateFields() }
+async function submit(event: Event) {
   event.preventDefault()
+  if (!(event.target instanceof HTMLFormElement)) return
   if (this.pending || !this.ready) return
   if (!this.sessionToken || !this.projectId) { this.notice = 'Connect a customer session before submitting a ticket.'; return }
   this.capture(event.target)
   this.updateFields()
-  const customFields = {}
+  const customFields: Record<string, string | number | boolean> = {}
   try {
     for (const field of this.fields) {
       const value = field.value
@@ -97,7 +118,7 @@ async function submit(event) {
       else customFields[field.key] = value
     }
   }
-  catch (error) { this.notice = error.message; this.emit('error', { message: this.notice }); return }
+  catch (error) { this.notice = error instanceof Error ? error.message : 'Your ticket could not be submitted.'; this.emit('error', { message: this.notice }); return }
   const payload = { title: this._subject, description: this._body, typeId: this.typeId || undefined, customFields }
   const fingerprint = JSON.stringify(payload)
   if (fingerprint !== this._fingerprint) { this._fingerprint = fingerprint; this._key = crypto.randomUUID() }
@@ -120,7 +141,7 @@ async function submit(event) {
     this.notice = 'Your ticket has been submitted.'
     this.emit('delivery', { ticket: data.ticket || data })
   }
-  catch (error) { if (generation !== this._generation || error.name === 'AbortError') return; this.notice = error.message; this.emit('error', { message: this.notice }) }
+  catch (error) { if (generation !== this._generation || (error instanceof Error && error.name === 'AbortError')) return; this.notice = error instanceof Error ? error.message : 'Your ticket could not be submitted.'; this.emit('error', { message: this.notice }) }
   finally { if (generation === this._generation) { this.pending = false; this.blocked = !this.ready } }
 }
 function shutdown(): void {
@@ -142,7 +163,7 @@ function shutdown(): void {
   this.blocked = true
   this.notice = ''
 }
-function onDisconnect() { this.removeEventListener('stx:updated', this._observe); this.shutdown() }
+function onDisconnect() { if (this._observe) this.removeEventListener('stx:updated', this._observe); this.shutdown() }
 </script>
 <template>
 <form @submit.prevent="submit" @input="edit"><h2>Get help from the team</h2><fieldset :disabled="this.blocked">@if(this.types.length > 0)<label for="ticket-type">Request type</label><select id="ticket-type" name="type" @change="chooseType">@foreach(this.types as type)@if(type.id === this.typeId)<option value="{{ type.id }}" selected>{{ type.name }}</option>@else<option value="{{ type.id }}">{{ type.name }}</option>@endif@endforeach</select>@endif<label for="ticket-subject">Subject</label><input id="ticket-subject" name="subject" required maxlength="200" placeholder="What do you need help with?" value="{{ this._subject || '' }}"><label for="ticket-body">Details</label><textarea id="ticket-body" name="body" required maxlength="10000" rows="5" placeholder="Include the steps you took and what you expected.">{{ this._body || '' }}</textarea>

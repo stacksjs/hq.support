@@ -2,6 +2,10 @@
 {"tag":"hq-support-ticket-status","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"ticketId":{"type":"string","default":""},"ticket":{"type":"object","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false}},"events":{"loaded":{},"error":{}}}
 </script>
 <script client>
+type CustomerTicket = { id?: string, title?: string, status?: string }
+interface ComponentState { _abort?: AbortController, ticket: CustomerTicket }
+type TicketResponse = CustomerTicket & { ticket?: CustomerTicket, error?: { message?: string }, message?: string }
+
 async function refresh() {
   if (!this.ticketId || !this.projectId || !this.sessionToken) { this.notice = 'A customer session and ticket ID are required.'; return }
   this._abort?.abort()
@@ -9,15 +13,15 @@ async function refresh() {
   this.pending = true
   try {
     const response = await fetch(this.apiUrl.replace(/\/$/, '') + '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/tickets/' + encodeURIComponent(this.ticketId), { credentials: 'omit', signal: this._abort.signal, headers: { Authorization: 'Bearer ' + this.sessionToken } })
-    const data = await response.json()
+    const data: TicketResponse = await response.json()
     if (!response.ok) throw new Error(data.error?.message || data.message || 'Ticket could not be loaded.')
-    this.ticket = data.ticket || data
+    this.ticket = data.ticket || { id: data.id, title: data.title, status: data.status }
     this.notice = ''
     this.emit('loaded', { ticket: this.ticket })
   }
   catch (error) {
-    if (error.name === 'AbortError') return
-    this.notice = error.message
+    if (error instanceof Error && error.name === 'AbortError') return
+    this.notice = error instanceof Error ? error.message : 'Ticket could not be loaded.'
     this.emit('error', { message: this.notice })
   }
   finally { this.pending = false }
