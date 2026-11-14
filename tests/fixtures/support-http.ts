@@ -77,6 +77,13 @@ try {
   check(await usage(workspaceId, 'conversations') === 1 && !await one("SELECT id FROM support_outbox WHERE kind = 'rollback.probe'"), 'explicit transaction rollback covers global query helper and insert on same connection')
   const invalidConversation = await request(prefix + '/conversations', 'POST', { ...payload, body: '', idempotencyKey: 'invalid-body' }, keys.ingestKey)
   check(invalidConversation.status === 422 && await usage(workspaceId, 'conversations') === 1 && Number((await one('SELECT COUNT(*) AS n FROM support_conversations WHERE project_id = ?', [project.id]))?.n) === 1, 'HTTP body validation rolls back conversation and quota reservation')
+  const ticketCountBeforeInvalid = Number((await one('SELECT COUNT(*) AS count FROM support_tickets WHERE workspace_id = ?', [workspaceId]))!.count)
+  const outboxBeforeInvalid = Number((await one('SELECT COUNT(*) AS count FROM support_outbox WHERE workspace_id = ?', [workspaceId]))!.count)
+  for (const [invalidIndex, invalidId] of [true, false, null, [session.data.contact.id], {}, `${session.data.contact.id}e0`].entries()) {
+    const invalidTicket = await request(`${agent}/tickets`, 'POST', { contactId: invalidId, title: 'Malformed contact must not create a ticket', description: 'Validation fixture', idempotencyKey: `invalid-ticket-id-${invalidIndex}` }, token)
+    check(invalidTicket.status === 422 && invalidTicket.data.error.code === 'invalid_identifier', `existing ticket HTTP mutation rejects coerced contact ID ${JSON.stringify(invalidId)}`)
+  }
+  check(Number((await one('SELECT COUNT(*) AS count FROM support_tickets WHERE workspace_id = ?', [workspaceId]))!.count) === ticketCountBeforeInvalid && Number((await one('SELECT COUNT(*) AS count FROM support_outbox WHERE workspace_id = ?', [workspaceId]))!.count) === outboxBeforeInvalid, 'invalid core contact identifiers leave tickets and transactional outbox unchanged')
   const duplicate = await request(prefix + '/conversations', 'POST', payload, keys.ingestKey)
   check(duplicate.data.conversation.id === conversation.id && await usage(workspaceId, 'conversations') === 1, 'retry returns same conversation, allowance counts once')
   check((await request(prefix + '/conversations', 'POST', { ...payload, body: 'different' }, keys.ingestKey)).status === 409, 'idempotency payload mismatch denied')

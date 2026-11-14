@@ -135,7 +135,7 @@ export async function saveAgent(workspaceId: number, input: Row, actorId: number
     await member(userId, workspaceId)
     const previous = await one('SELECT * FROM support_routing_agents WHERE workspace_id = ? AND user_id = ?', [workspaceId, userId])
     if (!['owner', 'admin'].includes(String(principal.role)) && (actorId !== userId || input.capacity !== undefined)) fail(403, 'forbidden', 'Only owners and admins may change capacity or other agents.')
-    const availability = input.availability ?? previous?.availability ?? 'available', capacity = input.capacity ?? Number(previous?.capacity ?? 10)
+    const availability = input.availability === undefined ? previous?.availability ?? 'available' : input.availability, capacity = input.capacity === undefined ? Number(previous?.capacity ?? 10) : input.capacity
     if (!['available', 'away', 'offline'].includes(String(availability)) || typeof capacity !== 'number' || !Number.isSafeInteger(capacity) || capacity < 1 || capacity > 1000) fail(422, 'invalid_input', 'Use available/away/offline and a capacity from 1 to 1000.')
     if (await activeLoad(workspaceId, userId) > capacity) fail(409, 'capacity_below_load', 'Close or reassign open conversations before reducing capacity below current load.')
     if (!previous) return await insert('support_routing_agents', { workspace_id: workspaceId, user_id: userId, availability, capacity })
@@ -147,7 +147,7 @@ export async function saveInbox(project: Row, input: Row, userId: number, id?: u
   return await workspaceTransaction(Number(project.workspace_id), async () => {
     await member(userId, Number(project.workspace_id), ['owner', 'admin'])
     const previous = id === undefined ? undefined : await inbox(project, id, false)
-    const selected = await team(Number(project.workspace_id), input.teamId ?? previous?.team_id)
+    const selected = await team(Number(project.workspace_id), input.teamId === undefined ? previous?.team_id : input.teamId)
     if (previous && Number(previous.team_id) !== Number(selected.id)) fail(409, 'inbox_team_immutable', 'Create a new inbox to change its support team.')
     const name = text(input.name ?? previous?.name, 'name', 100), active = bool(input.active, previous ? Boolean(previous.active) : true), isDefault = bool(input.isDefault, previous ? Boolean(previous.is_default) : false), mode = input.assignmentMode ?? previous?.assignment_mode ?? 'round_robin'
     if (!['manual', 'round_robin'].includes(String(mode))) fail(422, 'invalid_input', 'Use manual or round_robin assignment.')

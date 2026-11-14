@@ -7,6 +7,7 @@ export function text(value: unknown, name: string, max = 200): string {
   return value.trim()
 }
 export function identifier(value: unknown): number {
+  if (typeof value !== 'number' && !(typeof value === 'string' && /^\d+$/.test(value))) fail(422, 'invalid_identifier', 'A positive integer identifier is required.')
   const id = Number(value)
   if (!Number.isSafeInteger(id) || id <= 0) fail(422, 'invalid_identifier', 'A positive integer identifier is required.')
   return id
