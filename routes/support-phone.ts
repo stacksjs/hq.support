@@ -1,3 +1,4 @@
+import { route } from '@stacksjs/router'
 import { phoneAction } from '../app/Actions/Support/PhoneAction'
 
 route.get('/support/projects/{project}/phone/capabilities', phoneAction('capabilities', 'GET')).middleware('auth')

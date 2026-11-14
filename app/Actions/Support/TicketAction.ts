@@ -1,3 +1,4 @@
+import { Action } from '@stacksjs/actions/runtime'
 import type { RequestInstance } from '@stacksjs/types'
 import { SupportError, fail } from '../../Support/errors'
 import { agentProject, object } from '../../Support/service'

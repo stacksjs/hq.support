@@ -1,3 +1,4 @@
+import { route } from '@stacksjs/router'
 import { emailAction } from '../app/Actions/Support/EmailAction'
 import { registerSupportEmail } from '../app/Support/support-email'
 registerSupportEmail()
