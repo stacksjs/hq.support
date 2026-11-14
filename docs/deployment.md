@@ -4,6 +4,24 @@ HQ.support targets the shared Stacks Hetzner host through Buddy and rpx, with
 its own PostgreSQL owner/database and Redis namespaces. The web and API processes
 listen on loopback ports 3340 and 3348. Local development uses the same port block.
 
+Buddy's explicit staging target has its own `hq-support-staging` release and state
+directories, `hq_support_staging` database/role, Redis namespaces, ports 3350/3358,
+and `staging.hq.support` / `api.staging.hq.support` hostnames. Development deploys
+use a third namespace and ports 3360/3368. `APP_DOMAIN` remains the registered
+base zone, `hq.support`, in every environment. The target selected by Buddy
+determines these values; changing `APP_ENV` in a browser request cannot select a
+deployment. `tests/deployment-config.test.ts` checks the three blueprints in
+separate processes, matching actual Buddy invocations.
+
+The shared owner currently has no staging server. Native `attachTo: 'stacks'`
+requires a server labelled for that exact owner and environment; it does not fall
+back to the production host. Provision and qualify the isolated staging target
+before a real staging deploy. PostgreSQL must have pgvector available, and an
+operator must enable it in the app-owned database before the app role runs the
+generated migrations. The observed shared production PostgreSQL does not yet
+have that extension available. A local pgvector test server does not qualify
+the production host.
+
 The application is under development. The production workflow requires successful
 CI for the exact main commit and, for a real deploy, a complete matching
 `deployment/qualification.json`. `scripts/check-launch.ts` names every required

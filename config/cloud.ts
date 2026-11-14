@@ -2,23 +2,44 @@ import type { CloudConfig } from '@stacksjs/types'
 import type { CloudConfig as TsCloudConfig } from '@stacksjs/ts-cloud'
 import { env } from '@stacksjs/env'
 
-const domain = env.APP_DOMAIN || 'hq.support'
+// Buddy cache-busts this module with the explicitly selected deployment target.
+// A plain application import keeps the production blueprint; a target never
+// inherits another environment's domains, ports, database or release directory.
+const selected = new URL(import.meta.url).searchParams.get('env') || 'production'
+if (!['production', 'staging', 'development'].includes(selected)) throw new Error('Configure a supported HQ.support deployment environment.')
+const target = selected === 'staging' ? 'staging' : selected === 'development' ? 'development' : 'production'
+const suffix = target === 'production' ? '' : `-${target}`
+const zone = env.APP_DOMAIN || 'hq.support'
+const domain = `${target === 'production' ? '' : target === 'staging' ? 'staging.' : 'dev.'}${zone}`
+const database = `hq_support${target === 'production' ? '' : `_${target}`}`
+const webPort = target === 'production' ? 3340 : target === 'staging' ? 3350 : 3360
+const apiPort = webPort + 8
+const namespace = `hq-support${suffix}`
+function variablesFor(environment: 'production' | 'staging' | 'development') {
+  const databaseName = `hq_support${environment === 'production' ? '' : `_${environment}`}`
+  const prefix = `hq-support${environment === 'production' ? '' : `-${environment}`}`
+  return {
+    APP_ENV: environment, NODE_ENV: 'production', LOG_LEVEL: 'info',
+    DB_CONNECTION: 'postgres', DB_DATABASE: databaseName, DB_USERNAME: databaseName,
+    QUEUE_DRIVER: 'database', CACHE_DRIVER: 'redis',
+    QUEUE_PREFIX: `${prefix}:queue`, CACHE_PREFIX: `${prefix}:cache`,
+  }
+}
+const variables = variablesFor(target)
 
 /** Shared HQ host, isolated database, Redis namespaces and loopback processes. */
 export const tsCloud: TsCloudConfig = {
-  project: { name: 'hq-support', slug: 'hq-support', region: 'us-east-1' },
-  stateDir: 'storage/cloud',
+  project: { name: namespace, slug: namespace, region: 'us-east-1' },
+  stateDir: target === 'production' ? 'storage/cloud' : `storage/cloud/${target}`,
   cloud: { provider: 'hetzner', attachTo: 'stacks' },
   mode: 'server',
   environments: {
     production: {
       type: 'production', deployBranch: 'main', region: 'us-east-1',
-      variables: {
-        APP_ENV: 'production', NODE_ENV: 'production', LOG_LEVEL: 'info',
-        DB_CONNECTION: 'postgres', QUEUE_DRIVER: 'database', CACHE_DRIVER: 'redis',
-        QUEUE_PREFIX: 'hq-support:queue', CACHE_PREFIX: 'hq-support:cache',
-      },
+      variables: variablesFor('production'),
     },
+    staging: { type: 'staging', deployBranch: 'main', region: 'us-east-1', variables: variablesFor('staging') },
+    development: { type: 'development', region: 'us-east-1', variables: variablesFor('development') },
   },
   infrastructure: {
     compute: {
@@ -27,8 +48,8 @@ export const tsCloud: TsCloudConfig = {
       proxy: { engine: 'rpx', onDemandTls: true, onDemandTlsEmail: 'hello@hq.support' },
       managedServices: { postgres: true, redis: true },
     },
-    appDatabase: { engine: 'postgres', name: 'hq_support', username: 'hq_support', password: env.DB_PASSWORD, port: 5432 },
-    dns: { provider: 'porkbun', domain },
+    appDatabase: { engine: 'postgres', name: database, username: database, password: env.DB_PASSWORD, port: 5432 },
+    dns: { provider: 'porkbun', domain: zone },
     ssl: {
       enabled: true, provider: 'letsencrypt', redirectHttp: true,
       domains: [domain, `www.${domain}`, `api.${domain}`],
@@ -41,19 +62,19 @@ export const tsCloud: TsCloudConfig = {
   },
   sites: {
     main: {
-      root: '.', path: '/', domain, framework: 'stacks', port: 3340,
+      root: '.', path: '/', domain, framework: 'stacks', port: webPort,
       start: 'bun node_modules/@stacksjs/buddy/dist/serve-entry.js',
       preStart: ['bun install --frozen-lockfile', 'bun node_modules/@stacksjs/buddy/dist/cli.js migrate', 'bun node_modules/@stacksjs/buddy/dist/cli.js queue:table'],
       queues: [{ connection: 'database', queue: 'support-workflows,support-retention,support-imports,support-delivery,support-channels,support-sla,support-email,support-knowledge,default', processes: 2, timeout: 120, tries: 5, memory: 384, stopWaitSecs: 120 }],
       scheduler: true,
       memoryHigh: '768M', memoryMax: '1536M',
-      env: { APP_ENV: 'production', NODE_ENV: 'production', PORT: '3340', PORT_API: '3348', API_URL: 'http://127.0.0.1:3348' },
+      env: { ...variables, HOST: '127.0.0.1', PORT: String(webPort), PORT_API: String(apiPort), API_URL: `http://127.0.0.1:${apiPort}` },
     },
     api: {
-      root: '.', domain: `api.${domain}`, port: 3348,
+      root: '.', domain: `api.${domain}`, port: apiPort,
       start: 'bun node_modules/@stacksjs/actions/dist/serve/api.js',
       memoryHigh: '768M', memoryMax: '1536M',
-      env: { HOST: '127.0.0.1', APP_ENV: 'production', NODE_ENV: 'production', PORT_API: '3348' },
+      env: { ...variables, HOST: '127.0.0.1', PORT_API: String(apiPort) },
     },
     www: { domain: `www.${domain}`, redirect: `https://${domain}` },
   },

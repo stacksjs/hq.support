@@ -1,0 +1,44 @@
+import { expect, test } from 'bun:test'
+import { assertIsolatedOk, runIsolated } from '@stacksjs/testing'
+
+interface DeploymentProjection {
+  project: { slug: string }, stateDir: string,
+  main: { domain: string, port: number, env: Record<string, string> },
+  api: { domain: string, port: number, env: Record<string, string> },
+  www: { redirect: string }, dns: { domain: string },
+  database: { name: string, username: string }, sslDomains: string[],
+}
+
+test('deployment targets isolate domains, ports, database ownership and release state', async () => {
+  const configurations: DeploymentProjection[] = []
+  for (const target of ['production', 'staging', 'development']) {
+    // Each Buddy invocation selects one environment in a fresh process.
+    const result = await runIsolated('tests/fixtures/deployment-config.ts', { inheritEnv: false, env: { SUPPORT_DEPLOYMENT_TEST: target, APP_DOMAIN: 'hq.support' }, envFile: false, preload: [] })
+    assertIsolatedOk(result)
+    const config = JSON.parse(result.stdout.trim()) as DeploymentProjection
+    configurations.push(config)
+    const main = config.main, api = config.api
+    expect(main.domain).toBe(target === 'production' ? config.dns.domain : `${target === 'staging' ? 'staging' : 'dev'}.${config.dns.domain}`)
+    expect(api.domain).toBe(`api.${main.domain}`)
+    expect(main.env.HOST).toBe('127.0.0.1')
+    expect(api.env.HOST).toBe('127.0.0.1')
+    expect(main.env.APP_ENV).toBe(target)
+    expect(api.env.APP_ENV).toBe(target)
+    expect(main.env.DB_DATABASE).toBe(config.database.name)
+    expect(api.env.DB_USERNAME).toBe(config.database.username)
+    expect(main.env.PORT_API).toBe(String(api.port))
+    expect(main.env.API_URL).toBe(`http://127.0.0.1:${api.port}`)
+    expect(config.sslDomains).toContain(main.domain)
+    expect(config.www.redirect).toBe(`https://${main.domain}`)
+  }
+  for (const value of [
+    (config: DeploymentProjection) => config.project.slug,
+    (config: DeploymentProjection) => config.stateDir,
+    (config: DeploymentProjection) => config.main.port,
+    (config: DeploymentProjection) => config.api.port,
+    (config: DeploymentProjection) => config.database.name,
+    (config: DeploymentProjection) => config.database.username,
+    (config: DeploymentProjection) => config.main.env.CACHE_PREFIX,
+    (config: DeploymentProjection) => config.main.env.QUEUE_PREFIX,
+  ]) expect(new Set(configurations.map(value)).size).toBe(3)
+})
