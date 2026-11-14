@@ -1,0 +1,13 @@
+{
+  "name": "@stacksjs/hq-support-enterprise",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Commercial identity and governance modules for HQ.support.",
+  "license": "SEE LICENSE IN LICENSE.txt",
+  "files": [
+    "*.ts",
+    "LICENSE.txt",
+    "README.md"
+  ]
+}
