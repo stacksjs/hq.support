@@ -59,8 +59,8 @@ export function createCustomerSatisfaction() {
     }
     finally { if (!disposed && version === generation) workspace.pending.set(false) }
   }
-  function average() { return report()?.averageScore === null || !report() ? '—' : Number(report()!.averageScore).toFixed(2) }
-  function percent() { return report()?.satisfiedPercent === null || !report() ? '—' : `${Number(report()!.satisfiedPercent).toLocaleString()}%` }
+  function average() { return report()?.averageScore === null || !report() ? 'No responses' : Number(report()!.averageScore).toFixed(2) }
+  function percent() { return report()?.satisfiedPercent === null || !report() ? 'No responses' : `${Number(report()!.satisfiedPercent).toLocaleString()}%` }
   function destroy() { disposed = true; generation++; settings.set(null); base.set(null); report.set(null); enabled.set(false); question.set(''); workspace.destroy() }
   return { workspace, settings, base, report, enabled, question, period, settingsError, reportError, dirty, conflict, adoptSettings, load, boot, save, average, percent, destroy }
 }

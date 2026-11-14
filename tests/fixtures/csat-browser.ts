@@ -20,7 +20,7 @@ const root = resolve(import.meta.dir, '../..'), output = await mkdtemp(resolve(t
 let host: ReturnType<typeof Bun.serve> | undefined, boundary: ReturnType<typeof Bun.serve> | undefined, browser: Awaited<ReturnType<typeof launch>> | undefined
 let cookie = '', csrf = '', loseFeedback = false, loseSettings = false
 const submissions: any[] = [], widgetCookies: string[] = [], assertions: string[] = [], runtimeErrors: string[] = []
-let heldFeedback: { token: string, entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>>, used: boolean } | undefined
+let heldFeedback: { token: string, entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>>, used: boolean, beforeNative?: boolean } | undefined
 const check = (condition: unknown, message: string) => { assert.ok(condition, message); assertions.push(message) }
 async function http(path: string, method = 'GET', body?: unknown, token?: string) {
   const response = await fetch(apiOrigin + '/api' + path, { method, headers: { accept: 'application/json', ...(cookie ? { cookie, 'x-csrf-token': csrf } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
@@ -53,6 +53,8 @@ try {
     const url = new URL(request.url), body = ['GET', 'HEAD'].includes(request.method) ? undefined : await request.clone().text()
     if (request.method === 'POST' && url.pathname.endsWith('/csat')) submissions.push(JSON.parse(body!))
     const headers = new Headers(request.headers); headers.delete('host')
+    const before = heldFeedback
+    if (request.method === 'GET' && url.pathname.endsWith('/csat') && before?.beforeNative && !before.used && request.headers.get('authorization') === `Bearer ${before.token}`) { before.used = true; before.entered.resolve(); await before.release.promise }
     const response = await fetch(new URL(url.pathname + url.search, apiOrigin), { method: request.method, headers, ...(body === undefined ? {} : { body }) })
     const outgoing = new Headers(response.headers); outgoing.delete('content-encoding'); outgoing.delete('content-length')
     const held = heldFeedback
@@ -66,7 +68,17 @@ try {
     if (url.pathname.startsWith('/_fixture/')) return new Response(null, { status: 303, headers: { location: '/app/customer-satisfaction', 'set-cookie': url.pathname.endsWith('/agent') ? agentCookie : ownerCookie } })
     if (url.pathname.startsWith('/api/')) { const headers = new Headers(request.headers); headers.delete('host'); const response = await fetch(new URL(url.pathname + url.search, apiOrigin), { method: request.method, headers, body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body }); const outgoing = new Headers(response.headers); outgoing.delete('content-encoding'); outgoing.delete('content-length'); if (loseSettings && request.method === 'PATCH' && url.pathname.endsWith('/csat-settings') && response.ok) { loseSettings = false; await response.arrayBuffer(); return Response.json({ error: { message: 'Fixture settings acknowledgement lost after native commit.' } }, { status: 503 }) }; return new Response(response.body, { status: response.status, headers: outgoing }) }
     if (url.pathname === '/widget') return new Response('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Native CSAT customer proof</title></head><body><h1>Customer support feedback</h1><hq-support-messenger></hq-support-messenger><script type="module" src="/widget-entry.js"></script></body></html>', { headers: { 'content-type': 'text/html', 'content-security-policy': `default-src 'none'; script-src 'self'; style-src ${manifest.csp.styleSrc.join(' ')}; connect-src 'self' ${boundary!.url.origin}; img-src 'self'; base-uri 'none'; object-src 'none'` } })
-    if (url.pathname === '/widget-entry.js') return new Response("import '/widgets/bundle.js'", { headers: { 'content-type': 'text/javascript' } })
+    if (url.pathname === '/widget-entry.js') return new Response(`
+      // Observe real timers without cancelling, delaying or replacing callbacks.
+      const activeIntervals = new Set()
+      const nativeSetInterval = globalThis.setInterval.bind(globalThis)
+      const nativeClearInterval = globalThis.clearInterval.bind(globalThis)
+      globalThis.setInterval = (...args) => { const id = nativeSetInterval(...args); activeIntervals.add(id); document.body.dataset.activeIntervals = String(activeIntervals.size); return id }
+      globalThis.clearInterval = id => { nativeClearInterval(id); activeIntervals.delete(id); document.body.dataset.activeIntervals = String(activeIntervals.size) }
+      const messenger = document.querySelector('hq-support-messenger')
+      for (const event of ['ready', 'unread', 'delivery']) messenger.addEventListener(event, () => { messenger.dataset[event + 'Count'] = String(Number(messenger.dataset[event + 'Count'] || 0) + 1) })
+      await import('/widgets/bundle.js')
+    `, { headers: { 'content-type': 'text/javascript' } })
     if (url.pathname === '/favicon.ico') return new Response(null, { status: 204 })
     const path = url.pathname === '/app/customer-satisfaction' ? '/app/customer-satisfaction.html' : url.pathname, file = resolve(output, '.' + decodeURIComponent(path))
     if (!file.startsWith(output + sep)) return new Response('Forbidden', { status: 403 })
@@ -137,12 +149,29 @@ try {
   check(await evaluate(`${widgetRoot}.querySelector('.csat-form') !== null`), 'actual own conversation resolution makes the opt-in form eligible during refresh')
   await answer(3, 'Draft before survey is disabled'); await configure('Disabled while drafting', false); await widgetClick('Send feedback'); await widgetText('This survey is no longer accepting a response.')
   check(!await one('SELECT id FROM support_csat_responses WHERE conversation_id = ?', [open.id]) && await evaluate(`!${widgetRoot}.querySelector('.csat-form')`), 'disabling an offered survey refuses a new response honestly')
+  await evaluate(`for(const event of ['ready','unread','delivery']) ${widget}.dataset[event + 'Count'] = '0'`)
   heldFeedback = { token: a.token, entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>(), used: false }
   const oldBoot = evaluate(`${widget}.update({token:${JSON.stringify(a.token)}})`); await heldFeedback.entered.promise
   await evaluate(`${widget}.update({token:${JSON.stringify(b.token)}})`); heldFeedback.release.resolve(); await oldBoot; await Bun.sleep(100)
   check(await evaluate(`!${widgetRoot}.textContent.includes('PRIVATE-COMMENT-MARKER') && !${widgetRoot}.querySelector('.csat-answer')`), 'late customer A feedback receipt cannot restore history after switching to B')
+  check(await evaluate(`${widget}.dataset.readyCount === '1' && ${widget}.dataset.unreadCount === '1' && document.body.dataset.activeIntervals === '1'`), 'stale customer boot emits no ready/unread events and installs no competing poll interval')
+  await boot(a.token)
+  heldFeedback = { token: a.token, entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>(), used: false }
+  await evaluate(`${widget}.dataset.deliveryCount = '0'`)
+  await evaluate(`(()=>{const field=${widgetRoot}.querySelector('#support-body');field.value='Message committed before customer switch';field.dispatchEvent(new Event('input',{bubbles:true}));field.form.requestSubmit()})()`)
+  await heldFeedback.entered.promise
+  await evaluate(`${widget}.update({token:${JSON.stringify(b.token)}})`); heldFeedback.release.resolve(); await Bun.sleep(100)
+  check(await evaluate(`${widget}.dataset.deliveryCount === '0'`) && Number((await one('SELECT COUNT(*) AS count FROM support_messages WHERE conversation_id = ? AND body = ?', [ca.id, 'Message committed before customer switch']))!.count) === 1, 'committed previous-customer message cannot emit delivery after a held feedback read outlives its session')
+  check(await evaluate(`document.body.dataset.activeIntervals === '1'`), 'message-session switch retains exactly the current customer polling interval')
   await evaluate(`${widget}.shutdown()`)
   check(await evaluate(`${widget}.sessionToken === '' && !${widgetRoot}.querySelector('.csat-form') && !${widgetRoot}.querySelector('.csat-answer') && !${widget}.hasAttribute('session-token') && !${widget}.hasAttribute('csat')`), 'shutdown clears feedback and identity without reflecting tokens or comments into attributes')
+  check(await evaluate(`document.body.dataset.activeIntervals === '0'`), 'shutdown clears every observed native Messenger interval after stale boot and send continuations')
+  heldFeedback = { token: a.token, entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>(), used: false, beforeNative: true }
+  await evaluate(`${widget}.dataset.readyCount = '0'`)
+  const revokedBoot = evaluate(`${widget}.update({token:${JSON.stringify(a.token)}})`); await heldFeedback.entered.promise
+  const revokedA = await fetch(apiOrigin + `/api/widget/projects/${project.public_id}/session/revoke`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin, Authorization: 'Bearer ' + a.token }, body: '{}' }); assert.equal(revokedA.status, 200)
+  heldFeedback.release.resolve(); await revokedBoot
+  check(await evaluate(`${widget}.sessionToken === '' && ${widget}.dataset.readyCount === '0' && document.body.dataset.activeIntervals === '0'`), 'native CSAT revocation during boot clears identity without scheduling a poll or emitting ready')
   await boot(b.token)
   const revoked = await fetch(apiOrigin + `/api/widget/projects/${project.public_id}/session/revoke`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin, Authorization: 'Bearer ' + b.token }, body: '{}' }); assert.equal(revoked.status, 200)
   await evaluate(`${widget}.refresh()`)
@@ -163,7 +192,7 @@ try {
   await click('Refresh satisfaction totals'); await waitFor(() => evaluate(`document.querySelector('[aria-label="Satisfaction totals"]')?.textContent.includes('2')`), 15000, { label: 'Aggregate satisfaction report' })
   check(await evaluate(`document.querySelector('[aria-label="Satisfaction totals"]').textContent.includes('3.00') && document.querySelector('[aria-label="Satisfaction totals"]').textContent.includes('50%') && !document.body.textContent.includes('PRIVATE-COMMENT-MARKER')`), 'project report renders exact aggregate counts/average/satisfaction without raw comments')
   await input('#csat-project', String(sibling.public_id)); await text('No satisfaction responses were recorded')
-  check(await evaluate(`document.querySelector('[aria-label="Satisfaction totals"]').textContent.includes('—') && !document.body.textContent.includes('PRIVATE-COMMENT-MARKER')`), 'sibling project has independent empty aggregates without raw response leakage')
+  check(await evaluate(`document.querySelector('[aria-label="Satisfaction totals"]').textContent.includes('No responses') && !document.body.textContent.includes('PRIVATE-COMMENT-MARKER')`), 'sibling project has independent empty aggregates without raw response leakage')
   await navigate(cdp, origin + '/_fixture/agent', { quietMs: 100, timeoutMs: 20000 }); await waitFor(() => evaluate(`document.querySelector('[aria-label="Satisfaction totals"]') !== null`), 15000, { label: 'Agent aggregate report' })
   check(await evaluate(`!document.querySelector('#csat-question') && !document.querySelector('#csat-enabled') && document.body.textContent.includes('Owners and admins configure')`), 'active agent reads aggregate reports without configuration controls')
   const image = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }); await Bun.write(resolve(artifacts, 'report.png'), Buffer.from(image.data, 'base64'))

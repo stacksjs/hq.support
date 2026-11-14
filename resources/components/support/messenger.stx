@@ -63,6 +63,7 @@ async function boot(options: { url?: string, project?: string, token?: string } 
       if (generation !== this._generation) return
       this.thread = detail.messages || []
       await this.refreshCsat()
+      if (generation !== this._generation) return
     }
     this._poll = setInterval(() => this.refresh().catch(() => {}), 5000)
     this.emit('ready', { project: this.projectId })
@@ -243,6 +244,7 @@ async function send(event: Event) {
     if (generation !== this._generation) return
     this.thread = detail.messages || []
     await this.refreshCsat()
+    if (generation !== this._generation) return
     this.emit('delivery', { conversationId: this.conversationId, status: 'sent' })
   }
   catch (error) {
@@ -273,7 +275,7 @@ async function send(event: Event) {
       @if(this.csat.response)
         <section class="csat-answer" aria-label="Your satisfaction response"><h3>Feedback received</h3><p>{{ this.csat.response.question }}</p><p><strong>{{ this.csat.response.score }} / 5</strong> · Question revision {{ this.csat.response.revision }}</p>@if(this.csat.response.comment)<p class="csat-comment">{{ this.csat.response.comment }}</p>@endif</section>
       @elseif(this.csat.available && this.csatOffer.revision)
-        <form class="csat-form" @submit.prevent="submitCsat"><fieldset :disabled="this.csatPending"><legend>{{ this.csatOffer.question }}</legend><p class="csat-help">Rate this resolved conversation · Question revision {{ this.csatOffer.revision }}</p><div class="csat-scores">@foreach([1,2,3,4,5] as score)<label class="csat-score">@if(String(this._csatScore || '') === String(score))<input type="radio" name="score" value="{{ score }}" @change="editCsatScore" checked required>@else<input type="radio" name="score" value="{{ score }}" @change="editCsatScore" required>@endif<span>{{ score }}</span><span class="sr-only"> — {{ this.scoreLabel(score) }}</span></label>@endforeach</div><p class="csat-help">1 = very dissatisfied · 5 = very satisfied</p><label for="csat-comment">Optional comment</label><textarea id="csat-comment" name="comment" @input="editCsatComment" maxlength="2000" rows="3" placeholder="What worked, or what could improve?">{{ this._csatComment || '' }}</textarea></fieldset>@if(this.csatChanged)<p class="notice" role="alert">The question changed. Your original question and draft are preserved. Review the current question before sending.</p><button type="button" class="csat-review" @click="reviewCsatQuestion" :disabled="this.csatPending">Review current question</button>@endif @if(this.csatNotice)<p class="notice" role="alert">{{ this.csatNotice }}</p>@endif @if(this.csatChanged)<button type="submit" disabled>Send feedback</button>@else<button type="submit" :disabled="this.csatPending">{{ this.csatPending ? 'Saving feedback...' : 'Send feedback' }}</button>@endif</form>
+        <form class="csat-form" @submit.prevent="submitCsat"><fieldset :disabled="this.csatPending"><legend>{{ this.csatOffer.question }}</legend><p class="csat-help">Rate this resolved conversation · Question revision {{ this.csatOffer.revision }}</p><div class="csat-scores">@foreach([1,2,3,4,5] as score)<label class="csat-score">@if(String(this._csatScore || '') === String(score))<input type="radio" name="score" value="{{ score }}" @change="editCsatScore" checked required>@else<input type="radio" name="score" value="{{ score }}" @change="editCsatScore" required>@endif<span>{{ score }}</span><span class="sr-only">: {{ this.scoreLabel(score) }}</span></label>@endforeach</div><p class="csat-help">1 = very dissatisfied · 5 = very satisfied</p><label for="csat-comment">Optional comment</label><textarea id="csat-comment" name="comment" @input="editCsatComment" maxlength="2000" rows="3" placeholder="What worked, or what could improve?">{{ this._csatComment || '' }}</textarea></fieldset>@if(this.csatChanged)<p class="notice" role="alert">The question changed. Your original question and draft are preserved. Review the current question before sending.</p><button type="button" class="csat-review" @click="reviewCsatQuestion" :disabled="this.csatPending">Review current question</button>@endif @if(this.csatNotice)<p class="notice" role="alert">{{ this.csatNotice }}</p>@endif @if(this.csatChanged)<button type="submit" disabled>Send feedback</button>@else<button type="submit" :disabled="this.csatPending">{{ this.csatPending ? 'Saving feedback...' : 'Send feedback' }}</button>@endif</form>
       @elseif(this.csatOffer.revision && this.csatNotice)
         <section class="csat-answer" aria-label="Satisfaction feedback"><p>{{ this.csatOffer.question }}</p><p role="status">{{ this.csatNotice }}</p><button type="button" class="csat-review" @click="reviewCsatQuestion">Check feedback availability</button></section>
       @endif
