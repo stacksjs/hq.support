@@ -732,6 +732,20 @@ export function createClient(config: ClientConfig) {
   },
 
   /**
+   * POST /api/support/projects/{project}/conversations/{id}/routing
+   */
+  postSupportProjectsProjectConversationsIdRouting(input: { "project": string; "id": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "POST", "/api/support/projects/{project}/conversations/{id}/routing", input ?? {}, [{"name":"project","in":"path","required":true},{"name":"id","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * GET /api/support/projects/{project}/conversations/{id}/routing-audit
+   */
+  getSupportProjectsProjectConversationsIdRoutingAudit(input: { "project": string; "id": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "GET", "/api/support/projects/{project}/conversations/{id}/routing-audit", input ?? {}, [{"name":"project","in":"path","required":true},{"name":"id","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
    * GET /api/support/projects/{project}/email-receipts
    */
   getSupportProjectsProjectEmailReceipts(input: { "project": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
@@ -928,6 +942,27 @@ export function createClient(config: ClientConfig) {
   },
 
   /**
+   * GET /api/support/projects/{project}/team-inboxes
+   */
+  getSupportProjectsProjectTeamInboxes(input: { "project": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "GET", "/api/support/projects/{project}/team-inboxes", input ?? {}, [{"name":"project","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * POST /api/support/projects/{project}/team-inboxes
+   */
+  postSupportProjectsProjectTeamInboxes(input: { "project": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "POST", "/api/support/projects/{project}/team-inboxes", input ?? {}, [{"name":"project","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * POST /api/support/projects/{project}/team-inboxes/{id}
+   */
+  postSupportProjectsProjectTeamInboxesId(input: { "project": string; "id": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "POST", "/api/support/projects/{project}/team-inboxes/{id}", input ?? {}, [{"name":"project","in":"path","required":true},{"name":"id","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
    * POST /api/support/projects/{project}/ticket-calendars
    */
   postSupportProjectsProjectTicketCalendars(input: { "project": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
@@ -1117,6 +1152,20 @@ export function createClient(config: ClientConfig) {
   },
 
   /**
+   * GET /api/support/workspaces/{workspace}/routing-agents
+   */
+  getSupportWorkspacesWorkspaceRoutingAgents(input: { "workspace": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "GET", "/api/support/workspaces/{workspace}/routing-agents", input ?? {}, [{"name":"workspace","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * POST /api/support/workspaces/{workspace}/routing-agents
+   */
+  postSupportWorkspacesWorkspaceRoutingAgents(input: { "workspace": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "POST", "/api/support/workspaces/{workspace}/routing-agents", input ?? {}, [{"name":"workspace","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
    * GET /api/support/workspaces/{workspace}/subscription
    */
   getSupportWorkspacesWorkspaceSubscription(input: { "workspace": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
@@ -1135,6 +1184,34 @@ export function createClient(config: ClientConfig) {
    */
   postSupportWorkspacesWorkspaceSubscriptionPortal(input: { "workspace": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
     return request(config, "POST", "/api/support/workspaces/{workspace}/subscription/portal", input ?? {}, [{"name":"workspace","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * GET /api/support/workspaces/{workspace}/support-teams
+   */
+  getSupportWorkspacesWorkspaceSupportTeams(input: { "workspace": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "GET", "/api/support/workspaces/{workspace}/support-teams", input ?? {}, [{"name":"workspace","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * POST /api/support/workspaces/{workspace}/support-teams
+   */
+  postSupportWorkspacesWorkspaceSupportTeams(input: { "workspace": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "POST", "/api/support/workspaces/{workspace}/support-teams", input ?? {}, [{"name":"workspace","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * POST /api/support/workspaces/{workspace}/support-teams/{id}
+   */
+  postSupportWorkspacesWorkspaceSupportTeamsId(input: { "workspace": string; "id": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "POST", "/api/support/workspaces/{workspace}/support-teams/{id}", input ?? {}, [{"name":"workspace","in":"path","required":true},{"name":"id","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * POST /api/support/workspaces/{workspace}/support-teams/{id}/members
+   */
+  postSupportWorkspacesWorkspaceSupportTeamsIdMembers(input: { "workspace": string; "id": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "POST", "/api/support/workspaces/{workspace}/support-teams/{id}/members", input ?? {}, [{"name":"workspace","in":"path","required":true},{"name":"id","in":"path","required":true}], null, "application/json", [], options)
   },
 
   /**
