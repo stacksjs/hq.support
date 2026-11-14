@@ -7,6 +7,10 @@ export default defineModel({
   traits: { useTimestamps: true },
   dashboard: { access: false },
   attributes: {
+    buddyConnectedAt: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
+    verifiedOrigin: { fillable: true, required: true, default: '', validation: { rule: schema.string() } },
+    deploymentVerifiedAt: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
+
     workspaceId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     publicId: { fillable: true, required: true, unique: true, validation: { rule: schema.string() } },
     name: { fillable: true, required: true, validation: { rule: schema.string() } },

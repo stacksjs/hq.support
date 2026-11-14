@@ -2,12 +2,12 @@ import type { HqServiceAdapter } from '@stacksjs/hq/service'
 import { confirmationMatches, createHqService, sqlConnectCodeStore } from '@stacksjs/hq/service'
 import { ensureDatabaseConfigLoaded, resolvedDatabaseConfig } from '@stacksjs/database/runtime'
 import { one, query, workspaceTransaction } from './database'
-import { createProject, createWorkspace, issueKeys, readPrincipal, usage } from './service'
+import { createProject, createWorkspace, issueKeys, member, readPrincipal, usage, workspace } from './service'
 import { limitsFor } from './limits'
 import type { Plan } from './limits'
 import { fail } from './errors'
 
-export type HqUser = { id: number, email: string }
+export type HqUser = { id: number, email: string, workspaceId?: number }
 const base = () => (process.env.APP_URL || 'https://hq.support').replace(/\/$/, '')
 
 export async function adapter(): Promise<HqServiceAdapter<HqUser>> {
@@ -19,11 +19,13 @@ export async function adapter(): Promise<HqServiceAdapter<HqUser>> {
     upgradeUrl: `${base()}/pricing`,
     codes: sqlConnectCodeStore({ unsafe: (sql, values) => query(sql, values) }, { dialect: driver === 'postgres' ? 'postgres' : 'sqlite' }),
     async provision(user, request) {
-      let owner = await one('SELECT * FROM support_workspaces WHERE owner_id = ? ORDER BY id ASC LIMIT 1', [user.id])
+      if (user.workspaceId) await member(user.id, user.workspaceId, ['owner', 'admin'])
+      let owner = user.workspaceId ? await workspace(user.workspaceId) : await one('SELECT * FROM support_workspaces WHERE owner_id = ? ORDER BY id ASC LIMIT 1', [user.id])
       if (!owner) owner = await createWorkspace(user, request.app)
       return await workspaceTransaction(Number(owner.id), async () => {
         let project = await one('SELECT * FROM support_projects WHERE workspace_id = ? AND name = ? ORDER BY id LIMIT 1', [owner.id, request.app])
         if (!project) project = await createProject(Number(owner.id), request.app)
+        await query('UPDATE support_projects SET buddy_connected_at = ?, updated_at = ? WHERE id = ? AND workspace_id = ?', [Date.now(), new Date().toISOString(), project.id, owner.id])
         const keys = await issueKeys(project)
         return { project: { id: String(project.public_id), name: String(project.name) }, ...keys, dashboardUrl: `${base()}/inbox?project=${project.public_id}` }
       })

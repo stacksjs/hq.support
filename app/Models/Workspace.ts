@@ -6,7 +6,10 @@ export default defineModel({
   table: 'support_workspaces',
   traits: { useTimestamps: true },
   dashboard: { access: false },
+  indexes: [{ name: 'support_one_free_workspace_per_owner', columns: ['owner_id'], unique: true, where: "plan = 'free'" }],
   attributes: {
+    freeQualifiedAt: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
+
     publicId: { fillable: true, required: true, unique: true, validation: { rule: schema.string() } },
     name: { fillable: true, required: true, validation: { rule: schema.string() } },
     ownerId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },

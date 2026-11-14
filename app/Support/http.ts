@@ -45,7 +45,7 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
     if (operation === 'hq.poll') return await (await hq()).pollConnect({ url: request.url, headers: request.headers }, params.code)
     if (operation === 'hq.usage') return await (await hq()).usage({ url: request.url, headers: request.headers })
     if (operation === 'hq.describe') return response({ connection: await (await hq()).describeConnect(params.code) })
-    if (operation === 'hq.approve') return response(await approve(params.code, text(data.confirmCode, 'confirmCode', 32), await user(request)))
+    if (operation === 'hq.approve') return response(await approve(params.code, text(data.confirmCode, 'confirmCode', 32), { ...await user(request), ...(data.workspaceId === undefined ? {} : { workspaceId: identifier(data.workspaceId) }) }))
     if (operation === 'me') {
       const account = await user(request)
       const workspaces = await query("SELECT w.id, w.public_id, w.name, w.plan, w.trial_ends_at, m.role FROM support_workspaces w JOIN support_memberships m ON m.workspace_id = w.id WHERE m.user_id = ? AND m.status = 'active' ORDER BY w.id", [account.id])

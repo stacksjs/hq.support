@@ -7,6 +7,11 @@ export default defineModel({
   traits: { useTimestamps: true },
   dashboard: { access: false },
   attributes: {
+    origin: { fillable: true, required: true, default: '', validation: { rule: schema.string() } },
+    ownerId: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
+    frameworkVersion: { fillable: true, required: true, default: '', validation: { rule: schema.string() } },
+    attempts: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
+
     workspaceId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     projectId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     digest: { fillable: true, required: true, unique: true, validation: { rule: schema.string() } },

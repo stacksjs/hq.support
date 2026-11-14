@@ -9,6 +9,8 @@ export default defineModel({
   dashboard: { access: false },
   traits: { useAuth: { usePasskey: true }, useUuid: true, useTimestamps: true },
   attributes: {
+    supportFreeWorkspaceId: { type: 'bigint', foreignKey: false, guarded: true, hidden: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
+
     avatar: { fillable: true, nullable: true, validation: { rule: schema.string() } },
     name: { fillable: true, required: true, validation: { rule: schema.string().min(2).max(100) } },
     email: { fillable: true, required: true, unique: true, validation: { rule: schema.string().email() } },

@@ -33,3 +33,5 @@ Private attachments use native Stacks Storage. Agent upload: `POST /api/support/
 Agent read state is separate from a customer's message count: `POST /api/support/projects/{project}/conversations/{id}/read {lastMessageId}` persists a monotonic cursor for the authenticated human. The cursor must name a message in that project and conversation. The agent inbox then counts public customer messages after that human's cursor; reading a thread does not clear another agent's unread state.
 
 Workflow automation and worker operation are documented in `docs/workflows.md`. Workspace invitations require a matching native account with verified email before acceptance; knowing an invitation ID is insufficient.
+
+Free qualification endpoints and the exact well-known proof document are documented in `docs/free-verification.md`. A successful public deployment challenge is required in addition to Buddy confirmation; ordinary project keys cannot self-select a hosted plan.
