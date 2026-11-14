@@ -66,7 +66,10 @@ admin/agent permissions, exact cross-brand load, idempotent routing retries and
 durable workflow provenance. Core auth/allowance, native SDK/widget and workflow
 HTTP suites provide regression coverage. No customer/provider traffic is used.
 
-Team settings UI, presence, automatic draining of old overflow, merge/split and
-production workload qualification remain outstanding. See `docs/team-inboxes.md`
+Native team settings and inbox routing controls are now implemented with real
+authenticated SSG browser functional evidence. The strict zero-runtime-error
+browser gate remains pending the published native compiler fix. Presence,
+automatic draining of old overflow, merge/split and production workload
+qualification remain outstanding. See `docs/team-inboxes.md`
 for the HTTP contract and precise routing rules. These APIs do not qualify the
 whole inbox stage or deployment for launch.

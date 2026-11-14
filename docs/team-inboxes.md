@@ -38,4 +38,42 @@ The agent inbox supports `GET /api/support/projects/{project}/inbox?inboxId={id}
 
 `tests/feature/team-routing.test.ts` boots actual installed Stacks packages, native authentication and HTTP routes against disposable SQLite and PostgreSQL databases. It exercises tenant/project isolation, successful scoped lists, manual authorization and inboxes, default replacement, immutable inbox teams, malformed-input rollback, round robin, availability, workspace-wide load, concurrent last-slot admission from three independent native HTTP server processes, close/snooze/reopen, member removal, durable workflow assignment and status-based readmission, explicit-operation retries and a fresh server process resuming the saved cursor. The core HTTP fixture also refuses malformed contact IDs on existing ticket creation without adding a ticket or outbox work. Existing core HTTP and workflow suites provide regression coverage.
 
-This slice supplies backend routing APIs. It does not claim a team settings UI, live presence, automatic draining of old overflow, an operator capacity override, merge/split, provider delivery or a production load qualification. Overflow is retried explicitly; making an agent available does not silently redistribute work. PostgreSQL tests require the owned pgvector-capable test cluster because the complete app schema also includes knowledge vectors.
+This slice supplies backend routing APIs and native team/inbox controls. It does not claim live presence, automatic draining of old overflow, an operator capacity override, merge/split, provider delivery or a production load qualification. Overflow is retried explicitly; making an agent available does not silently redistribute work. PostgreSQL tests require the owned pgvector-capable test cluster because the complete app schema also includes knowledge vectors.
+
+## Native team and inbox UI
+
+`/app/team-settings` uses native stx and authenticated workspace APIs. Active
+members can read scoped teams, membership status, inboxes and capacity. Owners
+and admins can create/rename/reactivate teams, add/remove active workspace
+members, create/edit project inboxes and set routing capacity. Agents can update
+their own explicit availability; their capacity and member selector stay locked.
+Inactive workspace membership is shown explicitly, and stale team entries can
+be removed. An inactive team must be reactivated before editing its membership
+or inbox. Disabling an inbox clears its default flag, and an inbox's team remains
+immutable. API authorization remains authoritative for every mutation.
+
+The three-pane inbox filters by project team inbox and status, loads additional
+cursor pages, shows assignment and capacity, and exposes audited manual or
+round-robin routing to owners/admins. Agents can claim unassigned team work or
+release their own assignment. Overflow and manual inboxes display the actual
+unassigned reason. The latest 100 audit decisions show the native actor or
+workflow run and before/after context. These controls do not change provider
+readiness or start a background overflow drain.
+
+Reply and private-note drafts stay in memory under their project/conversation
+identity through list refreshes, transport errors and thread selection. They
+are not persisted to browser storage or restored after a full page reload.
+Failed message retries retain their operation key for the same payload; editing
+a failed payload starts a new operation. Assignment failures and refreshes do
+not clear the reply composer. An acknowledged reply is labelled saved.
+
+`scripts/qualify-team-browser.ts` boots a disposable native database, actual
+authentication/session cookies, the production SSG output and Chromium. It
+exercises owner/agent guards, real team/member/inbox mutations, inactive
+configuration recovery, routing/audit, explicit availability and retained
+private drafts across failed HTTP sends and refreshes. Its final assertion
+requires zero runtime errors. Installed stx 0.2.872 currently emits the known
+classic-script `import.meta` error; functional evidence does not pass that
+strict qualification gate. No console errors are filtered or suppressed.
+Parent integration must rerun this script after consuming the published native
+compiler fix.

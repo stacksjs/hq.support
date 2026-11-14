@@ -1,0 +1,62 @@
+<script server>
+const pageTitle = 'Teams and routing'
+const pageDescription = 'Manage support teams, project inboxes and explicit routing availability.'
+</script>
+<script client>
+import { createTeamSettings } from '../../functions/support/team-settings'
+const config = createTeamSettings()
+const workspace = config.workspace
+const project = workspace.project
+const selectedTeam = config.selectedTeam
+const teamName = config.teamName
+const rename = config.rename
+const memberUser = config.memberUser
+const inboxName = config.inboxName
+const inboxTeam = config.inboxTeam
+const inboxMode = config.inboxMode
+const inboxDefault = config.inboxDefault
+const editName = config.editName
+const editMode = config.editMode
+const editActive = config.editActive
+const editDefault = config.editDefault
+const agentUser = config.agentUser
+const availability = config.availability
+const capacity = config.capacity
+onMount(() => config.boot())
+onDestroy(() => config.destroy())
+</script>
+@extends('console')
+@section('content')
+<header class="console-heading"><div><a href="/app" class="text-xs console-link">Inbox / Teams</a><h1>Teams and routing</h1><p>Give each project a home for incoming work. Availability is an explicit setting, not live presence.</p></div><div class="project-picker"><label for="team-project">Project</label><select id="team-project" x-model="project" @change="config.load()" :disabled="workspace.pending() || workspace.loading()"><option value="">Select a project</option><option :for="item in workspace.projects()" :value="item.public_id">{{ item.name }}</option></select></div></header>
+<p :if="workspace.error()" class="console-error" role="alert">{{ workspace.error() }} <a :if="!workspace.ready()" href="/login" class="console-link">Sign in</a></p>
+<p :if="workspace.notice()" class="console-notice" role="status">{{ workspace.notice() }}</p>
+<p :if="workspace.loading()" class="console-loading" role="status">Loading team routing...</p>
+<div :if="workspace.ready() && workspace.workspace()" class="team-settings">
+<div class="console-toolbar"><button type="button" class="button button-outline" @click="config.load()" :disabled="workspace.pending() || workspace.loading()"><i class="i-hugeicons-refresh" aria-hidden="true"></i> Refresh routing</button><a href="/app" class="console-link">Open inbox</a></div>
+<p :if="!workspace.canManage()" class="capability-note">You can read team settings and update your own availability. Owners and admins manage membership, inboxes and capacity.</p>
+<section class="mt-6 editor-grid" aria-labelledby="teams-heading">
+<div class="editor-panel"><header class="editor-panel-heading"><h2 id="teams-heading">Support teams</h2><span>Workspace members only</span></header><div class="editor-form">
+<label for="support-team">View team</label><select id="support-team" x-model="selectedTeam" @change="config.selectTeam()" :disabled="workspace.pending()"><option value="">Choose a team</option><option :for="item in config.teams()" :value="String(item.id)">{{ item.name }}{{ item.active ? '' : ' (inactive)' }}</option></select>
+<p :if="!config.teams().length" class="field-help">No support teams yet. An owner or admin can create one below.</p>
+<form :if="workspace.canManage()" @submit.prevent="config.createTeam()"><label for="new-team-name">New team name</label><input id="new-team-name" x-model.trim="teamName" maxlength="100" required :disabled="workspace.pending()"><button type="submit" class="mt-4 button button-teal" :disabled="workspace.pending() || !teamName().trim()">Create team</button></form>
+<form :if="workspace.canManage() && config.selected()" @submit.prevent="config.renameTeam()"><label for="rename-team">Selected team name</label><input id="rename-team" x-model.trim="rename" maxlength="100" required :disabled="workspace.pending()"><div class="editor-actions"><button type="submit" class="button button-outline" :disabled="workspace.pending() || !rename().trim()">Save name</button><button type="button" class="text-button" @click="config.toggleTeam()" :disabled="workspace.pending()">{{ config.selected()?.active ? 'Disable team and release assignments' : 'Reactivate team' }}</button></div></form>
+<p :if="config.selected() && !config.selected()?.active" class="capability-note">This team is inactive. Its assignments were released. Reactivate it before changing membership or routing new work.</p>
+</div></div>
+<div class="editor-panel"><header class="editor-panel-heading"><h2>Team membership</h2><span>{{ config.selected()?.name || 'Select a team' }}</span></header><div class="editor-form">
+<article :for="item in config.teamMembers()" class="py-4 border-[#e1e7e1] border-b"><strong class="text-xs">{{ config.person(item.user_id) }}</strong><p class="field-help">{{ item.active ? 'Team member' : 'Removed from team' }} · Workspace access: {{ item.workspace_status }}</p><button :if="workspace.canManage()" type="button" class="text-button" @click="config.toggleMember(item)" :disabled="workspace.pending() || !config.selected()?.active || (!item.active && item.workspace_status !== 'active')">{{ item.active ? 'Remove and release assignments' : 'Restore team membership' }}</button></article>
+<p :if="!config.teamMembers().length" class="field-help">No members in the selected team. A team does not grant workspace access.</p>
+<form :if="workspace.canManage() && config.selected()?.active" @submit.prevent="config.addMember()"><label for="team-member">Add active workspace member</label><select id="team-member" x-model="memberUser" required :disabled="workspace.pending()"><option value="">Choose a member</option><option :for="item in config.eligibleMembers()" :value="String(item.id)">{{ item.name }} · {{ item.email }}</option></select><button type="submit" class="mt-4 button button-teal" :disabled="workspace.pending() || !memberUser()">Add to team</button></form>
+<p class="field-help">Inactive workspace members cannot receive assignments. Remove stale team memberships here; manage workspace invitations and access in Settings.</p>
+</div></div></section>
+<section class="mt-6 editor-panel" aria-labelledby="availability-heading"><header class="editor-panel-heading"><h2 id="availability-heading">Availability and capacity</h2><span>Across every project in this workspace</span></header><div class="table-scroll"><table class="console-table"><thead><tr><th scope="col">Member</th><th scope="col">Availability</th><th scope="col">Open / capacity</th></tr></thead><tbody><tr :for="item in config.agents()"><td>{{ config.person(item.user_id) }}</td><td>{{ item.availability }}</td><td>{{ item.open_count }} / {{ item.capacity }}</td></tr></tbody></table></div><form class="editor-form" @submit.prevent="config.saveAgent()"><label for="routing-agent">{{ workspace.canManage() ? 'Edit member' : 'Your availability' }}</label><select id="routing-agent" x-model="agentUser" @change="config.selectAgent()" :disabled="workspace.pending() || !workspace.canManage()"><option value="">Select member</option><option :for="item in config.agents()" :value="String(item.user_id)">{{ config.person(item.user_id) }}</option></select><div class="field-grid"><div><label for="routing-availability">Availability</label><select id="routing-availability" x-model="availability" :disabled="workspace.pending()"><option value="available">Available for new assignments</option><option value="away">Away</option><option value="offline">Offline</option></select></div><div><label for="routing-capacity">Open conversation capacity</label><input id="routing-capacity" x-model="capacity" type="number" min="1" max="1000" step="1" required :disabled="workspace.pending() || !workspace.canManage()"></div></div><p class="field-help">Closed and snoozed conversations release capacity. Reducing capacity below current open load is refused. Changing availability keeps existing work and does not drain old overflow.</p><button type="submit" class="button button-teal" :disabled="workspace.pending() || !agentUser()">Save routing preferences</button></form></section>
+<section class="mt-6 editor-panel" aria-labelledby="inboxes-heading"><header class="editor-panel-heading"><h2 id="inboxes-heading">Project team inboxes</h2><span>One default for new conversations</span></header><div class="table-scroll"><table class="console-table"><thead><tr><th scope="col">Inbox</th><th scope="col">Team</th><th scope="col">Assignment</th><th scope="col">State</th><th scope="col">Action</th></tr></thead><tbody><tr :for="item in config.inboxes()"><td>{{ item.name }}</td><td>{{ config.teamLabel(item.team_id) }}</td><td>{{ item.assignment_mode === 'manual' ? 'Manual' : 'Round robin' }}</td><td>{{ item.active ? 'Active' : 'Inactive' }}{{ item.is_default ? ' · Default' : '' }}</td><td><button :if="workspace.canManage()" type="button" class="text-button" @click="config.editInbox(item)" :disabled="workspace.pending()">Edit inbox</button><span :if="!workspace.canManage()">Read only</span></td></tr></tbody></table></div><p :if="!config.inboxes().length" class="editor-form field-help">No team inboxes for this project. Existing conversations remain available without team inbox context.</p>
+<form :if="workspace.canManage()" class="editor-form" @submit.prevent="config.createInbox()"><h3>New team inbox</h3><div class="field-grid"><div><label for="new-inbox-name">Inbox name</label><input id="new-inbox-name" x-model.trim="inboxName" required maxlength="100" :disabled="workspace.pending()"></div><div><label for="new-inbox-team">Active team</label><select id="new-inbox-team" x-model="inboxTeam" required :disabled="workspace.pending()"><option value="">Choose a team</option><option :for="item in config.activeTeams()" :value="String(item.id)">{{ item.name }}</option></select></div></div><label for="new-inbox-mode">Assignment mode</label><select id="new-inbox-mode" x-model="inboxMode" :disabled="workspace.pending()"><option value="round_robin">Round robin among eligible members</option><option value="manual">Keep unassigned for manual claiming</option></select><label class="check-row"><input id="new-inbox-default" type="checkbox" x-model="inboxDefault" class="w-auto"> Default inbox for new conversations</label><button type="submit" class="button button-teal" :disabled="workspace.pending() || !inboxTeam() || !inboxName().trim()">Create inbox</button></form>
+<form :if="workspace.canManage() && config.editedInbox()" class="border-[#e1e7e1] border-t editor-form" @submit.prevent="config.saveInbox()"><h3>Edit {{ config.editedInbox()?.name }}</h3><p class="field-help">Team: {{ config.teamLabel(config.editedInbox()?.team_id || '') }}. The team is immutable; create a new inbox to change it.</p><p :if="!config.editedTeamActive()" class="capability-note">Reactivate this support team above before changing its inbox settings.</p><fieldset :disabled="workspace.pending() || !config.editedTeamActive()"><label for="edit-inbox-name">Name</label><input id="edit-inbox-name" x-model.trim="editName" required maxlength="100"><label for="edit-inbox-mode">Assignment</label><select id="edit-inbox-mode" x-model="editMode"><option value="round_robin">Round robin</option><option value="manual">Manual</option></select><label class="check-row"><input id="edit-inbox-active" type="checkbox" x-model="editActive" class="w-auto"> Active inbox</label><label class="check-row"><input id="edit-inbox-default" type="checkbox" x-model="editDefault" class="w-auto" :disabled="!editActive()"> Default for new conversations</label><p class="field-help">Disabling clears the default flag. Replacing a default does not move existing conversations. Unassigned overflow requires an explicit retry in the inbox.</p><div class="editor-actions"><button type="submit" class="button button-teal">Save inbox settings</button><button type="button" class="text-button" @click="config.editingInbox.set('')">Cancel edit</button></div></fieldset></form></section>
+</div>
+<p :if="workspace.ready() && !workspace.workspace()" class="console-empty">Create or select a workspace project in the <a href="/app" class="console-link">inbox</a> before configuring routing.</p>
+@endsection
+
+<style>
+.team-settings .editor-form label.check-row{display:flex;align-items:center;gap:8px}
+.team-settings .editor-form input[type="checkbox"]{width:auto;flex:none;margin:0}
+</style>
