@@ -89,9 +89,20 @@ export async function invite(workspaceId: number, email: unknown, role: unknown 
 export async function contact(projectRow: Row, identity: Row) {
   const externalId = text(identity.externalId, 'externalId', 255)
   const found = await one('SELECT * FROM support_contacts WHERE project_id = ? AND external_id = ?', [projectRow.id, externalId])
-  const fields = { name: typeof identity.name === 'string' ? identity.name.slice(0, 200) : '', email: typeof identity.email === 'string' ? identity.email.slice(0, 254) : '', company: typeof identity.company === 'string' ? identity.company.slice(0, 200) : '', attributes: jsonText(identity.attributes) }
+  const company = object(identity.company), companyId = identity.company !== undefined && typeof identity.company !== 'string' ? text(company.id, 'company.id', 255) : undefined
+  const previousAttributes = found ? object(JSON.parse(String(found.attributes))) : {}
+  const previousCompany = object(previousAttributes._hqSupportCompany)
+  const companyName = companyId && company.name !== undefined ? text(company.name, 'company.name', 200) : companyId && previousCompany.id === companyId && typeof previousCompany.name === 'string' ? previousCompany.name : undefined
+  const attributes = { ...(identity.attributes === undefined ? previousAttributes : object(identity.attributes)) }
+  // This namespace is derived from the SDK's typed company field, never a
+  // client-supplied attributes override. Existing company identity survives
+  // unrelated profile/event updates.
+  delete attributes._hqSupportCompany
+  if (companyId) attributes._hqSupportCompany = { id: companyId, ...(companyName ? { name: companyName } : {}) }
+  else if (identity.company === undefined && previousAttributes._hqSupportCompany !== undefined) attributes._hqSupportCompany = previousAttributes._hqSupportCompany
+  const fields = { name: typeof identity.name === 'string' ? identity.name.slice(0, 200) : '', email: typeof identity.email === 'string' ? identity.email.slice(0, 254) : '', company: typeof identity.company === 'string' ? identity.company.slice(0, 200) : (companyName || companyId || '').slice(0, 200), attributes: JSON.stringify(attributes) }
   if (found) {
-    await query('UPDATE support_contacts SET name = ?, email = ?, company = ?, attributes = ?, updated_at = ? WHERE id = ? AND project_id = ?', [fields.name || found.name, fields.email || found.email, fields.company || found.company, identity.attributes === undefined ? found.attributes : fields.attributes, new Date().toISOString(), found.id, projectRow.id])
+    await query('UPDATE support_contacts SET name = ?, email = ?, company = ?, attributes = ?, updated_at = ? WHERE id = ? AND project_id = ?', [fields.name || found.name, fields.email || found.email, fields.company || found.company, fields.attributes, new Date().toISOString(), found.id, projectRow.id])
     return (await one('SELECT * FROM support_contacts WHERE id = ?', [found.id]))!
   }
   return await insert('support_contacts', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, external_id: externalId, ...fields })
@@ -152,11 +163,17 @@ export async function conversation(projectRow: Row, id: unknown, person?: Row): 
   if (!row || (person && row.contact_id !== person.id)) fail(404, 'not_found', 'Conversation not found.')
   return row
 }
-export async function conversations(projectRow: Row, person?: Row, cursor?: string | null, agentId?: number) {
-  const before = cursor ? identifier(cursor) : Number.MAX_SAFE_INTEGER
+/** States supported by actual conversation transitions, independent of ticket state names. */
+export const conversationStatuses = ['open', 'closed', 'snoozed'] as const
+export async function conversations(projectRow: Row, person?: Row, cursor?: string | null, agentId?: number, options: { status?: unknown, limit?: unknown } = {}) {
+  if (cursor !== undefined && cursor !== null && !/^[1-9]\d*$/.test(cursor)) fail(422, 'invalid_cursor', 'Use the conversation cursor returned by the previous page.')
+  const before = cursor === undefined || cursor === null ? Number.MAX_SAFE_INTEGER : identifier(cursor)
+  if (options.status !== undefined && !conversationStatuses.some(status => status === options.status)) fail(422, 'invalid_status', 'Conversation status must be open, closed or snoozed.')
+  const limit = options.limit === undefined ? 50 : typeof options.limit === 'number' ? options.limit : typeof options.limit === 'string' && /^[1-9]\d{0,2}$/.test(options.limit) ? Number(options.limit) : NaN
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail(422, 'invalid_limit', 'Conversation limit must be a whole number from 1 to 100.')
   const readProjection = agentId ? `, (SELECT COUNT(*) FROM support_messages m WHERE m.conversation_id = support_conversations.id AND m.project_id = support_conversations.project_id AND m.author_type = 'customer' AND m.visibility = 'public' AND m.delivery_status <> 'imported' AND m.id > COALESCE((SELECT last_message_id FROM support_conversation_reads r WHERE r.conversation_id = support_conversations.id AND r.user_id = ?), 0)) AS agent_unread_count` : ''
-  const rows = await query(`SELECT support_conversations.*${readProjection} FROM support_conversations WHERE project_id = ? AND id < ?${person ? ' AND contact_id = ?' : ''} ORDER BY id DESC LIMIT 51`, [...(agentId ? [agentId] : []), projectRow.id, before, ...(person ? [person.id] : [])])
-  return { conversations: rows.slice(0, 50).map(summary), nextCursor: rows.length > 50 ? String(rows[49]!.id) : null }
+  const rows = await query(`SELECT support_conversations.*${readProjection} FROM support_conversations WHERE project_id = ? AND id < ?${person ? ' AND contact_id = ?' : ''}${options.status !== undefined ? ' AND status = ?' : ''} ORDER BY id DESC LIMIT ?`, [...(agentId ? [agentId] : []), projectRow.id, before, ...(person ? [person.id] : []), ...(options.status !== undefined ? [options.status] : []), limit + 1])
+  return { conversations: rows.slice(0, limit).map(summary), nextCursor: rows.length > limit ? String(rows[limit - 1]!.id) : null }
 }
 export async function detail(projectRow: Row, id: unknown, person?: Row, beforeMessage?: string | null) {
   const row = await conversation(projectRow, id, person)
@@ -207,8 +224,9 @@ export async function track(projectRow: Row, input: Row) {
 export async function updateConversation(projectRow: Row, id: unknown, input: Row) {
   return await workspaceTransaction(number(projectRow, 'workspace_id'), async () => {
     const row = await conversation(projectRow, id)
-    const status = input.status ?? row.status, assigneeId = input.assigneeId === undefined ? row.assignee_id : Number(input.assigneeId)
-    if (!['open', 'closed', 'snoozed'].includes(String(status))) fail(422, 'invalid_input', 'Unknown conversation status.')
+    const status = input.status ?? row.status, assigneeId = Number(input.assigneeId === undefined ? row.assignee_id : input.assigneeId)
+    if (!Number.isSafeInteger(assigneeId) || assigneeId < 0) fail(422, 'invalid_assignee', 'Assignee must be an active workspace user identifier, or zero to unassign.')
+    if (!conversationStatuses.some(value => value === status)) fail(422, 'invalid_input', 'Unknown conversation status.')
     if (assigneeId) await member(Number(assigneeId), number(projectRow, 'workspace_id'))
     await query('UPDATE support_conversations SET status = ?, assignee_id = ?, unread_count = 0, updated_at = ? WHERE id = ? AND project_id = ?', [status, assigneeId, new Date().toISOString(), row.id, projectRow.id])
     return { conversation: summary((await conversation(projectRow, id))) }

@@ -89,10 +89,17 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
       person = await support.customer(project, bearer(request))
     }
     let body: unknown, status = 200
-    if (operation === 'sessions') body = await support.createSession(project, data)
+    if (operation === 'sessions') {
+      const session = await support.createSession(project, data)
+      body = { ...session, expiresAt: new Date(session.expiresAt).toISOString() }
+    }
     else if (operation === 'events' || operation === 'widget.events') body = await support.track(project, { ...data, ...(person ? { externalId: person.external_id } : {}) })
     else if (operation === 'conversations.create' || operation === 'widget.create') { body = await support.createConversation(project, data, data, person); status = 201 }
-    else if (operation === 'inbox' || operation === 'conversations.list' || operation === 'widget.conversations') body = await support.conversations(project, person, new URL(request.url).searchParams.get('cursor'), operation === 'inbox' ? account?.id : undefined)
+    else if (operation === 'inbox' || operation === 'conversations.list' || operation === 'widget.conversations') {
+      const search = new URL(request.url).searchParams
+      for (const name of ['cursor', 'status', 'limit']) if (search.getAll(name).length > 1) fail(422, 'duplicate_query', `Provide ${name} once.`)
+      body = await support.conversations(project, person, search.get('cursor'), operation === 'inbox' ? account?.id : undefined, { status: search.get('status') ?? undefined, limit: search.get('limit') ?? undefined })
+    }
     else if (operation === 'conversation.detail' || operation === 'widget.detail') body = await support.detail(project, params.id, person, new URL(request.url).searchParams.get('beforeMessage'))
     else if (operation === 'messages.create' || operation === 'agent.reply' || operation === 'widget.reply') { body = operation === 'agent.reply' ? await (await import('./managed-channels')).createChannelReply(project, params.id, data, Number(account?.id)) : await support.reply(project, params.id, data, { customer: person, userId: account?.id }); status = 201 }
     else if (operation === 'conversation.update') body = await support.updateConversation(project, params.id, data)
