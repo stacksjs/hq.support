@@ -1,11 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type { Row } from './database'
 import type { Plan } from './limits'
-import { db, insert, one, query, workspaceTransaction } from './database'
+import { db, insert, one, query, requireWorkspaceTransaction, workspaceTransaction } from './database'
 import { billingPolicy, limitsFor, periodOf } from './limits'
 import { fail, identifier, text } from './errors'
 import { initialWorkspaceEntitlement } from './deployment'
 import { conversationSearch } from './conversation-search'
+import { appendSupportReplay } from './replay'
 
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 export const secret = () => randomBytes(32).toString('hex')
@@ -151,7 +152,10 @@ export async function idempotent<T>(projectRow: Row, operation: string, keyValue
   })
 }
 export async function enqueue(projectRow: Row, kind: string, payload: Row) {
-  return await insert('support_outbox', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, event_id: crypto.randomUUID(), kind, payload: JSON.stringify(payload), available_at: Date.now() })
+  requireWorkspaceTransaction(number(projectRow, 'workspace_id'))
+  const outbox = await insert('support_outbox', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, event_id: crypto.randomUUID(), kind, payload: JSON.stringify(payload), available_at: Date.now() })
+  await appendSupportReplay(projectRow, outbox, payload)
+  return outbox
 }
 const isoTime = (value: unknown) => value instanceof Date ? value.toISOString() : String(value)
 export function summary(row: Row, routing = false) {
