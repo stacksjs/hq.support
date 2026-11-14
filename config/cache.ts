@@ -14,7 +14,9 @@ export default {
    * 'singlestore', or 'sqlite' (entries kept in a file, across restarts and
    * deploys).
    */
-  driver: env.CACHE_DRIVER || 'memory',
+  // The env proxy coerces 'false' to false. Convert before defaulting so
+  // every supplied nonempty value reaches native driver validation.
+  driver: (String(env.CACHE_DRIVER ?? '') || 'memory') as CacheConfig['driver'],
 
   /**
    * Key prefix for cache namespacing

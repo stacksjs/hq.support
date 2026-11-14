@@ -39,10 +39,13 @@ hint bus receives the corresponding `SUPPORT_REALTIME_NAMESPACE`, ending in
 `:replay-v1`. PostgreSQL database and owner selection remains per deployment;
 Redis prefixes do not isolate SQL rows.
 
-Without deployment overrides, cache remains memory and queue remains database,
-with `hq-support-development:*` local prefixes. `.env.example` explicitly selects
-local inline queues. Native boot validation rejects an unknown cache driver and
-unsupported queue drivers; it must finish before the cache is used. No fallback
+Without deployment overrides, the configuration projects memory cache and a
+database queue, with `hq-support-development:*` local prefixes. Native development
+`Job.dispatch()` reads `QUEUE_DRIVER` directly and defaults to inline execution
+when it is absent, even after configuration readiness. `.env.example` explicitly
+selects inline queues; set `QUEUE_DRIVER=database` and run a worker for durable
+local dispatch. Deployed blueprints explicitly select the database driver. Native
+boot validation rejects an unknown cache driver and unsupported queue drivers; it must finish before the cache is used. No fallback
 to memory or inline production jobs is an accepted deployment configuration.
 
 Installed `@stacksjs/queue` 0.75.585 honors `connections.redis.prefix` in the
@@ -57,8 +60,8 @@ batches on shared Redis requires an upstream fix and new provider evidence;
 this app does not patch installed packages or add a parallel batch store.
 
 `tests/feature/runtime-isolation.test.ts` starts fresh processes for both sites in
-all three selected environments and reads the public native configuration. It
-also checks native boot refusals and, with `SUPPORT_TEST_REDIS_URL`, uses the
+all three selected environments and reads the public native configuration. A harmless public job also proves the
+unconfigured local inline dispatch behavior. It also checks native boot refusals and, with `SUPPORT_TEST_REDIS_URL`, uses the
 configured public cache and native Redis queue adapter across processes on the
 same server. The same logical cache key and random queue name remain independent
 in each environment. Cleanup deletes only those owned entries and jobs, never

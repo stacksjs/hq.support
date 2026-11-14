@@ -21,9 +21,10 @@ import { env } from '@stacksjs/env'
  * definitions will be provided.
  */
 
-// Helper to extract the queue driver with correct union type
-const queueDriver = String(env.QUEUE_DRIVER || 'database')
-const failedDriver = String(env.QUEUE_FAILED_DRIVER || 'database')
+// Preserve proxy-coerced false values for native validation. Only an absent
+// or empty setting gets the app's configuration default.
+const queueDriver = String(env.QUEUE_DRIVER ?? '') || 'database'
+const failedDriver = String(env.QUEUE_FAILED_DRIVER ?? '') || 'database'
 
 export default {
   enabled: true,
@@ -134,7 +135,7 @@ export default {
     prefix: env.QUEUE_FAILED_PREFIX || 'hq-support-development:failed',
   },
 
-  // The installed native batch store selects queue.default, and currently
+  // The installed native batch store selects from QUEUE_DRIVER, and currently
   // ignores this Redis prefix. HQ uses database queues/batches in deployments.
   // Batching configuration
   batching: {
