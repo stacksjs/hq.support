@@ -42,7 +42,13 @@ jobs:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
       - run: ./buddy key:generate
+      - run: ./buddy generate:auto-imports
       - run: bun scripts/build-support-elements.ts
+        env:
+          APP_ENV: production
+          NODE_ENV: production
+          APP_URL: https://hq.support
+          APP_DOMAIN: hq.support
       - name: Qualify compiled widget in Chromium
         timeout-minutes: 8
         env:
@@ -66,3 +72,8 @@ jobs:
           test -z "$(git ls-files --others --exclude-standard database/migrations)"
       - run: ./buddy test
       - run: ./buddy build:views
+        env:
+          APP_ENV: production
+          NODE_ENV: production
+          APP_URL: https://hq.support
+          APP_DOMAIN: hq.support

@@ -17,8 +17,28 @@ declare global {
   const isDark: typeof autoImports.isDark
   const preferredDark: typeof autoImports.preferredDark
   const toggleDark: typeof autoImports.toggleDark
+  const createSupportPhone: typeof autoImports.createSupportPhone
   const createSupportAuth: typeof autoImports.createSupportAuth
+  const createAutomations: typeof autoImports.createAutomations
+  const createSupportConsole: typeof autoImports.createSupportConsole
   const createInbox: typeof autoImports.createInbox
+  const createKnowledge: typeof autoImports.createKnowledge
+  const createSupport: typeof autoImports.createSupport
+  const supportLayoutCss: typeof autoImports.supportLayoutCss
+  const support: typeof autoImports.support
+  const createPhone: typeof autoImports.createPhone
+  const createReports: typeof autoImports.createReports
+  const createSupportSettings: typeof autoImports.createSupportSettings
+  const createTicketConfiguration: typeof autoImports.createTicketConfiguration
+  const stored: typeof autoImports.stored
+  const normalizeType: typeof autoImports.normalizeType
+  const fieldText: typeof autoImports.fieldText
+  const fieldInputs: typeof autoImports.fieldInputs
+  const typedFields: typeof autoImports.typedFields
+  const inputType: typeof autoImports.inputType
+  const ticketStates: typeof autoImports.ticketStates
+  const createTickets: typeof autoImports.createTickets
+  const createUsage: typeof autoImports.createUsage
 }
 
 export {}

@@ -19,6 +19,8 @@ bun scripts/build-support-elements.ts
 
 Keep `.env` and `.env.keys` private. The example environment has no usable provider credentials. Configure providers explicitly to enable their capabilities; missing configuration does not simulate delivery or payment.
 
+For uncapped core self-hosting, set the operator-only `SUPPORT_DEPLOYMENT_MODE=selfhost` before creating workspaces. Existing workspace plans remain explicit. [Self-hosting](docs/self-hosting.md) describes enterprise licensing and the current managed-wallet requirements for paid providers.
+
 ## Verification
 
 Build the widget before running tests that verify its emitted artifacts:

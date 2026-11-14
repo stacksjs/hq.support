@@ -39,6 +39,9 @@ signatures, Discord cursor recovery and signed private-image GET/HEAD. The
 core HTTP fixture passes 63 checks per database, including private attachment
 metadata/download refusal, internal-note confidentiality and explicit public
 publication. PostgreSQL uses the owned local vector-capable cluster; no shared
-server schema was modified. These runs exercised the reviewed native source
-aliases while release installation was pending. Installed-package and live
-provider acceptance remain separate requirements.
+server schema was modified. Initial qualification used reviewed native source
+aliases. The complete application suite subsequently passed 46 tests using
+registry-installed native 0.75.579 packages without aliases or local links.
+Native 0.75.580 also passes repeated migration generation without changes,
+TypeScript checking, 18 affected artifact/configuration tests and all 78 browser
+assertions. Live provider acceptance remains a separate requirement.
