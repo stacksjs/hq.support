@@ -740,7 +740,7 @@ declare module '@stacksjs/database' {
       status: string
       sealed_grant: string | null
       claim: string | null
-      expires_at: number
+      expires_at: number | bigint
     }
     jobs: {
       // columns
@@ -1539,34 +1539,7 @@ declare module '@stacksjs/database' {
       last_used_at: string
       user_id: number
     }
-    support_api_keys: {
-      // columns
-      id: number
-      created_at: string
-      updated_at: string | null
-      workspace_id: number
-      project_id: number
-      digest: string
-      scope: string
-      revoked_at: number
-    }
-    support_articles: {
-      // columns
-      id: number
-      created_at: string
-      updated_at: string | null
-      workspace_id: number
-      project_id: number
-      slug: string
-      title: string
-      body: string
-      status: string
-      visibility: string
-      locale: string
-      collection: string
-      revision: number
-    }
-    support_attachments: {
+    support_ai_runs: {
       // columns
       id: number
       created_at: string
@@ -1574,31 +1547,223 @@ declare module '@stacksjs/database' {
       workspace_id: number
       project_id: number
       conversation_id: number
+      actor_scope: string
+      key: string
+      fingerprint: string
+      status: string
+      period: string
+      previous_period: string
+      owner_token: string
+      lease_until: number | bigint
+      reserved_tokens: number
+      actual_tokens: number
+      charged_unit: number
+      response: string
+      error_code: string
+    }
+    support_api_keys: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      digest: string
+      scope: string
+      revoked_at: number | bigint
+    }
+    support_article_revisions: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      article_id: number
+      revision: number
+      author_id: number
+      integration_key_id: number | bigint
+      snapshot: string
+    }
+    support_articles: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      slug: string
+      title: string
+      body: string
+      status: string
+      visibility: string
+      locale: string
+      collection: string
+      revision: number | bigint
+    }
+    support_assignment_audits: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      conversation_id: number | bigint
+      actor_id: number | bigint
+      workflow_run_id: number | bigint
+      source: string
+      reason: string
+      before_state: string
+      after_state: string
+    }
+    support_attachments: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      visibility: "private" | "public"
+      contact_id: number | bigint
+      idempotency_key: string
+      sha256: string
+      storage_disk: string
+      lease_token: string
+      lease_until: number | bigint
+      workspace_id: number | bigint
+      project_id: number | bigint
+      conversation_id: number | bigint
       storage_key: string
       file_name: string
       mime_type: string
-      bytes: number
+      bytes: number | bigint
       status: string
+    }
+    support_billing_checkouts: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      public_id: string
+      operation_key: string
+      kind: string
+      amount_cents: number | bigint
+      plan: string
+      interval: string
+      status: string
+      provider_session: string
+      provider_payment: string
+      provider_customer: string
+      provider_subscription: string
+      url: string
+      refunded_cents: number | bigint
+    }
+    support_business_calendars: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      name: string
+      time_zone: string
+      definition: string
     }
     support_challenges: {
       // columns
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
-      project_id: number
+      origin: string
+      owner_id: number | bigint
+      framework_version: string
+      attempts: number | bigint
+      workspace_id: number | bigint
+      project_id: number | bigint
       digest: string
       kind: string
-      expires_at: number
-      consumed_at: number
+      expires_at: number | bigint
+      consumed_at: number | bigint
+    }
+    support_channel_consents: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      channel_id: number | bigint
+      recipient: string
+      status: "opted_out" | "opted_in"
+      provider_event_id: string
+      event_at: number | bigint
+    }
+    support_channel_cursors: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      channel_id: number | bigint
+      cursor: string
+      lease_token: string
+      lease_until: number | bigint
+    }
+    support_channel_deliveries: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      public_id: string
+      payload: string
+      workspace_id: number | bigint
+      project_id: number | bigint
+      channel_id: number | bigint
+      thread_id: number | bigint
+      message_id: number | bigint
+      operation_key: string
+      request_hash: string
+      status: string
+      configuration_hash: string
+      provider_message_id: string
+      wallet_reservation_id: string
+      reserved_cents: number | bigint
+      provider_cost_micros: number | bigint
+      provider_currency: string
+      attempts: number | bigint
+      lease_token: string
+      lease_until: number | bigint
+      available_at: number | bigint
+      last_error: string
+      receipt: string
+    }
+    support_channel_threads: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      channel_id: number | bigint
+      remote_key: string
+      contact_id: number | bigint
+      conversation_id: number | bigint
+      recipient: string
+      last_inbound_at: number | bigint
+      consent: string
     }
     support_channels: {
       // columns
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
-      project_id: number
+      public_id: string
+      label: string
+      external_id: string
+      verified_at: number | bigint
+      last_error: string
+      workspace_id: number | bigint
+      project_id: number | bigint
       provider: string
       status: string
       configuration: string
@@ -1608,50 +1773,192 @@ declare module '@stacksjs/database' {
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
-      project_id: number
+      workspace_id: number | bigint
+      project_id: number | bigint
       external_id: string
       name: string
       email: string
       company: string
       attributes: string
     }
+    support_conversation_reads: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      conversation_id: number | bigint
+      user_id: number | bigint
+      last_message_id: number | bigint
+    }
     support_conversations: {
       // columns
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
-      project_id: number
-      contact_id: number
+      team_id: number | bigint
+      inbox_id: number | bigint
+      routing_reason: string
+      workspace_id: number | bigint
+      project_id: number | bigint
+      contact_id: number | bigint
       subject: string
       status: string
-      assignee_id: number
-      unread_count: number
+      assignee_id: number | bigint
+      unread_count: number | bigint
       channel: string
-      ai_turns: number
-      ai_tokens: number
+      ai_turns: number | bigint
+      ai_tokens: number | bigint
       ai_charged_period: string
+    }
+    support_csat_responses: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      conversation_id: number | bigint
+      contact_id: number | bigint
+      setting_revision: number | bigint
+      question: string
+      score: number | bigint
+      comment: string
+    }
+    support_csat_settings: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      enabled: number
+      revision: number | bigint
+      question: string
     }
     support_customer_sessions: {
       // columns
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
-      project_id: number
-      contact_id: number
+      workspace_id: number | bigint
+      project_id: number | bigint
+      contact_id: number | bigint
       digest: string
-      expires_at: number
+      expires_at: number | bigint
+    }
+    support_email_receipts: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      public_id: string
+      workspace_id: number | bigint
+      project_id: number | bigint
+      channel_id: number | bigint
+      ses_message_id: string
+      sns_message_id: string
+      source_hash: string
+      payload: string
+      status: string
+      raw_disk: string
+      raw_key: string
+      raw_sha256: string
+      raw_bytes: number | bigint
+      inbound_id: number | bigint
+      lease_token: string
+      lease_until: number | bigint
+      attempts: number | bigint
+      last_error: string
+    }
+    support_enterprise_audit_events: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      actor_id: number | bigint | null
+      action: string
+      target_id: string
+      detail: string
+    }
+    support_enterprise_groups: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      provider_id: number | bigint
+      external_id: string
+      display_name: string
+      members: string
+    }
+    support_enterprise_identities: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      deleted_at: number | bigint
+      workspace_id: number | bigint
+      provider_id: number | bigint
+      membership_id: number | bigint
+      user_id: number | bigint | null
+      external_id: string
+      subject: string | null
+      active: number
+    }
+    support_enterprise_providers: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      public_id: string
+      protocol: string
+      issuer: string
+      client_id: string
+      enabled: number
+    }
+    support_enterprise_retention_holds: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      conversation_id: number | bigint
+      reason: string
+      active: number
+    }
+    support_enterprise_retention_policies: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      days: number | bigint
+      enabled: number
+      last_run_at: number | bigint
+    }
+    support_enterprise_scim_tokens: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      provider_id: number | bigint
+      digest: string
+      expires_at: number | bigint
+      revoked_at: number | bigint
     }
     support_events: {
       // columns
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
-      project_id: number
-      contact_id: number
+      workspace_id: number | bigint
+      project_id: number | bigint
+      contact_id: number | bigint
       event: string
       attributes: string
     }
@@ -1660,33 +1967,149 @@ declare module '@stacksjs/database' {
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
-      project_id: number
+      workspace_id: number | bigint
+      project_id: number | bigint
       operation: string
       key: string
       fingerprint: string
       response: string
+    }
+    support_import_mappings: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      provider: string
+      entity_type: string
+      external_id: string
+      target_id: number | bigint
+      source_hash: string
+      source_payload: string
+    }
+    support_import_records: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      import_run_id: number | bigint
+      position: number | bigint
+      entity_type: string
+      external_id: string
+      status: string
+      target_id: number | bigint
+      error_code: string
+      message: string
+      source_payload: string
+    }
+    support_import_runs: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      provider: string
+      source_hash: string
+      source_key: string
+      source_disk: string
+      source_name: string
+      source_bytes: number | bigint
+      total_records: number | bigint
+      cursor: number | bigint
+      processed: number | bigint
+      imported: number | bigint
+      skipped: number | bigint
+      failed: number | bigint
+      status: string
+      lease_token: string
+      lease_until: number | bigint
+      last_error: string
     }
     support_inbound: {
       // columns
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
-      project_id: number
+      attempts: number | bigint
+      lease_token: string
+      lease_until: number | bigint
+      available_at: number | bigint
+      workspace_id: number | bigint
+      project_id: number | bigint
       provider: string
       provider_event_id: string
       payload: string
       status: string
       last_error: string
     }
-    support_memberships: {
+    support_knowledge_chunks: {
       // columns
       id: number
       created_at: string
       updated_at: string | null
       workspace_id: number
-      user_id: number | null
+      project_id: number
+      source_id: number
+      index_id: number
+      revision: number
+      position: number
+      content: string
+      embedding: string
+      content_hash: string
+    }
+    support_knowledge_indexes: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      source_id: number
+      revision: number
+      status: string
+      embedding_model: string
+      dimensions: number
+      chunk_count: number
+      content_hash: string
+      period: string
+      reserved_tokens: number | bigint
+      actual_tokens: number | bigint
+      reservation_state: string
+      token_accounting: string
+      lease_until: number | bigint
+      owner_token: string
+    }
+    support_knowledge_sources: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number
+      project_id: number
+      article_id: number
+      source_key: string
+      current_revision: number
+      active_index_id: number
+      audience: string
+      language: string
+      publication: string
+      permission_granted: number
+      deleted_at: number | bigint
+      indexing_lease_until: number | bigint
+      last_error: string
+      requested_token: string
+    }
+    support_memberships: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      user_id: number | bigint | null
       email: string
       role: string
       status: string
@@ -1696,14 +2119,14 @@ declare module '@stacksjs/database' {
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
-      project_id: number
-      conversation_id: number
-      contact_id: number
+      workspace_id: number | bigint
+      project_id: number | bigint
+      conversation_id: number | bigint
+      contact_id: number | bigint
       body: string
       visibility: string
       author_type: string
-      author_id: number
+      author_id: number | bigint
       delivery_status: string
     }
     support_outbox: {
@@ -1711,76 +2134,405 @@ declare module '@stacksjs/database' {
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
-      project_id: number
+      provider_receipt: string
+      delivered_at: number | bigint
+      workspace_id: number | bigint
+      project_id: number | bigint
       event_id: string
       kind: string
       payload: string
       status: string
-      attempts: number
-      available_at: number
+      attempts: number | bigint
+      available_at: number | bigint
       lease_token: string
-      lease_until: number
+      lease_until: number | bigint
       last_error: string
+    }
+    support_payment_events: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      provider_event_id: string
+      digest: string
+      kind: string
+    }
+    support_phone_calls: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      assigned_agent_id: number | bigint | null
+      child_sid: string | null
+      transfer_at: number | bigint
+      reserved_cents: number | bigint
+      ai_reserved_cents: number | bigint
+      consent_at: number | bigint
+      callback_origin: string
+      workspace_id: number | bigint
+      project_id: number | bigint
+      channel_id: number | bigint
+      public_id: string
+      operation_key: string
+      fingerprint: string
+      actor_id: number | bigint | null
+      contact_id: number | bigint | null
+      conversation_id: number | bigint | null
+      provider_sid: string | null
+      direction: string
+      from_number: string
+      to_number: string
+      country: string
+      mode: string
+      status: string
+      provider_state: string
+      max_duration_seconds: number | bigint
+      reservation_id: string
+      ai_reservation_id: string
+      last_sequence: number | bigint
+      stream_state: string
+      stream_digest: string
+      started_at: number | bigint
+      ended_at: number | bigint
+      deadline_at: number | bigint
+      duration_seconds: number | bigint
+      provider_cost_micros: number | bigint | null
+      ai_cost_micros: number | bigint | null
+      settled_at: number | bigint
+      transcript: string
+      notice: string
+      last_error: string
+    }
+    support_phone_events: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      call_id: number | bigint
+      digest: string
+      sequence: number | bigint
+      status: string
+      payload: string
+    }
+    support_phone_operations: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      channel_id: number | bigint
+      key: string
+      fingerprint: string
+      state: string
+      outcome: string
+    }
+    support_phone_tool_results: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      call_id: number | bigint
+      tool_call_id: string
+      fingerprint: string
+      name: string
+      result: string
+    }
+    support_phone_usage: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      call_id: number | bigint
+      response_id: string
+      usage: string
+      cost_micros: number | bigint | null
     }
     support_projects: {
       // columns
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
+      buddy_connected_at: number | bigint
+      verified_origin: string
+      deployment_verified_at: number | bigint
+      workspace_id: number | bigint
       public_id: string
       name: string
       allowed_origins: string
       anonymous_enabled: number
+    }
+    support_provider_cost_buckets: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      provider: string
+      period: string
+      provider_cost_micros: number | bigint
+      charged_cents: number | bigint
+      rate_version: string
+    }
+    support_routing_agents: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      user_id: number | bigint
+      availability: string
+      capacity: number | bigint
+    }
+    support_subscriptions: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      checkout_id: string
+      provider_id: string
+      provider_customer: string
+      status: string
+      plan: string
+      interval: string
+      current_period_end: number | bigint
+      cancel_at_period_end: number
+      sync_version: number | bigint
+    }
+    support_team_inboxes: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      team_id: number | bigint
+      name: string
+      active: number
+      is_default: number
+      assignment_mode: string
+      last_member_id: number | bigint
+    }
+    support_team_members: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      team_id: number | bigint
+      user_id: number | bigint
+      active: number
+    }
+    support_teams: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      name: string
+      active: number
+    }
+    support_ticket_relations: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      ticket_id: number | bigint
+      related_ticket_id: number | bigint
+      kind: string
+    }
+    support_ticket_sla_clocks: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      ticket_id: number | bigint
+      cycle: number | bigint
+      snapshot: string
+      phase: string
+      anchor_at: number | bigint
+      first_remaining_ms: number | bigint
+      resolution_remaining_ms: number | bigint
+      first_due_at: number | bigint
+      resolution_due_at: number | bigint
+      first_response_at: number | bigint
+      resolved_at: number | bigint
+      first_breached_at: number | bigint
+      resolution_breached_at: number | bigint
+    }
+    support_ticket_sla_escalations: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      clock_id: number | bigint
+      ticket_id: number | bigint
+      metric: string
+      deadline_at: number | bigint
+      processed_at: number | bigint
+      outbox_id: number | bigint
+    }
+    support_ticket_sla_policies: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      name: string
+      calendar_id: number | bigint
+      first_response_minutes: number | bigint
+      resolution_minutes: number | bigint
+      pause_states: string
+      escalation_assignee_id: number | bigint
+    }
+    support_ticket_types: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      name: string
+      kind: string
+      fields: string
+      states: string
+      sla_policy_id: number | bigint
     }
     support_tickets: {
       // columns
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
-      project_id: number
-      contact_id: number
-      conversation_id: number | null
+      type_id: number | bigint
+      kind: string
+      state: string
+      custom_fields: string
+      type_snapshot: string
+      sla_cycle: number | bigint
+      workspace_id: number | bigint
+      project_id: number | bigint
+      contact_id: number | bigint
+      conversation_id: number | bigint | null
       title: string
       description: string
       status: string
       priority: string
-      assignee_id: number
-      due_at: number
+      assignee_id: number | bigint
+      due_at: number | bigint
     }
     support_usage: {
       // columns
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
+      workspace_id: number | bigint
       period: string
       meter: string
-      used: number
+      used: number | bigint
+    }
+    support_wallet_entries: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      reference: string
+      kind: string
+      amount_cents: number | bigint
+      balance_cents: number | bigint
+      provider: string
+      provider_reference: string
+    }
+    support_wallet_reservations: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      provider_cost_micros: number | bigint
+      workspace_id: number | bigint
+      public_id: string
+      operation_key: string
+      provider: string
+      reserved_cents: number | bigint
+      actual_cents: number | bigint
+      status: string
+      provider_reference: string
+    }
+    support_workflow_dispatches: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      source_id: string
+      event_id: number | bigint
+      depth: number | bigint
     }
     support_workflow_runs: {
       // columns
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
-      project_id: number
-      workflow_id: number
-      event_id: number
+      workflow_version_id: number | bigint
+      context: string
+      lease_token: string
+      lease_until: number | bigint
+      attempts: number | bigint
+      step_count: number | bigint
+      workspace_id: number | bigint
+      project_id: number | bigint
+      workflow_id: number | bigint
+      event_id: number | bigint
       status: string
-      cursor: number
-      available_at: number
+      cursor: number | bigint
+      available_at: number | bigint
       last_error: string
+    }
+    support_workflow_steps: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      workflow_run_id: number | bigint
+      step_id: string
+      type: string
+      result: string
+    }
+    support_workflow_versions: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      workflow_id: number | bigint
+      version: number | bigint
+      event: string
+      definition: string
+      published_by: number | bigint
     }
     support_workflows: {
       // columns
       id: number
       created_at: string
       updated_at: string | null
-      workspace_id: number
-      project_id: number
+      published_version: number | bigint
+      workspace_id: number | bigint
+      project_id: number | bigint
       name: string
       event: string
       enabled: number
@@ -1791,17 +2543,20 @@ declare module '@stacksjs/database' {
       id: number
       created_at: string
       updated_at: string | null
+      free_qualified_at: number | bigint
       public_id: string
       name: string
-      owner_id: number
+      owner_id: number | bigint
       plan: string
-      trial_ends_at: number
+      trial_ends_at: number | bigint
       stacks_verified: number
       deployment_verified: number
       overages_enabled: number
-      spending_cap_cents: number
-      wallet_cents: number
-      storage_bytes: number
+      spending_cap_cents: number | bigint
+      wallet_cents: number | bigint
+      managed_daily_cap_cents: number | bigint
+      managed_monthly_cap_cents: number | bigint
+      storage_bytes: number | bigint
     }
     taggable_models: {
       // columns
@@ -1921,6 +2676,7 @@ declare module '@stacksjs/database' {
       two_factor_enabled: number | null
       two_factor_last_used_step: number | null
       stripe_id: string | null
+      support_free_workspace_id: number | bigint
       avatar: string | null
       name: string
       email: string
