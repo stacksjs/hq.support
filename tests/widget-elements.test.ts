@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 
 const root = resolve(import.meta.dir, '..')
@@ -27,4 +29,31 @@ describe('native support element artifacts', () => {
     expect(typeof module.Messenger.prototype.boot).toBe('function')
     expect(typeof module.Messenger.prototype.shutdown).toBe('function')
   })
+  test('a standalone strict TypeScript host can use the generated messenger lifecycle', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'hq-support-widget-types-'))
+    try {
+      const types = resolve(dist, 'hq-support-messenger.js')
+      await Bun.write(resolve(directory, 'consumer.ts'), `
+import type { Messenger } from ${JSON.stringify(types)}
+const messenger: Messenger = document.createElement('hq-support-messenger')
+const boot: Promise<void> = messenger.boot({ url: 'https://hq.support', project: 'public-id', token: 'session' })
+const update: Promise<void> = messenger.update({ token: 'new-session' })
+const track: Promise<{ id: string, accepted: boolean }> = messenger.track({ event: 'project.viewed', attributes: { section: 'settings' } })
+const open: void = messenger.open()
+const close: void = messenger.close()
+const shutdown: void = messenger.shutdown()
+// @ts-expect-error Customer tokens are strings.
+messenger.boot({ token: 123 })
+// @ts-expect-error Tracking requires an event name.
+messenger.track({ attributes: {} })
+void [boot, update, track, open, close, shutdown]
+`)
+      await Bun.write(resolve(directory, 'tsconfig.json'), JSON.stringify({ compilerOptions: { noEmit: true, strict: true, skipLibCheck: false, target: 'esnext', lib: ['esnext', 'dom'], module: 'esnext', moduleResolution: 'bundler', types: [] }, files: ['consumer.ts'] }))
+      const compiler = Bun.spawn(['bun', 'x', '--bun', 'tsc', '-p', resolve(directory, 'tsconfig.json'), '--pretty', 'false'], { cwd: root, stdout: 'pipe', stderr: 'pipe' })
+      const output = await new Response(compiler.stdout).text() + await new Response(compiler.stderr).text()
+      expect(await compiler.exited, output).toBe(0)
+    }
+    finally { await rm(directory, { recursive: true, force: true }) }
+  }, 30000)
+
 })
