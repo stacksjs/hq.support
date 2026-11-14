@@ -6,7 +6,10 @@ export default defineModel({
   table: 'support_attachments',
   traits: { useTimestamps: true },
   dashboard: { access: false },
-  indexes: [{ name: 'support_attachment_idempotency', columns: ['project_id', 'idempotency_key'], unique: true }],
+  indexes: [
+    { name: 'support_attachment_idempotency', columns: ['project_id', 'idempotency_key'], unique: true },
+    { name: 'support_attachment_history', columns: ['workspace_id', 'project_id', 'conversation_id', 'status', 'id'] },
+  ],
   attributes: {
     visibility: { fillable: true, required: true, default: 'private', validation: { rule: schema.enum(['private', 'public']) } },
     contactId: { foreignKey: false, type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },

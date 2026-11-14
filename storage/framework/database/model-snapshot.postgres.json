@@ -411,6 +411,17 @@
               "idempotency_key"
             ],
             "type": "unique"
+          },
+          {
+            "name": "support_attachment_history",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "conversation_id",
+              "status",
+              "id"
+            ],
+            "type": "index"
           }
         ]
       },
@@ -1741,6 +1752,18 @@
               "project_id",
               "conversation_id",
               "id"
+            ],
+            "type": "index"
+          },
+          {
+            "name": "support_message_public_activity",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "conversation_id",
+              "contact_id",
+              "visibility",
+              "created_at"
             ],
             "type": "index"
           }
@@ -9413,7 +9436,7 @@
       }
     ]
   },
-  "hash": "5ee1d743a940c21c15b1631ae3e030cbbeac24dcdd60bde13979e5e271065790",
+  "hash": "6a34ba890e36768016ae7d24a486986aad77c9f9b912a271b76f8ea3cc77ce6b",
   "dialect": "postgres",
-  "updatedAt": "2026-11-14T16:07:16.706Z"
+  "updatedAt": "2026-11-14T17:33:10.461Z"
 }

@@ -410,6 +410,17 @@
               "idempotency_key"
             ],
             "type": "unique"
+          },
+          {
+            "name": "support_attachment_history",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "conversation_id",
+              "status",
+              "id"
+            ],
+            "type": "index"
           }
         ]
       },
@@ -1740,6 +1751,18 @@
               "project_id",
               "conversation_id",
               "id"
+            ],
+            "type": "index"
+          },
+          {
+            "name": "support_message_public_activity",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "conversation_id",
+              "contact_id",
+              "visibility",
+              "created_at"
             ],
             "type": "index"
           }
@@ -9410,7 +9433,7 @@
       }
     ]
   },
-  "hash": "9aa28e396eb946054e317558d5c0a1f96e604723f3ab6a2343667dabc5ca9482",
+  "hash": "edbc712fedd636228e5f1d91df46dee32669ba77d9ae841a6bf84447deb755c5",
   "dialect": "sqlite",
-  "updatedAt": "2026-11-14T16:07:16.574Z"
+  "updatedAt": "2026-11-14T17:33:10.283Z"
 }
