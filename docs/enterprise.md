@@ -173,7 +173,9 @@ policy stay available after entitlement expiry; expired licenses stop deletion.
 A thread must be closed and inactive for the complete window. Open/recent
 threads, legal holds, active AI work, and unfinished attachment writes are
 excluded. Each run redacts message body, conversation subject, associated ticket
-text, AI answer cache and matching conversation/reply idempotency response copies.
+text, AI answer cache, matching conversation/reply idempotency response copies,
+and linked completed phone transcripts/tool-result copies. Active phone work is
+excluded, and conversation legal holds also protect these voice text records.
 It preserves records and billing/delivery identifiers. Native storage deletion
 verifies attachment objects are gone before releasing their exact byte charge.
 The job can retry without charging twice or resurrecting an old idempotent reply.
@@ -188,8 +190,9 @@ scheduler process. The sweep visits at most 20 policies and 25 eligible threads
 per workspace per run; monitor backlog and worker failures before raising limits.
 
 This is a basic content policy, not a complete personal-data deletion service.
-Contact identity/attributes, raw provider inbound payloads, event properties,
-workflow contexts, voice recordings/transcripts, attachment metadata, external
+Contact identity/attributes, private migration source archives and source payloads
+in import runs/records/mappings, raw provider inbound payloads, event properties,
+workflow contexts, raw voice recordings/external provider transcripts, attachment metadata, external
 provider copies and backups are outside this policy and require separate
 retention/deletion controls before claiming comprehensive PII erasure. Legal holds
 here govern only the content classes managed by this policy. S3 lifecycle and

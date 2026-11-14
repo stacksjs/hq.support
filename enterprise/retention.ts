@@ -36,7 +36,7 @@ export async function retentionHold(workspaceId: number, conversationId: unknown
 }
 async function candidates(workspaceId: number, days: number, limit: number, now: number) {
   const cutoff = new Date(now - days * 86400000).toISOString()
-  return await query(`SELECT c.* FROM support_conversations c WHERE c.workspace_id = ? AND c.status = 'closed' AND COALESCE(c.updated_at, c.created_at) < ? AND (c.subject != ? OR EXISTS (SELECT 1 FROM support_messages m WHERE m.workspace_id = c.workspace_id AND m.conversation_id = c.id AND m.body != ?) OR EXISTS (SELECT 1 FROM support_attachments f WHERE f.workspace_id = c.workspace_id AND f.conversation_id = c.id AND f.status != 'deleted')) AND NOT EXISTS (SELECT 1 FROM support_enterprise_retention_holds h WHERE h.workspace_id = c.workspace_id AND h.conversation_id = c.id AND h.active = ?) AND NOT EXISTS (SELECT 1 FROM support_ai_runs a WHERE a.workspace_id = c.workspace_id AND a.conversation_id = c.id AND a.status = 'pending') ORDER BY c.id LIMIT ?`, [workspaceId, cutoff, retentionMarker, retentionMarker, true, limit])
+  return await query(`SELECT c.* FROM support_conversations c WHERE c.workspace_id = ? AND c.status = 'closed' AND COALESCE(c.updated_at, c.created_at) < ? AND (c.subject != ? OR EXISTS (SELECT 1 FROM support_messages m WHERE m.workspace_id = c.workspace_id AND m.conversation_id = c.id AND m.body != ?) OR EXISTS (SELECT 1 FROM support_attachments f WHERE f.workspace_id = c.workspace_id AND f.conversation_id = c.id AND f.status != 'deleted')) AND NOT EXISTS (SELECT 1 FROM support_enterprise_retention_holds h WHERE h.workspace_id = c.workspace_id AND h.conversation_id = c.id AND h.active = ?) AND NOT EXISTS (SELECT 1 FROM support_ai_runs a WHERE a.workspace_id = c.workspace_id AND a.conversation_id = c.id AND a.status = 'pending') AND NOT EXISTS (SELECT 1 FROM support_phone_calls p WHERE p.workspace_id = c.workspace_id AND p.conversation_id = c.id AND p.status NOT IN ('completed', 'busy', 'failed', 'no-answer', 'canceled')) ORDER BY c.id LIMIT ?`, [workspaceId, cutoff, retentionMarker, retentionMarker, true, limit])
 }
 export async function previewRetention(workspaceId: number) {
   const policy = await retentionPolicy(workspaceId)
@@ -47,7 +47,7 @@ export async function previewRetention(workspaceId: number) {
 function redact(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redact)
   if (!value || typeof value !== 'object') return value
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, ['body', 'answer', 'subject', 'description'].includes(key) && typeof item === 'string' ? retentionMarker : redact(item)]))
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, ['body', 'answer', 'subject', 'description', 'title'].includes(key) && typeof item === 'string' ? retentionMarker : redact(item)]))
 }
 /** Opt-in closed-thread content retention. Relational records and accounting stay intact. */
 export async function applyRetention(workspaceId: number, actorId: number | null = null, now = Date.now()) {
@@ -78,6 +78,12 @@ export async function applyRetention(workspaceId: number, actorId: number | null
       }
       const ai = await query("SELECT id, response FROM support_ai_runs WHERE workspace_id = ? AND conversation_id = ? AND status != 'pending'", [workspaceId, row.id])
       for (const record of ai) if (record.response) await query('UPDATE support_ai_runs SET response = ? WHERE id = ? AND workspace_id = ?', [JSON.stringify(redact(JSON.parse(String(record.response)))), record.id, workspaceId])
+      const calls = await query('SELECT id FROM support_phone_calls WHERE workspace_id = ? AND conversation_id = ?', [workspaceId, row.id])
+      for (const call of calls) {
+        await query('UPDATE support_phone_calls SET transcript = ? WHERE id = ? AND workspace_id = ?', [retentionMarker, call.id, workspaceId])
+        const tools = await query('SELECT id, result FROM support_phone_tool_results WHERE workspace_id = ? AND call_id = ?', [workspaceId, call.id])
+        for (const tool of tools) await query('UPDATE support_phone_tool_results SET result = ? WHERE id = ? AND workspace_id = ?', [JSON.stringify(redact(JSON.parse(String(tool.result)))), tool.id, workspaceId])
+      }
       await audit(workspaceId, actorId, 'retention.conversation.redacted', row.id, { attachments: files.length, days: policy.days })
       processed++
     }
