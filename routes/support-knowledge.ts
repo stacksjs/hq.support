@@ -6,6 +6,7 @@ route.get('/support/projects/{project}/knowledge', knowledgeAction('search')).mi
 route.post('/support/projects/{project}/knowledge', knowledgeAction('create')).middleware('auth').rateLimit(30, 'minute')
 route.post('/support/projects/{project}/knowledge/import', knowledgeAction('import')).middleware('auth').rateLimit(10, 'minute')
 route.patch('/support/projects/{project}/knowledge/{id}', knowledgeAction('update')).middleware('auth').rateLimit(30, 'minute')
+route.get('/support/projects/{project}/knowledge/{id}', knowledgeAction('article')).middleware('auth').rateLimit(120, 'minute')
 route.get('/support/projects/{project}/knowledge/{id}/revisions', knowledgeAction('revisions')).middleware('auth')
 route.get('/help/projects/{project}/articles', knowledgeAction('public.search')).rateLimit(120, 'minute')
 route.get('/help/projects/{project}/articles/{slug}', knowledgeAction('public.article')).rateLimit(120, 'minute')

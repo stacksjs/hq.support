@@ -1,4 +1,6 @@
 import type { Row } from './database'
+import { config } from '@stacksjs/config'
+import { ensureDatabaseConfigLoaded, resolvedDatabaseConfig } from '@stacksjs/database/runtime'
 import { insert, one, query, workspaceTransaction } from './database'
 import { fail, identifier, text } from './errors'
 import { member } from './service'
@@ -84,12 +86,65 @@ export async function updateArticle(project: Row, id: unknown, data: Row, author
 const queryStopWords = new Set('a an the i me my we our you your it is are was be been do does did how what when where can could would should to of for in on at and or please help'.split(' '))
 export function searchTerms(value: string) { return [...new Set(value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])].filter(term => !queryStopWords.has(term)).slice(0, 12) }
 
-/** Deterministic lexical AND retrieval over durable SQL rows; no in-memory vector index. */
+/** Public delivery always intersects authoritative article state and any existing source grant. */
+function publicArticleFilters(project: Row, scope: KnowledgeScope) {
+  const values: unknown[] = [project.id, project.workspace_id]
+  let where = "a.project_id = ? AND a.workspace_id = ? AND a.status = 'published' AND a.visibility = 'public'"
+  // A missing source is a legacy public article awaiting backfill. An existing source must agree
+  // with its authoritative binding, audience, language, revision and publication, and grant access.
+  where += " AND NOT EXISTS (SELECT 1 FROM support_knowledge_sources ks WHERE ks.article_id = a.id AND (ks.project_id <> a.project_id OR ks.workspace_id <> a.workspace_id OR ks.permission_granted <> TRUE OR ks.deleted_at <> 0 OR ks.audience <> 'public' OR ks.publication <> 'published' OR ks.language <> a.locale OR ks.current_revision <> a.revision))"
+  if (scope.locale) { where += ' AND a.locale = ?'; values.push(localeOf(scope.locale)) }
+  if (scope.collection) { where += ' AND a.collection = ?'; values.push(text(scope.collection, 'collection', 120)) }
+  return { where, values }
+}
+export function publicArticleUrl(project: Row, article: Row) {
+  const configured = String(config.app.url || 'https://hq.support')
+  const base = new URL(/^https?:\/\//.test(configured) ? configured : `https://${configured}`)
+  if (!['https:', 'http:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) fail(503, 'public_url_unavailable', 'The public help-center URL is not configured correctly.')
+  const url = new URL('/help/article', base)
+  url.searchParams.set('project', String(project.public_id))
+  url.searchParams.set('slug', String(article.slug))
+  url.searchParams.set('locale', String(article.locale))
+  return url.toString()
+}
+function publicArticleView(project: Row, row: Row) { return { ...articleView(row), url: publicArticleUrl(project, row) } }
+async function publicArticleSearch(project: Row, search: string, scope: KnowledgeScope) {
+  if (search.length > 500) fail(422, 'search_too_long', 'Help search accepts at most 500 characters.')
+  const suppliedTerms = [...new Set(search.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])].filter(term => !queryStopWords.has(term))
+  if (suppliedTerms.length > 12) fail(422, 'search_too_many_terms', 'Help search accepts at most twelve distinct terms.')
+  const terms = searchTerms(search), supplied = Boolean(search.trim())
+  await ensureDatabaseConfigLoaded()
+  const driver = resolvedDatabaseConfig().driver
+  if (driver !== 'postgres' && driver !== 'sqlite') fail(503, 'search_driver_unavailable', 'Public help search requires PostgreSQL or SQLite.')
+  const mode = supplied ? driver === 'postgres' ? 'fulltext' : 'lexical' : 'listing'
+  const metadata = { mode, providerRequests: false, budgetMeter: null, indexedGenerationRequired: false, legacyArticlesIncluded: true, corpus: 'current-published-articles', sourceGrants: 'required-when-source-exists', queryTermLimit: 12, resultLimit: 50 }
+  if (supplied && !terms.length) return { articles: [], retrievalMode: mode, search: { ...metadata, hasMore: false } }
+  const filters = publicArticleFilters(project, scope), values = [...filters.values]
+  // Article search does not need vector/chunk generations or an embedding provider. Reading the
+  // current authorized article rows also keeps legacy public articles available during backfill.
+  const permitted = `WITH permitted AS ${driver === 'postgres' ? 'MATERIALIZED ' : ''}(SELECT a.* FROM support_articles a WHERE ${filters.where})`
+  let statement: string
+  if (!supplied) statement = `${permitted} SELECT p.* FROM permitted p ORDER BY p.id DESC LIMIT 51`
+  else if (driver === 'postgres') {
+    const vector = "(setweight(to_tsvector('simple', p.title), 'A') || setweight(to_tsvector('simple', p.body), 'B'))"
+    statement = `${permitted} SELECT p.*, ts_rank_cd(${vector}, plainto_tsquery('simple', ?)) AS search_rank FROM permitted p WHERE ${vector} @@ plainto_tsquery('simple', ?) ORDER BY search_rank DESC, p.id DESC LIMIT 51`
+    values.push(terms.join(' '), terms.join(' '))
+  }
+  else {
+    const scores = terms.map(term => { values.push(`%${term}%`, `%${term}%`); return '(CASE WHEN LOWER(p.title) LIKE ? THEN 4 ELSE 0 END + CASE WHEN LOWER(p.body) LIKE ? THEN 1 ELSE 0 END)' })
+    const matches = terms.map(term => { values.push(`%${term}%`, `%${term}%`); return '(LOWER(p.title) LIKE ? OR LOWER(p.body) LIKE ?)' })
+    statement = `${permitted} SELECT p.*, (${scores.join(' + ')}) AS search_rank FROM permitted p WHERE ${matches.join(' AND ')} ORDER BY search_rank DESC, p.id DESC LIMIT 51`
+  }
+  const rows = await query(statement, values)
+  return { articles: rows.slice(0, 50).map(row => publicArticleView(project, row)), retrievalMode: mode, search: { ...metadata, hasMore: rows.length > 50 } }
+}
+
+/** Agent editor search retains drafts; public help uses native PostgreSQL full text or SQLite fallback. */
 export async function searchArticles(project: Row, search: string, scope: KnowledgeScope = {}) {
+  if (!scope.internal) return await publicArticleSearch(project, search, scope)
   const terms = searchTerms(search.slice(0, 500)), values: unknown[] = [project.id, project.workspace_id]
   let where = 'project_id = ? AND workspace_id = ?'
-  if (!scope.internal) { where += " AND status = 'published' AND visibility = 'public' AND NOT EXISTS (SELECT 1 FROM support_knowledge_sources ks WHERE ks.article_id = support_articles.id AND ks.project_id = support_articles.project_id AND (ks.permission_granted = ? OR ks.deleted_at > 0))"; values.push(false) }
-  if (scope.internal && scope.publishedOnly) where += " AND status = 'published'"
+  if (scope.publishedOnly) where += " AND status = 'published'"
   if (scope.locale) { where += ' AND locale = ?'; values.push(localeOf(scope.locale)) }
   if (scope.collection) { where += ' AND collection = ?'; values.push(text(scope.collection, 'collection', 120)) }
   for (const term of terms) { where += ' AND (LOWER(title) LIKE ? OR LOWER(body) LIKE ?)'; values.push(`%${term}%`, `%${term}%`) }
@@ -99,7 +154,13 @@ export async function searchArticles(project: Row, search: string, scope: Knowle
   return { articles: rows.slice(0, 50).map(articleView), retrievalMode: 'lexical' as const }
 }
 export async function publishedArticle(project: Row, slug: string, locale: string) {
-  const row = await one("SELECT * FROM support_articles WHERE project_id = ? AND workspace_id = ? AND slug = ? AND locale = ? AND status = 'published' AND visibility = 'public' AND NOT EXISTS (SELECT 1 FROM support_knowledge_sources ks WHERE ks.article_id = support_articles.id AND ks.project_id = support_articles.project_id AND (ks.permission_granted = ? OR ks.deleted_at > 0))", [project.id, project.workspace_id, text(slug, 'slug', 200), localeOf(locale), false])
+  const filters = publicArticleFilters(project, { locale })
+  const row = await one(`SELECT a.* FROM support_articles a WHERE ${filters.where} AND a.slug = ?`, [...filters.values, text(slug, 'slug', 200)])
+  if (!row) fail(404, 'not_found', 'Article not found.')
+  return publicArticleView(project, row)
+}
+export async function agentArticle(project: Row, id: unknown) {
+  const row = await one('SELECT * FROM support_articles WHERE id = ? AND project_id = ? AND workspace_id = ?', [identifier(id), project.id, project.workspace_id])
   if (!row) fail(404, 'not_found', 'Article not found.')
   return articleView(row)
 }

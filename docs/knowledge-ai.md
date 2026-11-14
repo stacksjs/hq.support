@@ -14,6 +14,8 @@ Every retrieval intersects live workspace/project ownership, audience, language,
 
 PostgreSQL uses vectors once a matching embedding-model generation is ready. Native full text remains available while a vector generation is pending or no embedding provider is configured. Capability metadata and each AI response name the actual retrieval mode: `pgvector`, `fulltext`, or `lexical`. The native memory-only `VectorIndex` is not used by this application.
 
+Public help search reads the current published article rows through native PostgreSQL full-text operators, with title/body weighting. SQLite exposes a substring fallback. Both paths apply workspace/project, article visibility, source grant, source publication, source audience, source language, source revision and deletion checks before ranking. They make no chat or embedding calls and consume no AI/indexing budget. A public article without a source row remains available during legacy backfill; an existing withdrawn, stale or denied source fails closed. The response declares this policy with `search.indexedGenerationRequired: false` and `search.legacyArticlesIncluded: true`, and discloses its fifty-result window with `search.hasMore`. Public list and detail responses include an absolute canonical help-page URL bound to the exact project, slug and locale.
+
 ## Grounded answers
 
 AI uses `createAIClient(config.ai)` from native `@stacksjs/ai/client`; provider secrets stay on the server. The app's default OpenAI provider requires `OPENAI_API_KEY`. Missing chat configuration returns `503 ai_unavailable`. Provider failures return an explicit error and release their reservations. A query with no relevant evidence returns a human handoff without calling a chat model.
@@ -45,7 +47,7 @@ Pending chat attempts have a durable 90-second owner lease and a 60-second provi
 ## APIs and qualification
 
 - Public help: `GET /api/help/projects/{project}/articles` and `GET /api/help/projects/{project}/articles/{slug}?locale=en`.
-- Agent knowledge: `GET/POST /api/support/projects/{project}/knowledge`, `PATCH/DELETE /knowledge/{id}`, `GET /knowledge/{id}/revisions`, and `POST /knowledge/import`.
+- Agent knowledge: `GET/POST /api/support/projects/{project}/knowledge`, `GET/PATCH/DELETE /knowledge/{id}`, `GET /knowledge/{id}/revisions`, and `POST /knowledge/import`.
 - Index status/build: `GET/POST /api/support/projects/{project}/knowledge/{id}/index`.
 - Source permission: `PATCH /api/support/projects/{project}/knowledge/{id}/permissions` with `{ permissionGranted }`.
 - Capability and separate allowance metadata: `GET /api/support/projects/{project}/ai/capabilities`.
