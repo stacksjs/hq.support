@@ -6,6 +6,7 @@ import { billingPolicy, limitsFor, periodOf } from './limits'
 import { fail, identifier, text } from './errors'
 import { initialWorkspaceEntitlement } from './deployment'
 import { conversationSearch } from './conversation-search'
+import { boundedEnvelope, boundedPage, customerConversationSummary, customerProjectionLimits, customerSummary, historyCursor, historyLimit, customerSummarySelect } from './customer-projection'
 
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 export const secret = () => randomBytes(32).toString('hex')
@@ -178,17 +179,24 @@ export async function conversations(projectRow: Row, person?: Row, cursor?: stri
   if (options.q !== undefined && (!agentId || person)) fail(403, 'search_agent_required', 'Transcript search requires an authenticated agent.')
   const search = conversationSearch(options.q)
   const readProjection = agentId ? `, (SELECT COUNT(*) FROM support_messages m WHERE m.conversation_id = support_conversations.id AND m.project_id = support_conversations.project_id AND m.workspace_id = support_conversations.workspace_id AND m.author_type = 'customer' AND m.visibility = 'public' AND m.delivery_status <> 'imported' AND m.id > COALESCE((SELECT last_message_id FROM support_conversation_reads r WHERE r.conversation_id = support_conversations.id AND r.project_id = support_conversations.project_id AND r.workspace_id = support_conversations.workspace_id AND r.user_id = ?), 0)) AS agent_unread_count` : ''
-  const rows = await query(`SELECT support_conversations.*${readProjection} FROM support_conversations WHERE workspace_id = ? AND project_id = ? AND id < ?${person ? ' AND contact_id = ?' : ''}${options.status !== undefined ? ' AND status = ?' : ''}${inboxId !== undefined ? ' AND inbox_id = ?' : ''}${search ? ` AND ${search.predicate}` : ''} ORDER BY id DESC LIMIT ?`, [...(agentId ? [agentId] : []), projectRow.workspace_id, projectRow.id, before, ...(person ? [person.id] : []), ...(options.status !== undefined ? [options.status] : []), ...(inboxId !== undefined ? [inboxId] : []), ...(search?.values ?? []), limit + 1])
+  const rows = await query(`SELECT support_conversations.*${readProjection}${person ? `, ${await customerSummarySelect()}` : ''} FROM support_conversations WHERE workspace_id = ? AND project_id = ? AND id < ?${person ? ' AND contact_id = ?' : ''}${options.status !== undefined ? ' AND status = ?' : ''}${inboxId !== undefined ? ' AND inbox_id = ?' : ''}${search ? ` AND ${search.predicate}` : ''} ORDER BY id DESC LIMIT ?`, [...(agentId ? [agentId] : []), projectRow.workspace_id, projectRow.id, before, ...(person ? [person.id] : []), ...(options.status !== undefined ? [options.status] : []), ...(inboxId !== undefined ? [inboxId] : []), ...(search?.values ?? []), limit + 1])
+  if (person) {
+    const page = boundedPage(rows, limit, customerProjectionLimits.summaryBytes, customerSummary)
+    return boundedEnvelope({ conversations: page.items, nextCursor: page.nextCursor })
+  }
   return { conversations: rows.slice(0, limit).map(row => summary(row, Boolean(agentId))), nextCursor: rows.length > limit ? String(rows[limit - 1]!.id) : null, ...(search ? { search: { mode: search.mode } } : {}) }
 }
-export async function detail(projectRow: Row, id: unknown, person?: Row, beforeMessage?: string | null) {
+export async function detail(projectRow: Row, id: unknown, person?: Row, beforeMessage?: string | null, options: { limit?: unknown, beforeAttachment?: string | null, attachmentLimit?: unknown } = {}) {
   const row = await conversation(projectRow, id, person)
-  const before = beforeMessage ? identifier(beforeMessage) : Number.MAX_SAFE_INTEGER
-  const page = await query(`SELECT * FROM support_messages WHERE project_id = ? AND conversation_id = ? AND id < ?${person ? " AND visibility = 'public'" : ''} ORDER BY id DESC LIMIT 501`, [projectRow.id, row.id, before])
-  const messages = page.slice(0, 500).reverse(), messagesNextCursor = page.length > 500 ? String(messages[0]!.id) : null
-  const personRow = await one('SELECT * FROM support_contacts WHERE id = ? AND project_id = ?', [row.contact_id, projectRow.id])
-  const attachments = await query(`SELECT id, file_name, mime_type, bytes, status, visibility FROM support_attachments WHERE project_id = ? AND conversation_id = ? AND status = 'stored'${person ? " AND (visibility = 'public' OR contact_id = ?)" : ''} ORDER BY id ASC`, [projectRow.id, row.id, ...(person ? [person.id] : [])])
-  return { attachments: attachments.map(file => ({ id: String(file.id), fileName: file.file_name, mimeType: file.mime_type, bytes: Number(file.bytes), status: file.status, visibility: file.visibility })), conversation: summary(row, !person), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.map(messageView), messagesNextCursor }
+  const before = historyCursor(beforeMessage), attachmentBefore = historyCursor(options.beforeAttachment)
+  // The messenger replaces its transcript and does not consume older cursors; retain its 500-row default.
+  const limit = historyLimit(options.limit, 500, 500), attachmentLimit = historyLimit(options.attachmentLimit, 100, 100)
+  const page = await query(`SELECT * FROM support_messages WHERE workspace_id = ? AND project_id = ? AND conversation_id = ? AND id < ?${person ? " AND visibility = 'public' AND contact_id = ?" : ''} ORDER BY id DESC LIMIT ?`, [projectRow.workspace_id, projectRow.id, row.id, before, ...(person ? [person.id] : []), limit + 1])
+  const messages = boundedPage(page, limit, customerProjectionLimits.messageBytes, messageView)
+  const personRow = await one('SELECT * FROM support_contacts WHERE id = ? AND project_id = ? AND workspace_id = ?', [row.contact_id, projectRow.id, projectRow.workspace_id])
+  const files = await query(`SELECT id, file_name, mime_type, bytes, status, visibility FROM support_attachments WHERE workspace_id = ? AND project_id = ? AND conversation_id = ? AND id < ? AND status = 'stored'${person ? " AND (visibility = 'public' OR contact_id = ?)" : ''} ORDER BY id DESC LIMIT ?`, [projectRow.workspace_id, projectRow.id, row.id, attachmentBefore, ...(person ? [person.id] : []), attachmentLimit + 1])
+  const attachments = boundedPage(files, attachmentLimit, customerProjectionLimits.attachmentBytes, file => ({ id: String(file.id), fileName: file.file_name, mimeType: file.mime_type, bytes: Number(file.bytes), status: file.status, visibility: file.visibility }))
+  return boundedEnvelope({ attachments: attachments.items.reverse(), attachmentsNextCursor: attachments.nextCursor, conversation: person ? await customerConversationSummary(row) : summary(row, true), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.items.reverse(), messagesNextCursor: messages.nextCursor })
 }
 export async function createConversation(projectRow: Row, identity: Row, input: Row, person?: Row, automation?: { workflowRunId: number, automationDepth: number }, options?: { mediaOnly?: boolean, continuedFrom?: Row }) {
   return await idempotent(projectRow, options?.continuedFrom ? `conversation-continuation:${options.continuedFrom.id}` : `conversation:${person?.id ?? identity.externalId}`, input.idempotencyKey, input, async () => {
@@ -199,7 +207,7 @@ export async function createConversation(projectRow: Row, identity: Row, input: 
     const message = await insert('support_messages', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, conversation_id: row.id, contact_id: who.id, body: options?.mediaOnly && input.body === '' ? '' : text(input.body, 'body', 20000), visibility: 'public', author_type: 'customer' })
     await (await import('./routing')).routeNewConversation(projectRow, row.id)
     await enqueue(projectRow, 'conversation.created', { conversationId: row.id, messageId: message.id, ...(automation || {}) })
-    return { conversation: summary(row) }
+    return { conversation: await customerConversationSummary(row) }
   })
 }
 export async function reply(projectRow: Row, id: unknown, input: Row, actor: { customer?: Row, userId?: number, deferDelivery?: boolean, mediaOnly?: boolean, acceptedAt?: number }) {
@@ -212,7 +220,7 @@ export async function reply(projectRow: Row, id: unknown, input: Row, actor: { c
     if (actor.customer) {
       const admission = await (await import('./reopening')).admitCustomerReply(projectRow, row, actor.customer, input, actor.mediaOnly, actor.acceptedAt)
       row = admission.row; previousConversationId = admission.previousConversationId
-      if (admission.first) return { message: messageView(admission.first), conversation: summary(row), continuedFromId: previousConversationId }
+      if (admission.first) return { message: messageView(admission.first), conversation: await customerConversationSummary(row), continuedFromId: previousConversationId }
     }
     const message = await insert('support_messages', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, conversation_id: row.id, contact_id: row.contact_id, body: actor.mediaOnly && input.body === '' ? '' : text(input.body, 'body', 20000), visibility, author_type: actor.customer ? 'customer' : 'agent', author_id: actor.userId ?? 0 })
     await query('UPDATE support_conversations SET updated_at = ?, unread_count = unread_count + ? WHERE id = ? AND project_id = ?', [new Date().toISOString(), actor.customer ? 1 : 0, row.id, projectRow.id])
@@ -222,7 +230,7 @@ export async function reply(projectRow: Row, id: unknown, input: Row, actor: { c
       const { recordTicketFirstResponse } = await import('./ticket-sla')
       await recordTicketFirstResponse(projectRow, row.id)
     }
-    return { message: messageView(message), ...(actor.customer ? { conversation: summary(await conversation(projectRow, row.id, actor.customer)), ...(previousConversationId ? { continuedFromId: previousConversationId } : {}) } : {}) }
+    return { message: messageView(message), ...(actor.customer ? { conversation: await customerConversationSummary(await conversation(projectRow, row.id, actor.customer)), ...(previousConversationId ? { continuedFromId: previousConversationId } : {}) } : {}) }
   })
 }
 export async function track(projectRow: Row, input: Row) {
