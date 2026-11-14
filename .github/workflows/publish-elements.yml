@@ -61,6 +61,9 @@ jobs:
           SUPPORT_BROWSER_ASSETS: storage/framework/runtime/support-elements-release/hosted
         run: bun --no-env-file scripts/qualify-support-browser.ts --skip-build
       - name: Native npm dry run with explicit alpha tag
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+          BUN_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: ./buddy libs:publish --publisher bun --tag alpha --dry-run
       - uses: actions/upload-artifact@v7
         if: always()

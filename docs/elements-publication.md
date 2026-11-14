@@ -47,7 +47,7 @@ The workflow downloads that candidate from the verified run. It checks hashes an
 ./buddy libs:publish --publisher bun --tag alpha --dry-run
 ```
 
-With the publish input selected, a separate job rechecks CI ownership, downloads/restores the same artifact and runs the native publisher with the same explicit selector/tag. Tokens are provided through masked environment variables, never command-line arguments or logs. The workflow has no automatic branch/tag publication trigger and no force-republish flag.
+With the publish input selected, a separate job rechecks CI ownership, downloads/restores the same artifact and runs the native publisher with the same explicit selector/tag. Tokens are provided through masked environment variables, never command-line arguments or logs. Bun 1.4.4 requires npm authentication even with `--dry-run`, so the final native dry-run step also receives the repository's `NPM_TOKEN`; the preceding artifact and browser checks do not receive that token. Without the credential, those checks can pass while native publisher qualification remains blocked. The workflow has no automatic branch/tag publication trigger and no force-republish flag.
 
 After acceptance, `scripts/support-elements-release.ts registry` reads the exact version from the public npm registry, validates its SHA-512 integrity and canonical archive SHA-256 against CI, verifies all file hashes, and requires the actual alpha tag. It then installs that exact registry version in a clean consumer, repeats strict declarations and six real-browser imports, and verifies the separate hosted loader against the identical bundle. Existing versions are never overwritten; public readback still must match the candidate before qualification succeeds.
 
