@@ -12,6 +12,7 @@ export interface WorkspaceTransaction {
 interface WorkspaceContext { active: boolean, parent?: WorkspaceContext, handle: WorkspaceTransaction }
 const workspaceContext = new AsyncLocalStorage<WorkspaceContext>()
 function assertActive(context: WorkspaceContext) {
+  if (workspaceContext.getStore() !== context) throw new Error('Matching active workspace transaction context required')
   for (let owner: WorkspaceContext | undefined = context; owner; owner = owner.parent) {
     if (!owner.active) throw new Error('An active workspace transaction is required')
   }

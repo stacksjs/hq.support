@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
+import { assertIsolatedOk, runIsolated } from '@stacksjs/testing/isolated'
+import WorkflowJob from '../../app/Jobs/RunSupportWorkflows'
 import { config, overridesReady } from '@stacksjs/config'
 import { db, workspaceTransaction, requireWorkspaceTransaction, query, one } from '../../app/Support/database'
 import { createWorkspace, createProject, createSession, createConversation, reply, enqueue, usage } from '../../app/Support/service'
@@ -19,6 +21,9 @@ const workspace = await createWorkspace({ id: Number(user.id), email: 'replay@ex
 await workspaceTransaction(Number(workspace.id), async (tx) => {
   assert.equal(requireWorkspaceTransaction(Number(workspace.id)), tx)
   assert.equal(typeof tx.query, 'function')
+  await workspaceTransaction(Number(workspace.id), async () => {
+    await assert.rejects(tx.query('SELECT 1'), /matching active workspace transaction context/i)
+  })
 })
 assert.throws(() => requireWorkspaceTransaction(Number(workspace.id)), /active workspace transaction/i)
 const project = await createProject(Number(workspace.id), 'Replay project')
@@ -36,8 +41,14 @@ await workspaceTransaction(Number(workspace.id), async tx => {
 const notices: string[] = []
 const bus = supportReplayInvalidations()
 const unsubscribe = await bus.subscribe({ channels: names, onInvalidate: notice => { if (notice.reason === 'hint') notices.push(...notice.channels) } })
+async function receivedHints(count: number) {
+  const deadline = Date.now() + 3000
+  while (notices.length < count && Date.now() < deadline) await Bun.sleep(5)
+  assert.equal(notices.length, count, 'committed hint arrives through the native bus')
+}
 const payload = { subject: 'Public conversation', body: 'Help please', idempotencyKey: 'conversation-1' }
 const created = await createConversation(project, { externalId: 'customer-1' }, payload, customer)
+await receivedHints(2)
 async function head(name: string) {
   return await workspaceTransaction(Number(workspace.id), async tx => await supportReplayStore(project, tx).replay({ channel: name, after: null }))
 }
@@ -50,6 +61,7 @@ assert.equal((await head(names[1]!)).head.seq, 1, 'idempotent retry does not app
 const beforePrivate = await head(names[1]!)
 const noticeCount = notices.filter(name => name === names[1]).length
 await reply(project, created.conversation.id, { body: 'Private investigation', visibility: 'internal', idempotencyKey: 'note-1' }, { userId: Number(user.id) })
+await receivedHints(3)
 assert.deepEqual(await head(names[1]!), beforePrivate, 'private note does not advance customer head or recorded timestamps')
 assert.equal(notices.filter(name => name === names[1]).length, noticeCount, 'private note sends no customer hint')
 assert.equal((await head(names[0]!)).head.seq, 2)
@@ -61,6 +73,7 @@ assert.deepEqual(await head(names[1]!), beforePrivate, 'assignment, read cursor 
 assert.equal(notices.filter(name => name === names[1]).length, noticeCount)
 await reply(project, created.conversation.id, { body: 'Public reply', idempotencyKey: 'reply-1' }, { customer })
 assert.equal((await head(names[1]!)).head.seq, 2)
+await receivedHints(5)
 const beforeRollback = await head(names[0]!), beforeCustomerRollback = await head(names[1]!)
 const beforeHints = notices.length
 await assert.rejects(workspaceTransaction(Number(workspace.id), async () => {
@@ -71,6 +84,7 @@ await assert.rejects(workspaceTransaction(Number(workspace.id), async () => {
 assert.deepEqual(await head(names[0]!), beforeRollback)
 assert.deepEqual(await head(names[1]!), beforeCustomerRollback)
 assert.equal(await usage(Number(workspace.id), 'conversations'), 1)
+await Bun.sleep(50)
 assert.equal(notices.length, beforeHints)
 // Matching native transaction state alone never grants workspace authority.
 await db.transaction(async () => {
@@ -117,6 +131,23 @@ assert.deepEqual(await head(names[1]!), beforeExpired)
 const other = await createSession(project, { externalId: 'not-enrolled' })
 await createConversation(project, { externalId: 'not-enrolled' }, { ...payload, idempotencyKey: 'unenrolled' }, { id: Number(other.contact.id) })
 assert.equal(await one('SELECT id FROM support_replay_channels WHERE name = ?', [customerReplayChannel(project, Number(other.contact.id))]), undefined)
+// Restart and independent-worker concurrency use the same service seam and database.
+async function worker(input: Record<string, unknown>) {
+  assertIsolatedOk(await runIsolated('tests/fixtures/durable-realtime-worker.ts', { args: [JSON.stringify({ projectId: project.id, ...input })], envFile: false, preload: [], timeoutMs: 30_000 }), 'PASS durable support replay worker')
+}
+const beforeWorkers = await head(names[0]!)
+await Promise.all([worker({ mode: 'append' }), worker({ mode: 'append' })])
+await worker({ mode: 'read', channel: names[0], sequence: beforeWorkers.head.seq + 10 })
+const beforeDrain = await head(names[0]!)
+await WorkflowJob.dispatch()
+assert.ok(await one("SELECT id FROM jobs WHERE queue = 'support-workflows'"), 'native workflow queue persists before worker startup')
+await worker({ mode: 'queue' })
+assert.deepEqual(await head(names[0]!), beforeDrain, 'delayed outbox delivery never appends replay again')
+assert.equal(await one("SELECT id FROM support_outbox WHERE kind LIKE 'realtime.%'"), undefined, 'hints introduce no generic outbox kind')
 unsubscribe()
 await bus.close()
+const beforeLostHint = await head(names[0]!)
+await reply(project, created.conversation.id, { body: 'Redis hint unavailable', idempotencyKey: 'lost-hint' }, { customer })
+assert.equal((await head(names[0]!)).head.seq, beforeLostHint.head.seq + 1, 'a failed publisher cannot undo or advance past the committed SQL event')
+await worker({ mode: 'read', channel: names[0], sequence: beforeLostHint.head.seq + 1 })
 console.log('PASS durable support replay')
