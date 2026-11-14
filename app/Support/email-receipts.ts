@@ -1,3 +1,4 @@
+import { conversationChannelThread } from './channel-history'
 import { createHash } from 'node:crypto'
 import { verifySesSnsSignature } from '@stacksjs/email/webhook-signatures'
 import type { SesSnsSignatureInput } from '@stacksjs/email/webhook-signatures'
@@ -180,7 +181,7 @@ export async function ingestEmailMedia(project: Row, channel: Row, record: Row, 
   const media = object(payload.normalized).media
   if (!Array.isArray(media) || !media.length) return []
   const config = await channelConfig({ ...channel, configuration: payload._configuration || channel.configuration }), { parsed } = await validateEmailMedia(channel, config, record, media)
-  const thread = await one('SELECT contact_id FROM support_channel_threads WHERE conversation_id = ? AND project_id = ? AND channel_id = ?', [conversationId, project.id, channel.id])
+  const thread = await conversationChannelThread(project, conversationId, channel.id)
   const customer = thread ? await one('SELECT * FROM support_contacts WHERE id = ? AND project_id = ?', [thread.contact_id, project.id]) : undefined
   if (!customer) fail(409, 'email_media_customer_missing', 'Email media customer is unavailable.')
   const result = []

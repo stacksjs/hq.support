@@ -9,7 +9,7 @@ import { injectGlobalAutoImports } from '@stacksjs/server'
 import { runIsolated, assertIsolatedOk } from '@stacksjs/testing/isolated'
 import { channelAction } from '../../app/Actions/Support/ChannelAction'
 import { one, query } from '../../app/Support/database'
-import { createChannelReply, dispatchChannelDelivery, applyChannelInbound, pollDiscordChannel, recoverChannelWork, deliveryView } from '../../app/Support/managed-channels'
+import { createChannelReply, dispatchChannelDelivery, applyChannelInbound, retainChannelInbound, pollDiscordChannel, recoverChannelWork, deliveryView } from '../../app/Support/managed-channels'
 import { configureBillingGateway, configureWalletLimits, createWalletCheckout, receivePayment } from '../../app/Support/billing'
 import { channelOptedOut, recordChannelConsent } from '../../app/Support/channel-consent'
 import { loadChannel, saveChannel } from '../../app/Support/channels'
@@ -247,6 +247,57 @@ try {
   check(overflow.status === 'pending' && String(overflow.payload).includes('Must survive allowance overflow'), 'complete overflow payload remains durable')
   await query('UPDATE support_usage SET used = ? WHERE id = ?', [priorUsed, meter.id]); await query('UPDATE support_inbound SET available_at = 0 WHERE id = ?', [overflow.id])
   check((await applyChannelInbound(overflow.id)).processed, 'retained overflow resumes when allowance becomes available')
+  const historical = (await one('SELECT * FROM support_channel_threads WHERE channel_id = ? AND recipient = ?', [sms.id, '+14155550103']))!
+  const historicalImage = (await upload(project, historical.conversation_id, new File([image], 'historical.png', { type: 'image/png' }), 'historical-before-rollover')).attachment
+  const delayedReply = await createChannelReply(project, historical.conversation_id, { body: 'Queued before customer continuation', attachmentIds: [historicalImage.id], idempotencyKey: 'historical-delivery-before-rollover' }, Number(owner.id), dependencies)
+  await query("UPDATE support_conversations SET status = 'closed', resolved_at = ? WHERE id = ?", [Date.now() - 7 * 86400000 - 1000, historical.conversation_id])
+  const continuedSms = `SM${'6'.repeat(32)}`
+  await inbound(sms, '', continuedSms, '+14155550103', true)
+  check((await processLastInbound()).processed, 'signed late SMS media ingress admits a linked request before private ingestion')
+  const advanced = (await one('SELECT * FROM support_channel_threads WHERE id = ?', [historical.id]))!
+  check(String(advanced.conversation_id) !== String(historical.conversation_id) && String((await one('SELECT continued_from_id FROM support_conversations WHERE id = ?', [advanced.conversation_id]))!.continued_from_id) === String(historical.conversation_id), 'SMS provider thread advances to its scoped successor and preserves request lineage')
+  check(Number((await one("SELECT COUNT(*) AS count FROM support_attachments WHERE conversation_id = ? AND status = 'stored' AND contact_id = ?", [advanced.conversation_id, advanced.contact_id]))!.count) === 1, 'late inbound private media belongs to the new request and its exact customer')
+  const delayed = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [delayedReply.delivery!.id]))!, getsBeforeDelayed = providerMediaGets
+  check((await dispatchChannelDelivery(Number(delayed.id), dependencies)).outcome === 'accepted' && providerMediaGets === getsBeforeDelayed + 2, 'queued historical send and provider image capability still target the original message after inbound rollover')
+  check(Number((await one("SELECT COUNT(*) AS count FROM support_channel_conversations WHERE thread_id = ?", [historical.id]))!.count) === 2, 'historical provider bindings retain both original and current request')
+  const lateReplay = (await one('SELECT id FROM support_inbound WHERE provider_event_id = ?', [continuedSms]))!
+  await query("UPDATE support_inbound SET status = 'pending', available_at = 0, lease_until = 0 WHERE id = ?", [lateReplay.id])
+  const meterBeforeReplay = Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [workspace.id]))!.used)
+  check((await applyChannelInbound(lateReplay.id, dependencies)).processed && Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [workspace.id]))!.used) === meterBeforeReplay, 'retained late media recovery replays its original destination without a second conversation unit')
+  await query("UPDATE support_conversations SET status = 'snoozed', resolved_at = 0 WHERE id = ?", [waThread.conversation_id])
+  await inbound(whatsapp, 'Resume snoozed WhatsApp', `SM${'7'.repeat(32)}`); await processLastInbound()
+  check((await one('SELECT status FROM support_conversations WHERE id = ?', [waThread.conversation_id]))!.status === 'open', 'signed WhatsApp customer ingress resumes a snoozed request')
+  for (const connection of [slack, discord]) {
+    const retained = (await one('SELECT payload FROM support_inbound WHERE provider = ? ORDER BY id ASC LIMIT 1', [`channel:${connection.id}`]))!
+    const normalized = JSON.parse(String(retained.payload)).normalized
+    const previous = (await one('SELECT * FROM support_channel_threads WHERE channel_id = ? AND remote_key = ?', [connection.id, normalized.remoteKey]))!
+    await query("UPDATE support_conversations SET status = 'closed', resolved_at = ? WHERE id = ?", [Date.now() - 7 * 86400000 - 1000, previous.conversation_id])
+    const event = await retainChannelInbound(project, await loadChannel(project, connection.id), `reopen-${connection.id}`, { ...normalized, body: 'Provider-normalized late continuation', timestamp: Date.now() }, { fixture: 'verified-provider-normalization' })
+    check((await applyChannelInbound(event.id, dependencies)).processed && String((await one('SELECT conversation_id FROM support_channel_threads WHERE id = ?', [previous.id]))!.conversation_id) !== String(previous.conversation_id), `${connection.provider} normalized customer ingress uses the shared late-request admission`)
+  }
+  const delayedCurrent = (await one('SELECT * FROM support_channel_threads WHERE id = ?', [historical.id]))!
+  await query("UPDATE support_conversations SET status = 'closed', resolved_at = ? WHERE id = ?", [Date.now() - 8 * 86400000, delayedCurrent.conversation_id])
+  const delayedSid = `SM${'8'.repeat(32)}`
+  await inbound(sms, 'Accepted within the reopen window, processed after outage', delayedSid, '+14155550103')
+  const delayedInbound = (await one('SELECT id FROM support_inbound WHERE provider_event_id = ?', [delayedSid]))!
+  await query('UPDATE support_inbound SET created_at = ? WHERE id = ?', [new Date(Date.now() - 2 * 86400000).toISOString(), delayedInbound.id])
+  const delayedMeter = Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [workspace.id]))!.used)
+  check((await applyChannelInbound(delayedInbound.id, dependencies)).processed && String((await one('SELECT conversation_id FROM support_channel_threads WHERE id = ?', [historical.id]))!.conversation_id) === String(delayedCurrent.conversation_id) && Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [workspace.id]))!.used) === delayedMeter, 'verified event accepted inside seven days resumes its admission even when outage processing happens later')
+  const futureSid = `SM${'9'.repeat(32)}`
+  await inbound(sms, 'Invalid future server receipt time remains recoverable', futureSid, '+14155550103')
+  const futureInbound = (await one('SELECT id FROM support_inbound WHERE provider_event_id = ?', [futureSid]))!
+  await query('UPDATE support_inbound SET created_at = ? WHERE id = ?', [new Date(Date.now() + 86400000).toISOString(), futureInbound.id])
+  const messagesBeforeFuture = Number((await one('SELECT COUNT(*) AS count FROM support_messages WHERE project_id = ?', [project.id]))!.count)
+  check(!(await applyChannelInbound(futureInbound.id, dependencies)).processed && Number((await one('SELECT COUNT(*) AS count FROM support_messages WHERE project_id = ?', [project.id]))!.count) === messagesBeforeFuture && (await one('SELECT status FROM support_inbound WHERE id = ?', [futureInbound.id]))!.status === 'pending', 'future internal acceptance time creates no customer message and keeps the verified source recoverable')
+  const admissionThread = (await one('SELECT * FROM support_channel_threads WHERE id = ?', [historical.id]))!
+  await query("UPDATE support_conversations SET status = 'closed', resolved_at = ? WHERE id = ?", [Date.now() - 70 * 86400000, admissionThread.conversation_id])
+  const priorMonth = new Date(Date.now() - 35 * 86400000).toISOString().slice(0, 7)
+  const priorMonthUsed = Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND period = ? AND meter = 'conversations'", [workspace.id, priorMonth]))?.used || 0)
+  const monthSid = `SM${'a'.repeat(32)}`
+  await inbound(sms, 'Retained old-month event admitted in current UTC month', monthSid, '+14155550103')
+  const monthInbound = (await one('SELECT id FROM support_inbound WHERE provider_event_id = ?', [monthSid]))!
+  await query('UPDATE support_inbound SET created_at = ? WHERE id = ?', [new Date(Date.now() - 35 * 86400000).toISOString(), monthInbound.id])
+  check((await applyChannelInbound(monthInbound.id, dependencies)).processed && Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations' AND period = ?", [workspace.id, new Date().toISOString().slice(0, 7)]))!.used) === delayedMeter + 1 && Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND period = ? AND meter = 'conversations'", [workspace.id, priorMonth]))?.used || 0) === priorMonthUsed, 'new conversation usage belongs to actual current UTC admission month rather than retained-event month')
   rotateSlack = async () => { await saveChannel(project, { id: slack.id, provider: 'slack', configuration: { botToken: 'tenant-slack', signingSecret: 'slack-signing', teamId: 'Tfixture', channelId: 'Cfixture' } }, Number(owner.id)) }
   check((await http(`${scope}/channels/${slack.id}/verify`, 'POST', {}, token)).status === 409, 'a provider probe cannot mark newly changed credentials ready')
   check((await loadChannel(project, slack.id)).status === 'pending', 'changed connection stays pending despite stale successful evidence')

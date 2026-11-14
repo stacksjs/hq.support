@@ -138,6 +138,15 @@ try {
   await http('/register', 'POST', { name: 'Other migration owner', email: 'other-import@example.test', password: 'ImportSecret2026!', password_confirmation: 'ImportSecret2026!' })
   const other = await http('/login', 'POST', { email: 'other-import@example.test', password: 'ImportSecret2026!' })
   check((await http(`${prefix}/imports/${runId}`, 'GET', undefined, other.data.access_token)).status === 403, 'private archive status and migration reports reject another workspace account')
+  const dated = { ...conversation('resolved-time', 'c1'), statistics: { last_close_at: 1500000050 } }
+  const missingDate = conversation('unknown-resolution-time', 'c1')
+  const invalidDate = { ...conversation('invalid-resolution-time', 'c1'), closed_at: 1499999999 }
+  const historyDates = await upload({ version: 1, provider: 'intercom', format: 'plaintext', contacts: [], conversations: [dated, missingDate, invalidDate] })
+  await resumeInNewProcess(historyDates.data.run.id, 'worker')
+  check(Number((await one('SELECT resolved_at FROM support_conversations WHERE project_id = ? AND subject = ?', [project.id, dated.title]))!.resolved_at) === 1500000050000, 'trusted export resolution time is preserved independently of source updated_at')
+  check(Number((await one('SELECT resolved_at FROM support_conversations WHERE project_id = ? AND subject = ?', [project.id, missingDate.title]))!.resolved_at) === 0, 'missing historical resolution remains unknown for one quota-free grandfathered reopen')
+  const dateStatus = await http(`${prefix}/imports/${historyDates.data.run.id}`, 'GET', undefined, token)
+  check(dateStatus.data.records.some((record: any) => record.error_code === 'invalid_source_timestamp') && !await one('SELECT id FROM support_conversations WHERE project_id = ? AND subject = ?', [project.id, invalidDate.title]), 'contradictory source resolution time is retained for review without inventing a closure date')
   console.log(`PASS Intercom migration HTTP ${checks} checks`)
 }
 finally { await server.stop(true) }

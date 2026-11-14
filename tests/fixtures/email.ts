@@ -203,6 +203,16 @@ try {
   const badKey = received('mail-arbitrary-key', config.inboundAddress)
   badKey.receipt.action.objectKey = 'incoming/different-message'
   check((await http(inboundPath, 'POST', signed(badKey))).status === 422, 'signed source key must be exact prefix plus SES message identity')
+  const beforeEmailContinuation = Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [project.workspace_id]))!.used)
+  await query("UPDATE support_conversations SET status = 'closed', resolved_at = ? WHERE id = ?", [Date.now() - 7 * 86400000 - 1000, firstThread.conversation_id])
+  source('mail-late-reply', 'customer@example.test', 'Private attachment on continued email request', true)
+  await http(inboundPath, 'POST', signed(received('mail-late-reply', replyAddress))); await applyLatest(channel)
+  const advancedEmail = (await one('SELECT * FROM support_channel_threads WHERE id = ?', [firstThread.id]))!
+  check(String(advancedEmail.conversation_id) !== String(firstThread.conversation_id) && Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [project.workspace_id]))!.used) === beforeEmailContinuation + 1, 'signed original email reply capability admits exactly one late successor without merging another same-email thread')
+  check(String((await one('SELECT continued_from_id FROM support_conversations WHERE id = ?', [advancedEmail.conversation_id]))!.continued_from_id) === String(firstThread.conversation_id) && Number((await one('SELECT COUNT(*) AS count FROM support_channel_conversations WHERE thread_id = ?', [firstThread.id]))!.count) === 2, 'email preserves original request binding and exact continuation lineage')
+  check(Number((await one("SELECT COUNT(*) AS count FROM support_attachments WHERE conversation_id = ? AND contact_id = ? AND status = 'stored'", [advancedEmail.conversation_id, advancedEmail.contact_id]))!.count) === 1, 'signed late email attachment ingestion uses the successor and its exact private customer binding')
+  const historicalEmail = await http(path + `/conversations/${firstThread.conversation_id}/reply`, 'POST', { body: 'Historical email operation after rollover', idempotencyKey: 'email-historical-after-rollover' }, owner)
+  check(historicalEmail.status === 201 && String(historicalEmail.data.message.conversation_id) === String(firstThread.conversation_id), 'agent historical email reply remains bound to the original request rather than the current inbound pointer')
   console.log(`PASS email HTTP and MIME (${checks} checks)`)
 }
 finally { server.stop(true) }

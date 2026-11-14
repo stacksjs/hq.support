@@ -49,6 +49,35 @@ function redact(value: unknown): unknown {
   if (!value || typeof value !== 'object') return value
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, ['body', 'answer', 'subject', 'description', 'title'].includes(key) && typeof item === 'string' ? retentionMarker : redact(item)]))
 }
+/** Reply URLs may name a predecessor. Only top-level committed receipt destinations own content. */
+async function redactReceipts(workspaceId: number, projectId: unknown, conversationId: unknown) {
+  const highWater = Number((await one('SELECT MAX(id) AS id FROM support_idempotency WHERE workspace_id = ? AND project_id = ?', [workspaceId, projectId]))?.id || 0)
+  let cursor = 0
+  while (cursor < highWater) {
+    const page = await query('SELECT id, operation, response FROM support_idempotency WHERE workspace_id = ? AND project_id = ? AND id > ? AND id <= ? AND (operation LIKE ? OR operation LIKE ?) ORDER BY id ASC LIMIT 100', [workspaceId, projectId, cursor, highWater, 'reply:%', 'conversation:%'])
+    if (!page.length) break
+    for (const record of page) {
+      let parsed: unknown
+      try { parsed = JSON.parse(String(record.response)) }
+      catch { fail(503, 'retention_receipt_invalid', 'A stored operation receipt requires review before retention can finish.') }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) fail(503, 'retention_receipt_invalid', 'A stored operation receipt requires review before retention can finish.')
+      const data = object(parsed), message = object(data.message), convo = object(data.conversation)
+      for (const name of ['message', 'conversation']) if (Object.hasOwn(data, name) && (!data[name] || typeof data[name] !== 'object' || Array.isArray(data[name]))) fail(503, 'retention_receipt_invalid', 'A stored operation receipt has a malformed destination container.')
+      const hasMessage = Object.hasOwn(message, 'conversation_id'), hasConversation = Object.hasOwn(convo, 'id')
+      let matches: boolean
+      if (hasMessage || hasConversation) {
+        const receiptId = (value: unknown) => { try { return identifier(value) } catch { fail(503, 'retention_receipt_invalid', 'A stored operation receipt has a malformed destination.') } }
+        const destination = receiptId(hasMessage ? message.conversation_id : convo.id)
+        if (hasMessage && hasConversation && destination !== receiptId(convo.id)) fail(503, 'retention_receipt_invalid', 'A stored operation receipt has inconsistent destinations.')
+        matches = destination === Number(conversationId)
+      }
+      else matches = String(record.operation).startsWith(`reply:${conversationId}:`)
+      if (matches) await query('UPDATE support_idempotency SET response = ? WHERE id = ? AND workspace_id = ? AND project_id = ?', [JSON.stringify(redact(parsed)), record.id, workspaceId, projectId])
+      cursor = Number(record.id)
+    }
+  }
+}
+
 /** Opt-in closed-thread content retention. Relational records and accounting stay intact. */
 export async function applyRetention(workspaceId: number, actorId: number | null = null, now = Date.now()) {
   return await workspaceTransaction(workspaceId, async () => {
@@ -71,11 +100,7 @@ export async function applyRetention(workspaceId: number, actorId: number | null
       await query('UPDATE support_messages SET body = ? WHERE workspace_id = ? AND conversation_id = ?', [retentionMarker, workspaceId, row.id])
       await query('UPDATE support_tickets SET title = ?, description = ? WHERE workspace_id = ? AND conversation_id = ?', [retentionMarker, retentionMarker, workspaceId, row.id])
       await query('UPDATE support_conversations SET subject = ? WHERE workspace_id = ? AND id = ?', [retentionMarker, workspaceId, row.id])
-      const cached = await query('SELECT * FROM support_idempotency WHERE workspace_id = ? AND project_id = ? AND (operation LIKE ? OR operation LIKE ?)', [workspaceId, row.project_id, `reply:${row.id}:%`, 'conversation:%'])
-      for (const record of cached) {
-        const data = JSON.parse(String(record.response)), convo = object(object(data).conversation)
-        if (String(record.operation).startsWith(`reply:${row.id}:`) || String(convo.id) === String(row.id)) await query('UPDATE support_idempotency SET response = ? WHERE id = ? AND workspace_id = ?', [JSON.stringify(redact(data)), record.id, workspaceId])
-      }
+      await redactReceipts(workspaceId, row.project_id, row.id)
       const ai = await query("SELECT id, response FROM support_ai_runs WHERE workspace_id = ? AND conversation_id = ? AND status != 'pending'", [workspaceId, row.id])
       for (const record of ai) if (record.response) await query('UPDATE support_ai_runs SET response = ? WHERE id = ? AND workspace_id = ?', [JSON.stringify(redact(JSON.parse(String(record.response)))), record.id, workspaceId])
       const calls = await query('SELECT id FROM support_phone_calls WHERE workspace_id = ? AND conversation_id = ?', [workspaceId, row.id])
