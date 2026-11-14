@@ -76,6 +76,8 @@ jobs:
           retention-days: 14
       - run: ./buddy lint
       - run: ./buddy typecheck
+      - name: Typecheck authored stx views and component contracts
+        run: bun run typecheck:views
       - run: ./buddy migrate
       - name: Verify model migration freshness
         run: |
@@ -89,3 +91,35 @@ jobs:
           NODE_ENV: production
           APP_URL: https://hq.support
           APP_DOMAIN: hq.support
+      - name: Qualify native agent team and search journeys
+        timeout-minutes: 5
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: bun --no-env-file scripts/qualify-team-browser.ts
+      - name: Qualify native credential lifecycle journeys
+        timeout-minutes: 5
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: bun --no-env-file scripts/qualify-credential-browser.ts
+      - name: Qualify native customer satisfaction journeys
+        timeout-minutes: 5
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: bun --no-env-file scripts/qualify-csat-browser.ts
+      - name: Qualify customer request continuations and agent drafts
+        timeout-minutes: 5
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: bun --no-env-file scripts/qualify-reopening-browser.ts
+      - name: Retain native application browser evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: support-application-browser-${{ github.run_attempt }}
+          path: |
+            storage/framework/runtime/team-browser
+            storage/framework/runtime/credential-browser
+            storage/framework/runtime/csat-browser
+            storage/framework/runtime/reopening-browser
+          if-no-files-found: warn
+          retention-days: 7

@@ -34,7 +34,7 @@ export async function createWidgetPreview(options: { port?: number, assetsDirect
       }) as typeof stripe.checkout.sessions.create
     }
   }
-  const messages: { id: number, author_type: string, body: string }[] = []
+  const messages: { id: string, conversation_id: string, author_type: string, body: string, delivery_status: string }[] = []
   const seen = new Map<string, object>()
   const manifest = await Bun.file(resolve(assets, 'widgets/manifest.json')).json()
   if (!Array.isArray(manifest.csp?.styleSrc) || !manifest.csp.styleSrc.every((value: unknown) => typeof value === 'string' && /^'sha256-[A-Za-z0-9+/]+=*'$/.test(value))) throw new Error('Native widget CSP hashes are required.')
@@ -60,19 +60,21 @@ export async function createWidgetPreview(options: { port?: number, assetsDirect
         const resource = url.pathname.slice('/api/widget/projects/proof'.length)
         if (resource === '/session') return Response.json({ token: 'fixture-session', contact: { id: 'fixture' } })
         if (request.headers.get('Authorization') !== 'Bearer fixture-session') return Response.json({ message: 'Forbidden' }, { status: 403 })
-        if (resource === '/conversations' && request.method === 'GET') return Response.json({ conversations: messages.length ? [{ id: 1 }] : [] })
+        if (resource === '/conversations' && request.method === 'GET') return Response.json({ conversations: messages.length ? [{ id: '1' }] : [] })
         if (resource === '/conversations/1/csat' && request.method === 'GET') return Response.json({ available: false, reason: 'disabled' })
+        if (resource === '/ticket-types' && request.method === 'GET') return Response.json({ types: [{ id: '1', name: 'Compiler qualification', fields: [{ key: 'quantity', label: 'Quantity', type: 'number', visibility: 'customer' }, { key: 'reply_email', label: 'Reply email', type: 'email', visibility: 'customer' }, { key: 'incident_date', label: 'Incident date', type: 'date', visibility: 'customer' }] }] })
         if (resource === '/events') return Response.json({ accepted: true })
         if ((resource === '/conversations' || resource.endsWith('/messages')) && request.method === 'POST') {
           const body = await request.json()
           if (body.body === 'FAIL') return Response.json({ message: 'Fixture delivery error. Retry the message.' }, { status: 503 })
           if (!seen.has(body.idempotencyKey)) {
-            messages.push({ id: messages.length + 1, author_type: 'contact', body: body.body })
-            seen.set(body.idempotencyKey, { conversation: { id: 1 } })
+            const message = { id: String(messages.length + 1), conversation_id: '1', author_type: 'customer', body: body.body, delivery_status: 'stored' }
+            messages.push(message)
+            seen.set(body.idempotencyKey, resource === '/conversations' ? { conversation: { id: '1' } } : { message })
           }
           return Response.json(seen.get(body.idempotencyKey))
         }
-        if (resource === '/conversations/1') return Response.json({ conversation: { id: 1 }, messages })
+        if (resource === '/conversations/1') return Response.json({ conversation: { id: '1' }, messages, attachments: [] })
         return Response.json({ message: 'Not available in the compiler fixture.' }, { status: 404 })
       }
       if (nativeApi && url.pathname.startsWith('/api/')) return nativeApi(request)

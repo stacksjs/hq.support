@@ -113,6 +113,22 @@ polls. Unknown sends without a signed receipt stay held for operator review.
 
 ## Qualification and remaining work
 
+On 2026-11-14 the Discord text path passed 39 live assertions in an isolated
+private operator test channel. The test used registry-installed native
+0.75.584, stx 0.2.880, actual authentication/HTTP actions, generated SQLite,
+encrypted tenant credentials and the native database queue worker. It admitted
+one real user message and sent one queued bot reply. Discord acknowledged a
+provider message ID with `accepted` state, and the reply was independently
+observed through its API and native client. Same-key retry created no duplicate;
+repeat polling and bot echo admitted no additional conversation; the internal
+note remained private. Credentials and the detailed report stay in private
+operator configuration. No live credentials enter CI.
+
+This qualifies that isolated text path. Production supervision, database
+deployment, broader Discord thread/media behavior and the remaining live
+providers retain their own acceptance gates. Provider acceptance does not prove
+a recipient read the message.
+
 `tests/feature/channels-http.test.ts` runs native auth, migrations, SQL,
 wallet/queue persistence and actual local HTTP provider protocols against both
 SQLite and PostgreSQL. It verifies encrypted credentials, stale probes,
