@@ -2,6 +2,7 @@ import { derived, nextTick, state } from '@stacksjs/stx'
 import { useEventListener } from '@stacksjs/stx/composables/use-event-listener'
 import { useMediaQuery } from '@stacksjs/stx/composables/use-media-query'
 import { useScrollLock } from '@stacksjs/stx/composables/use-scroll-lock'
+import { useDebounce } from '@stacksjs/stx/composables/use-timer'
 import type { AgentIdentity, Assignment, RoutingAgent, SupportTeamMember, SupportTeam, TeamInbox } from './team-routing'
 import { routingReasonLabel } from './team-routing'
 
@@ -20,6 +21,8 @@ export function createInbox() {
   const messages = state<Message[]>([])
   const contact = state<Contact | null>(null)
   const search = state('')
+  const searchError = state(''), searchMode = state('')
+  let listController: AbortController | undefined
   const filter = state('open')
   const draft = state('')
   const visibility = state('public')
@@ -88,7 +91,19 @@ export function createInbox() {
   function agentLabel(id: string | number) { const row = agents().find(item => String(item.user_id) === String(id)); return `${person(id)}${row ? ` · ${row.availability}, ${row.open_count}/${row.capacity} open` : ''}` }
   function actorLabel(item: Assignment) { return item.source === 'workflow' ? `Workflow run #${item.workflow_run_id}` : item.source === 'ingress' ? 'Default inbox routing' : `${item.source === 'configuration' ? 'Team configuration' : 'Manual change'} · ${person(item.actor_id)}` }
   function syncRouting(item: Conversation) { routingInbox.set(String(item.inbox_id || 0)); routingAssignee.set(String(item.assignee_id || 0)) }
-  function listPath(cursor?: string | null) { const query = new URLSearchParams(); if (inboxFilter()) query.set('inboxId', inboxFilter()); if (filter() !== 'all') query.set('status', filter()); if (cursor) query.set('cursor', cursor); return `/api/support/projects/${encodeURIComponent(project())}/inbox?${query}` }
+  function listPath(cursor?: string | null) { const query = new URLSearchParams(); if (search().trim()) query.set('q', search().trim()); if (inboxFilter()) query.set('inboxId', inboxFilter()); if (filter() !== 'all') query.set('status', filter()); if (cursor) query.set('cursor', cursor); return `/api/support/projects/${encodeURIComponent(project())}/inbox?${query}` }
+  function queryIssue() { return search().length > 200 ? 'Search is limited to 200 characters.' : search().trim().length === 1 ? 'Enter at least 2 characters to search subjects and messages.' : '' }
+  function cancelList() { generation++; listController?.abort(); listController = undefined; debouncedSearch.cancel() }
+  const debouncedSearch = useDebounce(() => { if (!disposed) void refresh() }, 300)
+  function searchChanged() {
+    cancelList(); conversations.set([]); nextCursor.set(null); searchMode.set(''); error.set(''); searchError.set(queryIssue())
+    if (!project() || searchError()) { loading.set(false); return }
+    loading.set(true)
+    if (!search().trim()) void refresh()
+    else debouncedSearch()
+  }
+  function clearPrivateState() { drafts.clear(); conversations.set([]); current.set(null); messages.set([]); contact.set(null); draft.set(''); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; routingKey = ''; routingFingerprint = ''; csrf = '' }
+  function sessionExpired() { cancelList(); selection++; clearPrivateState(); user.set(null); workspaces.set([]); projects.set([]); project.set(''); activeProject = ''; needsWorkspace.set(false); workspaceName.set(''); projectName.set(''); loading.set(false); threadLoading.set(false); sending.set(false); routingBusy.set(false); creating.set(false); notice.set(''); error.set('Sign in to open your workspace.'); if (narrowDetails()) void closeDetails() }
   async function loadCatalog(version: number) {
     const selectedProject = project(), workspace = selectedWorkspace()
     if (!workspace) return
@@ -109,9 +124,9 @@ export function createInbox() {
   }
   async function changeFilter(value: string) { filter.set(value); await refresh() }
   async function loadMore() {
-    if (!nextCursor() || loading()) return
-    const version = generation, selectedProject = project(); loading.set(true)
-    try { const data = await request(listPath(nextCursor())); if (disposed || version !== generation || selectedProject !== project()) return; conversations.update(rows => [...rows, ...(data.conversations || []).filter((row: Conversation) => !rows.some(item => String(item.id) === String(row.id)))]); nextCursor.set(data.nextCursor || null) }
+    if (!nextCursor() || loading() || queryIssue()) return
+    const version = generation, selectedProject = project(), controller = new AbortController(); listController = controller; loading.set(true)
+    try { const data = await request(listPath(nextCursor()), { signal: controller.signal }); if (disposed || version !== generation || selectedProject !== project()) return; conversations.update(rows => [...rows, ...(data.conversations || []).filter((row: Conversation) => !rows.some(item => String(item.id) === String(row.id)))]); nextCursor.set(data.nextCursor || null) }
     catch (failure) { if (!disposed && version === generation) error.set(failure instanceof Error ? failure.message : 'More conversations could not be loaded.') }
     finally { if (!disposed && version === generation) loading.set(false) }
   }
@@ -138,7 +153,7 @@ export function createInbox() {
   let csrf = ''
   let retryKey = ''
   let disposed = false
-  const filtered = derived(() => conversations().filter(item => (filter() === 'all' || item.status === filter()) && item.subject.toLowerCase().includes(search().toLowerCase())))
+  const filtered = derived(() => conversations().filter(item => filter() === 'all' || item.status === filter()))
   const needsProject = derived(() => !!user() && !needsWorkspace() && !projects().length)
   const selectedTitle = derived(() => current()?.subject || 'Your shared inbox')
   const customerName = derived(() => contact()?.name || contact()?.email || 'Customer')
@@ -153,6 +168,7 @@ export function createInbox() {
     const response = await fetch(path, { ...options, cache: 'no-store', credentials: 'include', headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(csrf ? { 'X-CSRF-TOKEN': csrf } : {}), ...options.headers } })
     const data = await response.json().catch(() => { if (response.ok) throw new Error('The server response could not be read. Retry the same operation; your draft is unchanged.'); return {} })
     if (response.status === 401) {
+      if (!disposed) sessionExpired()
       const failure = new Error('Sign in to open your workspace.')
       Object.assign(failure, { unauthorized: true })
       throw failure
@@ -178,19 +194,21 @@ export function createInbox() {
       }
     }
     catch (failure) { if (!disposed) error.set(failure instanceof Error ? failure.message : 'Your workspace could not be loaded.') }
-    finally { if (!disposed) loading.set(false) }
+    finally { if (!disposed && !project()) loading.set(false) }
   }
 
   async function refresh() {
     if (!project()) return
-    const version = ++generation
-    error.set('')
+    cancelList()
+    const version = generation, controller = new AbortController(); listController = controller
+    error.set(''); searchError.set(queryIssue()); nextCursor.set(null); searchMode.set('')
+    if (searchError()) { conversations.set([]); loading.set(false); return }
     loading.set(true)
     try {
-      const [data] = await Promise.all([request(listPath()), loadCatalog(version)])
+      const [data] = await Promise.all([request(listPath(), { signal: controller.signal }), loadCatalog(version)])
       if (disposed || version !== generation) return
       conversations.set(data.conversations || [])
-      nextCursor.set(data.nextCursor || null)
+      nextCursor.set(data.nextCursor || null); searchMode.set(data.search?.mode || '')
       const selected = (data.conversations || []).find((row: Conversation) => String(row.id) === String(current()?.id))
       if (selected && current()) current.set({ ...current()!, ...selected })
     }
@@ -200,6 +218,7 @@ export function createInbox() {
 
   async function changeProject() {
     stashDraft(activeProject)
+    cancelList(); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); conversations.set([]); threadLoading.set(false)
     selection++
     current.set(null)
     contact.set(null)
@@ -262,36 +281,37 @@ export function createInbox() {
       notice.set(visibility() === 'internal' ? 'Internal note saved.' : 'Reply saved.')
       draft.set(''); drafts.delete(draftId(selectedProject, item))
       retryKey = ''; retryFingerprint = ''
-      await selectAfterSend(item)
+      await selectAfterSend(item, selectedProject)
     }
     catch (failure) { if (!disposed) { stashDraft(); error.set(failure instanceof Error ? failure.message : 'Message was not sent. Your draft is saved here.') } }
     finally { if (!disposed) sending.set(false) }
   }
 
-  async function selectAfterSend(item: Conversation) {
-    const data = await request(`/api/support/projects/${encodeURIComponent(project())}/conversations/${encodeURIComponent(String(item.id))}`)
-    if (disposed) return
+  async function selectAfterSend(item: Conversation, selectedProject: string) {
+    const selected = selection
+    const data = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(item.id))}`)
+    if (disposed || selectedProject !== project() || selected !== selection) return
     messages.set(data.messages || [])
     current.set(data.conversation)
     notice.set(visibility() === 'internal' ? 'Internal note saved.' : 'Reply saved.')
   }
 
   async function changeStatus() {
-    const item = current()
+    const item = current(), selectedProject = project(), selected = selection
     if (!item || !contact() || threadLoading() || sending() || routingBusy()) return
     sending.set(true)
     error.set('')
     try {
       const status = item.status === 'closed' ? 'open' : 'closed'
-      const data = await request(`/api/support/projects/${encodeURIComponent(project())}/conversations/${encodeURIComponent(String(item.id))}`, { method: 'PATCH', body: JSON.stringify({ status }) })
-      if (disposed) return
+      const data = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(item.id))}`, { method: 'PATCH', body: JSON.stringify({ status }) })
+      if (disposed || selectedProject !== project() || selected !== selection) return
       current.set(data.conversation); syncRouting(data.conversation)
       conversations.update(items => items.map(row => String(row.id) === String(item.id) ? { ...row, ...data.conversation } : row))
       routingNotice.set(routingReasonLabel(data.reason)); await Promise.all([loadCatalog(generation), loadHistory()])
       notice.set(status === 'closed' ? 'Conversation resolved.' : 'Conversation reopened.')
     }
-    catch (failure) { error.set(failure instanceof Error ? failure.message : 'Status could not be changed.') }
-    finally { sending.set(false) }
+    catch (failure) { if (!disposed && selected === selection) error.set(failure instanceof Error ? failure.message : 'Status could not be changed.') }
+    finally { if (!disposed && selected === selection) sending.set(false) }
   }
 
   async function createWorkspace() {
@@ -323,6 +343,6 @@ export function createInbox() {
     const date = new Date(value)
     return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   }
-  function destroy() { disposed = true; generation++; selection++; drafts.clear(); for (const cleanup of detailsCleanup.splice(0)) cleanup(); detailsScroll?.set(false); detailsOpener = null }
-  return { narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, markRead, send, changeStatus, createWorkspace, formatDate, destroy }
+  function destroy() { disposed = true; cancelList(); selection++; clearPrivateState(); user.set(null); workspaces.set([]); projects.set([]); project.set(''); activeProject = '';  for (const cleanup of detailsCleanup.splice(0)) cleanup(); detailsScroll?.set(false); detailsOpener = null }
+  return { searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, markRead, send, changeStatus, createWorkspace, formatDate, destroy }
 }

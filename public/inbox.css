@@ -119,3 +119,5 @@
 
 .customer-panel>header{justify-content:space-between;gap:12px}.customer-backdrop{display:none}
 @media(max-width:1250px){.customer-backdrop{display:block;position:fixed;inset:0;z-index:50;border:0;background:rgba(20,40,32,.45)}.customer-panel:not(.details-hidden){display:block;position:fixed;inset:0 0 0 auto;z-index:51;width:min(380px,100vw);height:100dvh;max-height:100dvh;overflow:auto;overscroll-behavior:contain;box-shadow:-12px 0 42px rgba(20,40,32,.16)}.customer-panel>header{position:sticky;top:0;z-index:1;background:#fafbf9}}
+
+.search-help{margin:9px 0 0;color:#62715c;font-size:10px;line-height:1.7}.search-field:has([aria-invalid="true"]){border-color:#95442e}

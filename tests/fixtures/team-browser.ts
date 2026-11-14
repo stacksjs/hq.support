@@ -22,6 +22,9 @@ const root = resolve(import.meta.dir, '../..'), output = await mkdtemp(resolve(t
 let host: ReturnType<typeof Bun.serve> | undefined, browser: Awaited<ReturnType<typeof launch>> | undefined
 let cookie = '', csrf = '', failSend = false, failList = false
 const assertions: string[] = [], runtimeErrors: string[] = []
+const searchTraffic: Array<{ q: string | null, inboxId: string | null, status: string | null, cursor: string | null, path: string }> = []
+let searchGate: { query: string, used: boolean, entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>> } | undefined
+function holdSearch(query: string) { searchGate = { query, used: false, entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() }; return searchGate }
 const check = (condition: unknown, message: string) => { assert.ok(condition, message); assertions.push(message) }
 async function http(path: string, method = 'GET', body?: unknown, token?: string) {
   const response = await fetch(apiOrigin + '/api' + path, { method, headers: { accept: 'application/json', ...(cookie ? { cookie, 'x-csrf-token': csrf } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
@@ -56,8 +59,11 @@ try {
     if (url.pathname.startsWith('/api/')) {
       if (failList && request.method === 'GET' && url.pathname.endsWith('/inbox')) { failList = false; return Response.json({ error: { message: 'Fixture inbox refresh failure. Reply draft kept.' } }, { status: 503 }) }
       if (failSend && request.method === 'POST' && url.pathname.endsWith('/messages')) { failSend = false; return Response.json({ error: { message: 'Fixture transport failure. Keep this reply draft.' } }, { status: 503 }) }
+      if (request.method === 'GET' && url.pathname.endsWith('/inbox')) searchTraffic.push({ q: url.searchParams.get('q'), inboxId: url.searchParams.get('inboxId'), status: url.searchParams.get('status'), cursor: url.searchParams.get('cursor'), path: url.pathname })
       const headers = new Headers(request.headers); headers.delete('host')
       const response = await fetch(new URL(url.pathname + url.search, apiOrigin), { method: request.method, headers, body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body })
+      const held = searchGate
+      if (request.method === 'GET' && url.pathname.endsWith('/inbox') && held && !held.used && held.query === url.searchParams.get('q')) { held.used = true; held.entered.resolve(); await held.release.promise }
       const outgoing = new Headers(response.headers); outgoing.delete('content-encoding'); outgoing.delete('content-length')
       return new Response(response.body, { status: response.status, headers: outgoing })
     }
@@ -174,6 +180,62 @@ try {
   await click('Claim for myself'); await waitFor(async () => Number((await one('SELECT assignee_id FROM support_conversations WHERE id = ?', [conversations[2].id]))!.assignee_id) === agent.id, 10000, { label: 'Phone claim persisted' })
   check(Number((await one('SELECT assignee_id FROM support_conversations WHERE id = ?', [conversations[2].id]))!.assignee_id) === agent.id, 'agent release and claim use native authorized routing mutations')
   await evaluate(`document.querySelector('#customer-details-close').click()`); await panelClosed(); check(true, 'phone close button restores focus after an actual agent release and claim')
+  // Persisted history is created through real native HTTP, not browser response mocks.
+  const archive = (await http(prefix + '/team-inboxes', 'POST', { teamId: Number(team.id), name: 'Archive search', assignmentMode: 'manual' }, owner.token)).data.inbox
+  async function archived(subject: string, body: string, box = Number(archive.id), status = 'open') {
+    const created = await http(`/v1/projects/${project.public_id}/conversations`, 'POST', { externalId: 'archive-customer', subject, body, idempotencyKey: `search-${subject}` }, keys.ingestKey)
+    assert.equal(created.status, 201)
+    assert.equal((await http(prefix + `/conversations/${created.data.conversation.id}/routing`, 'POST', { inboxId: box, assigneeId: 0, status }, owner.token)).status, 200)
+    return created.data.conversation
+  }
+  const oldBody = await archived('Archive case 000', 'nebularoute archivedsecretneedle only exists in the old message body')
+  for (let index = 1; index < 55; index++) await archived(`Archive case ${String(index).padStart(3, '0')}`, 'Historical message about nebularoute')
+  const otherBox = await archived('Matching other inbox', 'nebularoute', Number(inbox.id))
+  const closedMatch = await archived('Matching resolved case', 'nebularoute', Number(archive.id), 'closed')
+  await archived('No transcript match', 'A different topic entirely')
+  await archived('Late result must stay hidden', 'stalequerytoken projectstaletoken logoutstaletoken')
+  const sibling = (await http(`/support/workspaces/${workspace.id}/projects`, 'POST', { name: 'Sibling search brand' }, owner.token)).data.project
+  const siblingKeys = (await http(`/support/projects/${sibling.public_id}/keys`, 'POST', {}, owner.token)).data
+  const siblingRecord = (await http(`/v1/projects/${sibling.public_id}/conversations`, 'POST', { externalId: 'sibling-customer', subject: 'Sibling-only request', body: 'archivedsecretneedle', idempotencyKey: 'sibling-search' }, siblingKeys.ingestKey)).data.conversation
+  await navigate(cdp, origin + '/app', { quietMs: 100, timeoutMs: 20000 }); await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 50`), 15000, { label: 'Initial native fifty-conversation page' })
+  check(!await evaluate(`document.body.textContent.includes('Archive case 000')`), 'historical body-only target is outside the initial fifty loaded conversations')
+  const searchInput = '[aria-label="Search subjects and messages"]'
+  const beforeShort = searchTraffic.length
+  await input(searchInput, 'n'); await text('Enter at least 2 characters'); await Bun.sleep(400)
+  check(searchTraffic.length === beforeShort && await evaluate(`document.querySelectorAll('.conversation-row').length === 0`), 'one-character input shows validation without querying or silently falling back to all conversations')
+  await input(searchInput, 'archivedsecretneedle'); await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 1 && document.querySelector('.conversation-row strong')?.textContent === 'Archive case 000' && document.querySelector('[aria-label="Refresh inbox"]').disabled === false`), 15000, { label: 'Historical server search result' })
+  check(await evaluate(`document.querySelectorAll('.conversation-row').length === 1`) && searchTraffic.at(-1)?.q === 'archivedsecretneedle', 'server search returns an old body-only match without client subject filtering or sibling-project leakage')
+  await selectConversation('Archive case 000'); await input('#reply', 'Private draft retained while searching persisted history')
+  await input('#team-inbox', String(archive.id)); await input(searchInput, 'nebularoute')
+  await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 50 && document.body.textContent.includes('Load more conversations')`), 15000, { label: 'Combined native search page' })
+  const combined = searchTraffic.at(-1)!
+  check(combined.q === 'nebularoute' && combined.inboxId === String(archive.id) && combined.status === 'open' && !combined.cursor && !await evaluate(`document.body.textContent.includes('Matching other inbox') || document.body.textContent.includes('Matching resolved case')`), 'query, status and team inbox compose in the actual native HTTP request')
+  const arrival = await archived('New matching arrival', 'nebularoute')
+  await click('Load more conversations'); await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 55`), 15000, { label: 'Historical search keyset continuation' })
+  check(searchTraffic.at(-1)?.q === 'nebularoute' && searchTraffic.at(-1)?.inboxId === String(archive.id) && searchTraffic.at(-1)?.status === 'open' && !!searchTraffic.at(-1)?.cursor && await evaluate(`document.body.textContent.includes('Archive case 000') && !document.body.textContent.includes('New matching arrival') && new Set(Array.from(document.querySelectorAll('.conversation-row strong')).map(row=>row.textContent)).size === 55`), 'cursor continuation retains all filters and excludes an intervening newer matching arrival without duplicates')
+  check(await evaluate(`document.querySelector('#reply').value === 'Private draft retained while searching persisted history'`), 'search and pagination preserve the selected historical conversation draft')
+  await evaluate(`document.querySelector('[aria-label="Refresh inbox"]').click()`); await text('New matching arrival')
+  check(searchTraffic.at(-1)?.q === 'nebularoute' && !searchTraffic.at(-1)?.cursor && await evaluate(`document.querySelector('#team-inbox').value === ${JSON.stringify(String(archive.id))}`), 'explicit refresh starts a new query page with the current filters and includes new arrivals')
+  await input(searchInput, ''); await waitFor(() => evaluate(`document.querySelector('[aria-label="Refresh inbox"]').disabled === false`), 15000, { label: 'Empty query refresh' })
+  check(searchTraffic.at(-1)?.q === null && searchTraffic.at(-1)?.inboxId === String(archive.id) && searchTraffic.at(-1)?.status === 'open', 'empty search omits q and preserves the status and inbox filters')
+  const beforeLong = searchTraffic.length; await input(searchInput, 'a'.repeat(201)); await text('Search is limited to 200 characters.'); await Bun.sleep(400)
+  check(searchTraffic.length === beforeLong, 'oversized programmatic input never sends an unbounded search request')
+  const stale = holdSearch('stalequerytoken'); await input(searchInput, 'stalequerytoken'); await stale.entered.promise
+  const beforeInvalidEdit = searchTraffic.length; await input(searchInput, 'x'); await text('Enter at least 2 characters'); stale.release.resolve(); await Bun.sleep(400)
+  check(searchTraffic.length === beforeInvalidEdit && await evaluate(`document.querySelectorAll('.conversation-row').length === 0 && !document.body.textContent.includes('Late result must stay hidden')`), 'query edit invalidates an older in-flight result before debounce even when the replacement query is invalid')
+  const beforeDebounce = searchTraffic.length; await input(searchInput, 'ar'); await input(searchInput, 'archived'); await input(searchInput, 'archivedsecretneedle'); await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 1 && document.querySelector('.conversation-row strong')?.textContent === 'Archive case 000' && document.querySelector('[aria-label="Refresh inbox"]').disabled === false`), 15000, { label: 'Historical server search result' })
+  check(searchTraffic.length === beforeDebounce + 1 && searchTraffic.at(-1)?.q === 'archivedsecretneedle', 'rapid valid edits debounce to the final bounded query')
+  const oldProject = holdSearch('projectstaletoken'); await input(searchInput, 'projectstaletoken'); await oldProject.entered.promise
+  await input('#project', String(sibling.public_id)); await text('Sibling-only request'); oldProject.release.resolve(); await Bun.sleep(200)
+  check(await evaluate(`document.querySelector(${JSON.stringify(searchInput)}).value === '' && document.querySelector('#team-inbox').value === '' && document.querySelectorAll('.conversation-row').length === 1 && !document.body.textContent.includes('Late result must stay hidden')`) && searchTraffic.at(-1)?.path.includes(String(sibling.public_id)), 'project change cancels old query/cursor scope and cannot append a late result from another project')
+  await input('#project', String(project.public_id)); await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 50`), 15000, { label: 'Original project restored' }); await input(searchInput, 'archivedsecretneedle'); await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 1 && document.querySelector('.conversation-row strong')?.textContent === 'Archive case 000' && document.querySelector('[aria-label="Refresh inbox"]').disabled === false`), 15000, { label: 'Historical server search result' }); await selectConversation('Archive case 000')
+  check(await evaluate(`document.querySelector('#reply').value === 'Private draft retained while searching persisted history'`), 'project switching preserves only the matching project/conversation draft in memory')
+  const pendingLogout = holdSearch('logoutstaletoken'); await input(searchInput, 'logoutstaletoken'); await pendingLogout.entered.promise
+  const logout = await evaluate(`(async()=>{const seed=await (await fetch('/api/csrf-token')).json();return (await fetch('/api/logout',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':seed.token},body:'{}'})).status})()`)
+  check(logout === 200, 'native authenticated logout completes without browser identity overrides')
+  await input(searchInput, 'archivedsecretneedle'); await text('Sign in to open your workspace.'); pendingLogout.release.resolve(); await Bun.sleep(200)
+  check(await evaluate(`!document.querySelector('#reply') && document.querySelectorAll('.conversation-row').length === 0 && document.querySelector(${JSON.stringify(searchInput)}).value === '' && !document.body.textContent.includes('Archive case 000')`), 'logout cleanup discards private search results, drafts and late query responses')
+  check(Number(arrival.id) > Number(oldBody.id) && Number(otherBox.id) !== Number(closedMatch.id) && siblingRecord.id, 'search qualification uses distinct persisted native records and real new arrivals')
   console.info(`PASS team UI functional (${assertions.length} checks)`)
   await Bun.write(resolve(artifacts, 'report.json'), JSON.stringify({ passed: runtimeErrors.length === 0, functionalPassed: true, assertions, runtimeErrors, browser: (await cdp.send('Browser.getVersion')).product }, null, 2))
   assert.deepEqual(runtimeErrors, [], 'No browser runtime errors: retain this gate until the native compiler fix is published')
@@ -186,6 +248,6 @@ finally {
     await Bun.write(resolve(artifacts, 'diagnostic.json'), JSON.stringify({ assertions, runtimeErrors, body: captured[0].status === 'fulfilled' ? captured[0].value : 'Browser closed' }, null, 2))
     if (captured[1].status === 'fulfilled') await Bun.write(resolve(artifacts, 'latest.png'), Buffer.from(captured[1].value.data, 'base64'))
   }
-  host?.stop(true); api.stop(true); await browser?.close(); await closeSharedBrowsers(); await rm(output, { recursive: true, force: true })
+  searchGate?.release.resolve(); host?.stop(true); api.stop(true); await browser?.close(); await closeSharedBrowsers(); await rm(output, { recursive: true, force: true })
 }
 process.exit(0)
