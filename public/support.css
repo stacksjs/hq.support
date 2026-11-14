@@ -135,7 +135,7 @@ a{transition:color .15s}
 .settings-workspaces h3{font-size:16px}
 .settings-workspaces article{display:flex;gap:14px;align-items:center;justify-content:space-between;font-size:12px;padding:15px 0;border-bottom:1px solid #e1e7e1}
 .settings-workspaces strong{font-weight:550}
-.settings-workspaces span{font-size:11px;color:#62716b;text-transform:capitalize}
+.settings-workspaces article>span{font-size:11px;color:#62716b;text-transform:capitalize}
 .secret-result{padding:20px;background:#eef4ed;border-radius:10px;margin:25px 0;overflow-wrap:anywhere}
 .secret-result label{font-size:10px;font-family:ui-monospace,monospace}
 .secret-result textarea{font-family:ui-monospace,monospace;resize:none}

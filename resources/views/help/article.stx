@@ -1,0 +1,30 @@
+<script server>
+const pageTitle = 'Help article'
+const pageDescription = 'A published HQ.support help article.'
+</script>
+<script client>
+const params = useSearchParams()
+const article = state<{ title: string, body: string, collection: string, locale: string } | null>(null)
+const pending = state(true)
+const error = state('')
+let abort: AbortController | null = null
+onMount(async () => {
+  abort = new AbortController()
+  try {
+    const project = params.get('project') || ''
+    const slug = params.get('slug') || ''
+    if (!project || !slug) throw new Error('Choose an article from your project help center.')
+    const response = await fetch('/api/help/projects/' + encodeURIComponent(project) + '/articles/' + encodeURIComponent(slug) + '?locale=' + encodeURIComponent(params.get('locale') || 'en'), { signal: abort.signal, cache: 'no-store', credentials: 'omit' })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.error?.message || result.message || 'This article is unavailable.')
+    article.set(result.article)
+  }
+  catch (failure) { if (failure instanceof Error && failure.name !== 'AbortError') error.set(failure.message || 'This article could not be loaded.') }
+  finally { pending.set(false) }
+})
+onDestroy(() => abort?.abort())
+</script>
+@extends('default')
+@section('content')
+<div class="mx-auto px-6 help-layout"><header class="page-heading"><a href="/help" class="text-xs muted">Help center / Article</a><h1 class="mt-6">{{ article()?.title || 'Help article' }}</h1><p :if="article()">{{ article()?.collection }} / {{ article()?.locale }}</p></header><p :if="pending()" role="status" class="availability">Loading the published article...</p><p :if="error()" role="alert" class="auth-error">{{ error() }}</p><article :if="article()" class="public-article-body">{{ article()?.body }}</article></div>
+@endsection

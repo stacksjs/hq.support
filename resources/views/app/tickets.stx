@@ -1,0 +1,34 @@
+<script server>
+const pageTitle = 'Tickets'
+const pageDescription = 'Manage customer tickets in HQ.support.'
+</script>
+<script client>
+import { createTickets } from '../../functions/support/tickets'
+const tickets = createTickets()
+const workspace = tickets.workspace
+const project = workspace.project
+const query = tickets.query
+const filter = tickets.filter
+const status = tickets.status
+const priority = tickets.priority
+const assignee = tickets.assignee
+onMount(() => tickets.boot())
+onDestroy(() => workspace.destroy())
+</script>
+@extends('console')
+@section('content')
+<header class="console-heading">
+<div><h1>Tickets</h1><p>Keep a clear owner of the next step. Track customer requests from open to resolved.</p></div>
+<div class="project-picker"><label for="ticket-project">Project</label><select id="ticket-project" x-model="project" @change="tickets.load()" :disabled="workspace.pending() || workspace.loading()"><option value="">Select a project</option><option :for="item in workspace.projects()" :value="item.public_id">{{ item.name }}</option></select></div>
+</header>
+<p :if="workspace.error()" class="console-error" role="alert">{{ workspace.error() }}</p>
+<p :if="workspace.notice()" class="console-notice" role="status">{{ workspace.notice() }}</p>
+<div class="console-toolbar"><input x-model="query" type="search" placeholder="Search ticket titles" aria-label="Search tickets"><select x-model="filter" aria-label="Filter ticket status"><option value="all">All statuses</option><option value="open">Open</option><option value="pending">Pending</option><option value="resolved">Resolved</option></select><button class="button button-outline" type="button" @click="tickets.load()" :disabled="workspace.loading() || workspace.pending()">Refresh tickets</button></div>
+<p :if="workspace.loading()" class="console-loading" role="status">Loading tickets...</p>
+<div :if="!workspace.loading() && tickets.tickets().length === 0" class="console-empty"><h2>No tickets yet.</h2><p>Customer requests submitted through the embedded ticket form will appear here.</p><a href="/help/messenger" class="button button-outline">Read the integration guide</a></div>
+<div :if="tickets.tickets().length > 0" class="editor-grid">
+<section class="resource-list" aria-label="Tickets"><button :for="item in tickets.filtered()" type="button" :class="String(tickets.selected()?.id) === String(item.id) ? 'chosen' : ''" @click="tickets.select(item)" :disabled="workspace.pending()"><strong>{{ item.title }}</strong><span>#{{ item.id }} / {{ item.status }} / {{ item.priority }}</span></button><p :if="tickets.filtered().length === 0" class="empty-list">No tickets match this search.</p></section>
+<section class="editor-panel"><header class="editor-panel-heading"><h2>{{ tickets.selected()?.title || 'Select a ticket' }}</h2><span :if="tickets.selected()" class="status-label">{{ tickets.selected()?.status }}</span></header><div :if="!tickets.selected()" class="editor-form"><p class="field-help">Open a ticket to read its details and update its status.</p></div><form :if="tickets.selected()" class="editor-form" @submit.prevent="tickets.save()"><p class="ticket-description">{{ tickets.selected()?.description || 'No additional details provided.' }}</p><div class="field-grid"><div><label for="ticket-status">Status</label><select id="ticket-status" x-model="status" :disabled="workspace.pending()"><option value="open">Open</option><option value="pending">Pending</option><option value="resolved">Resolved</option></select></div><div><label for="ticket-priority">Priority</label><select id="ticket-priority" x-model="priority" :disabled="workspace.pending()"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></div></div><label for="ticket-assignee">Assigned agent</label><select id="ticket-assignee" x-model="assignee" :disabled="workspace.pending()"><option value="">Unassigned</option><option :for="agent in tickets.agents()" :value="agent.id">{{ agent.name }} / {{ agent.role }}</option></select><p class="mt-5 field-help">Created {{ tickets.date(tickets.selected()?.created_at) }}</p><p class="field-help">Last updated {{ tickets.date(tickets.selected()?.updated_at) }}</p><button class="button button-teal" type="submit" :disabled="workspace.pending()">{{ workspace.pending() ? 'Saving...' : 'Save ticket changes' }}</button></form></section>
+</div>
+<p class="console-help-footer">Status and priority are persisted on the ticket. SLA targets and breach reporting are not available in this view yet.</p>
+@endsection

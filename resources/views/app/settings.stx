@@ -12,7 +12,7 @@ onMount(() => settings.load())
 onDestroy(() => settings.destroy())
 async function signOut() {
   try { await settings.signOut(); navigate('/login') }
-  catch (error) { settings.error.set(error.message || 'Sign out could not be completed.') }
+  catch (error) { settings.error.set(error instanceof Error ? error.message : 'Sign out could not be completed.') }
 }
 </script>
 @extends('default')

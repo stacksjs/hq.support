@@ -33,7 +33,7 @@ try {
  check(messenger.shadowRoot.querySelector('textarea').value === 'FAIL', 'failed delivery preserves the customer draft')
  messenger.close(); await messenger.updateComplete
  check(!messenger.shadowRoot.querySelector('section') && events.some(event => event.name === 'closed'), 'close hides the panel and emits closed')
- await messenger.track({ name: 'compiler-proof' })
+ await messenger.track({ event: 'compiler-proof' })
  messenger.shutdown(); await messenger.updateComplete
  check(!messenger.sessionToken && !messenger.thread.length, 'shutdown clears customer session and messages')
  const second = document.createElement('hq-support-messenger'); document.querySelector('#elements').append(second); await second.updateComplete

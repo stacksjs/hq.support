@@ -127,6 +127,19 @@ export function createInbox() {
     catch (failure) { if (!disposed && version === selection) { error.set(failure instanceof Error ? failure.message : 'Conversation could not be loaded.'); notice.set('') } }
   }
 
+  async function markRead() {
+    const item = current()
+    const last = messages().reduce((latest, message) => Number(message.id) > Number(latest) ? String(message.id) : latest, '')
+    if (!item || !last || error()) return
+    const selectedProject = project()
+    try {
+      const result = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(item.id))}/read`, { method: 'POST', body: JSON.stringify({ lastMessageId: last }) })
+      if (disposed || selectedProject !== project()) return
+      conversations.update(items => items.map(row => String(row.id) === String(item.id) ? { ...row, unread_count: Number(result.unreadCount) } : row))
+    }
+    catch (failure) { if (!disposed) notice.set(failure instanceof Error ? failure.message : 'The read marker could not be saved.') }
+  }
+
   async function send() {
     const body = draft().trim()
     const item = current()
@@ -200,5 +213,5 @@ export function createInbox() {
     return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   }
   function destroy() { disposed = true; generation++; selection++ }
-  return { user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, send, changeStatus, createWorkspace, formatDate, destroy }
+  return { user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, markRead, send, changeStatus, createWorkspace, formatDate, destroy }
 }

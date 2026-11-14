@@ -1,4 +1,4 @@
-<script component>
+<script component type="application/json">
 {"tag":"hq-support-help-search","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"results":{"type":"array","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false}},"events":{"results":{},"error":{}}}
 </script>
 <script client>

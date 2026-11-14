@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+@include('head')
+<link rel="stylesheet" href="/support.css">
+<link rel="stylesheet" href="/console.css">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;450;500;550;600;650;700&display=swap" rel="stylesheet">
+</head>
+<body class="min-h-[100dvh] antialiased text-[#20332f] bg-[#fafbf9]">
+<a class="skip-link" href="#main">Skip to content</a>
+<main id="main" class="console-shell">
+<header class="console-topbar"><a href="/" class="wordmark"><span class="brand-mark">h</span>hq<span class="muted">.support</span></a><a href="/help">Help center <i class="i-hugeicons-arrow-up-right-01" aria-hidden="true"></i></a></header>
+@include('support-nav')
+<section class="console-content">@yield('content')</section>
+</main>
+</body>
+</html>

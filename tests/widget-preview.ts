@@ -18,6 +18,13 @@ if (process.env.SUPPORT_NATIVE_UI === '1') {
   await injectGlobalAutoImports()
   await route.importRoutes()
   nativeApi = request => route.handleRequest(request)
+  if (process.env.SUPPORT_TEST_BILLING === '1') {
+    const { configureBillingGateway } = await import('../app/Support/billing')
+    configureBillingGateway({
+      checkout: async input => ({ id: `local_test_${input.checkoutId}`, url: `https://checkout.stripe.com/test-local-${input.checkoutId}` }),
+      event: async () => { throw new Error('Payment execution is not part of the local UI fixture.') },
+    })
+  }
 }
 const messages: { id: number, author_type: string, body: string }[] = []
 const seen = new Map<string, object>()

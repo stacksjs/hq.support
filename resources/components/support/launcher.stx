@@ -1,4 +1,4 @@
-<script component>
+<script component type="application/json">
 {"tag":"hq-support-launcher","shadowDOM":"open","properties":{"label":{"type":"string","default":"Contact support"},"unread":{"type":"number","default":0}},"events":{"opened":{"description":"Customer requests the messenger"}}}
 </script>
 <script client>

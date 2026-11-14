@@ -1,0 +1,18 @@
+<script server>
+const pageTitle = 'Reports'
+const pageDescription = 'Persisted conversation, message, and ticket totals for your HQ.support project.'
+</script>
+<script client>
+import { createReports } from '../../functions/support/reports'
+const reports = createReports()
+const workspace = reports.workspace
+const project = workspace.project
+onMount(() => reports.boot())
+onDestroy(() => workspace.destroy())
+</script>
+@extends('console')
+@section('content')
+<header class="console-heading"><div><h1>Reports</h1><p>A clear view of what has been recorded. Every total comes from this project's persisted conversations, messages, and tickets.</p></div><div class="project-picker"><label for="report-project">Project</label><select id="report-project" x-model="project" @change="reports.load()" :disabled="workspace.loading()"><option value="">Select a project</option><option :for="item in workspace.projects()" :value="item.public_id">{{ item.name }}</option></select></div></header>
+<p :if="workspace.error()" class="console-error" role="alert">{{ workspace.error() }}</p><div class="console-toolbar"><button type="button" class="button button-outline" @click="reports.load()" :disabled="workspace.loading()">Refresh reports</button><span class="field-help">All recorded data for the selected project</span></div><p :if="workspace.loading()" class="console-loading" role="status">Loading persisted totals...</p>
+<div :if="reports.report()"><section class="metric-grid" aria-label="Project totals"><article class="metric-cell"><h2>Conversations</h2><strong>{{ reports.total(reports.report()?.conversations) }}</strong><p>All conversation statuses</p></article><article class="metric-cell"><h2>Messages</h2><strong>{{ reports.total(reports.report()?.messages) }}</strong><p>Customer, team, and recorded automated messages</p></article><article class="metric-cell"><h2>Tickets</h2><strong>{{ reports.total(reports.report()?.tickets) }}</strong><p>All ticket statuses</p></article></section><section class="report-columns"><article class="report-group"><h2>Conversation status</h2><dl><div :for="row in reports.report()?.conversations"><dt>{{ row.status }}</dt><dd>{{ row.total }}</dd></div></dl><p :if="reports.report()?.conversations.length === 0" class="field-help">No conversations recorded yet.</p></article><article class="report-group"><h2>Message authors</h2><dl><div :for="row in reports.report()?.messages"><dt>{{ row.author_type }}</dt><dd>{{ row.total }}</dd></div></dl><p :if="reports.report()?.messages.length === 0" class="field-help">No messages recorded yet.</p></article><article class="report-group"><h2>Ticket status</h2><dl><div :for="row in reports.report()?.tickets"><dt>{{ row.status }}</dt><dd>{{ row.total }}</dd></div></dl><p :if="reports.report()?.tickets.length === 0" class="field-help">No tickets recorded yet.</p></article></section></div><p class="console-help-footer">This report shows durable aggregate counts. Response time, resolution time, SLA performance, and channel delivery analytics are not measured here yet.</p>
+@endsection

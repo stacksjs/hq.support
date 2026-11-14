@@ -1,4 +1,4 @@
-<script component>
+<script component type="application/json">
 {"tag":"hq-support-messenger","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"opened":{"type":"boolean","default":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"thread":{"type":"array","attribute":false,"reflect":false},"conversationId":{"type":"string","attribute":false,"reflect":false},"heading":{"type":"string","default":"How can we help?"}},"events":{"ready":{},"opened":{},"closed":{},"unread":{},"delivery":{},"error":{}}}
 </script>
 <script client>
@@ -8,7 +8,7 @@ function onConnect() {
 function onDisconnect() {
   this.shutdown()
 }
-async function boot(options = {}) {
+async function boot(options: { url?: string, project?: string, token?: string } = {}): Promise<void> {
   const wasOpened = this.opened
   const suppliedToken = options.token || this.sessionToken
   this.shutdown()
@@ -49,25 +49,25 @@ async function boot(options = {}) {
     if (generation === this._generation) this.pending = false
   }
 }
-function open() {
+function open(): void {
   this.opened = true
   this._unread = 0
   this.emit('unread', { count: 0 })
   this.emit('opened', {})
   if (!this.sessionToken && !this.pending) this.boot().catch(() => {})
 }
-function close() {
+function close(): void {
   this.opened = false
   this.emit('closed', {})
 }
-async function update(options = {}) {
+async function update(options: { url?: string, project?: string, token?: string } = {}): Promise<void> {
   return this.boot({ url: this.apiUrl, project: this.projectId, ...options })
 }
-async function track(event) {
+async function track(event: { event: string, attributes?: Record<string, unknown>, idempotencyKey?: string }): Promise<{ id: string, accepted: boolean }> {
   if (!this.sessionToken) throw new Error('Boot the messenger before tracking events.')
   return this.request('/events', { method: 'POST', body: JSON.stringify({ ...event, idempotencyKey: event.idempotencyKey || crypto.randomUUID() }) })
 }
-function shutdown() {
+function shutdown(): void {
   this._generation = (this._generation || 0) + 1
   this._abort?.abort()
   clearInterval(this._poll)
@@ -97,7 +97,7 @@ async function request(path, options = {}, authenticated = true) {
 function editDraft(event) {
   this._draft = event.target.value
 }
-async function refresh() {
+async function refresh(): Promise<void> {
   if (!this.sessionToken || this.pending || this._refreshing) return
   const generation = this._generation
   this._refreshing = true

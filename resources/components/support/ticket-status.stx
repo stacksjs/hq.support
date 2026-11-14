@@ -1,4 +1,4 @@
-<script component>
+<script component type="application/json">
 {"tag":"hq-support-ticket-status","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"ticketId":{"type":"string","default":""},"ticket":{"type":"object","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false}},"events":{"loaded":{},"error":{}}}
 </script>
 <script client>
