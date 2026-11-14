@@ -20,10 +20,15 @@ if (process.env.SUPPORT_NATIVE_UI === '1') {
   nativeApi = request => route.handleRequest(request)
   if (process.env.SUPPORT_TEST_BILLING === '1') {
     const { configureBillingGateway } = await import('../app/Support/billing')
+    const { stripe } = await import('@stacksjs/payments')
     configureBillingGateway({
       checkout: async input => ({ id: `local_test_${input.checkoutId}`, url: `https://checkout.stripe.com/test-local-${input.checkoutId}` }),
       event: async () => { throw new Error('Payment execution is not part of the local UI fixture.') },
     })
+    stripe.checkout.sessions.create = (async (input, options) => {
+      if (input?.mode !== 'subscription' || !options?.idempotencyKey?.startsWith('hq-support:subscription:')) throw new Error('Invalid subscription fixture request.')
+      return { id: `cs_local_${input.metadata?.checkout_id}`, url: `https://checkout.stripe.com/test-local-${input.metadata?.checkout_id}` }
+    }) as typeof stripe.checkout.sessions.create
   }
 }
 const messages: { id: number, author_type: string, body: string }[] = []
