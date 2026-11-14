@@ -132,6 +132,41 @@ try {
     await query(`CREATE TRIGGER realtime_boundary AFTER UPDATE OF name ON support_replay_channels WHEN NEW.name = '${safeName}' AND NEW.lease_until > 0 BEGIN ${statement}; END`)
     return async () => { await query('DROP TRIGGER realtime_boundary') }
   }
+  // Reach native readiness only after finite replay's two channel locks succeed.
+  // Triggers synchronize real SQL in the same transaction, not an external writer race.
+  freezeTime(leaseStarted)
+  try {
+    for (const scenario of ['expiry', 'renewal', 'incarnation', 'authority', 'storage']) {
+      await query('UPDATE support_replay_channels SET lease_until = ? WHERE name = ?', [leaseStarted + 120000, channelName])
+      await query('CREATE TABLE realtime_readiness_steps (steps INTEGER NOT NULL)')
+      await query('INSERT INTO realtime_readiness_steps (steps) VALUES (0)')
+      const atThird = '(SELECT steps FROM realtime_readiness_steps) = 3'
+      const mutation = scenario === 'incarnation'
+        ? `UPDATE support_replay_channels SET incarnation = '${crypto.randomUUID()}' WHERE id = NEW.id AND ${atThird}`
+        : scenario === 'storage'
+          ? config.database.default === 'postgres' ? `IF ${atThird} THEN RAISE EXCEPTION 'readiness test storage failure'; END IF` : `SELECT RAISE(ABORT, 'readiness test storage failure') WHERE ${atThird}`
+          : `UPDATE support_replay_channels SET lease_until = 0 WHERE id = NEW.id AND ${atThird}`
+      // Make the selected readiness row renewal-eligible without renewing during finite replay.
+      const renewal = scenario === 'renewal' ? `UPDATE support_replay_channels SET lease_until = ${leaseStarted + 1} WHERE id = NEW.id AND (SELECT steps FROM realtime_readiness_steps) = 2; ` : ''
+      const revoke = scenario === 'authority' ? `; UPDATE support_customer_sessions SET expires_at = 0 WHERE digest = '${digest(session.token)}' AND ${atThird}` : ''
+      const remove = await boundaryTrigger(`UPDATE realtime_readiness_steps SET steps = steps + 1; ${renewal}${mutation}${revoke}`)
+      try {
+        const refused = await request(widget + '/realtime/stream', 'POST', { checkpoint: finite.data.cursor }, session.token, 'https://customer.example')
+        const recovery = ['expiry', 'renewal', 'incarnation'].includes(scenario)
+        const committed = scenario === 'expiry' || scenario === 'incarnation'
+        check(Number((await one('SELECT steps FROM realtime_readiness_steps'))!.steps) === (committed ? 3 : 2), 'native readiness ' + scenario + ' occurs after finite replay and respects transaction rollback')
+        check(refused.status === (recovery ? 409 : scenario === 'authority' ? 401 : 503) && !('checkpoint' in refused.data) && !('snapshot' in refused.data), 'pre-header readiness ' + scenario + ' keeps its domain status and releases no state or checkpoint')
+        check(recovery ? refused.data.cursor === null && refused.data.snapshotRequired === true : !('cursor' in refused.data) && !('snapshotRequired' in refused.data), 'only enrollment recovery adds the readiness recovery discriminator for ' + scenario)
+        if (scenario === 'renewal') check(Number((await one('SELECT lease_until FROM support_replay_channels WHERE name = ?', [channelName]))!.lease_until) === leaseStarted + 1, 'readiness renewal refusal rolls back its expiry trigger and never extends the lease')
+        if (scenario === 'authority') check(refused.data.error.code === 'invalid_session', 'current authority refusal is not serialized as stream unavailability or recovery')
+      }
+      finally {
+        await remove(); await query('DROP TABLE realtime_readiness_steps')
+        await query('UPDATE support_replay_channels SET incarnation = ?, lease_until = ? WHERE name = ?', [finite.data.cursor.incarnation, leaseStarted + 120000, channelName])
+      }
+    }
+  }
+  finally { useRealTime() }
   freezeTime(leaseStarted)
   try {
     await query('UPDATE support_replay_channels SET lease_until = ? WHERE name = ?', [leaseStarted + 120000, channelName])

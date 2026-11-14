@@ -171,25 +171,34 @@ async function stream(request: RequestInstance, widget: boolean, principal: Prin
   const ready = await replay(request, widget, principal, after)
   if (ready.status !== 200) return ready
   createBroadcastHub()
+  let opening = true, readinessFailure: { error: unknown } | undefined
   const response = await createBroadcastResponse({ channels: [principal.channel], invalidations: supportReplayInvalidations(), signal: request.signal, heartbeatMs: 15_000, maxPending: 64,
     authorize: async () => {
       try {
         await authority(request, widget, principal)
         return await workspaceTransaction(Number(principal.project.workspace_id), async tx => {
           const fresh = await authority(request, widget, principal), row = await live(fresh, tx)
-          if (!row || row.incarnation !== after.incarnation) return false
+          if (!row || row.incarnation !== after.incarnation) fail(409, 'snapshot_required', 'A new snapshot is required.')
           await authority(request, widget, principal)
           await renew(fresh, tx, row)
           await authority(request, widget, principal)
           return true
         })
       }
-      catch { return false }
+      catch (error) {
+        // Native false owns cleanup. Preserve the reason only until the HTTP response is released.
+        if (opening) readinessFailure = { error }
+        return false
+      }
     },
   })
   // Native response owns cancellation/subscription/timer cleanup after headers.
-  try { await authority(request, widget, principal) }
+  try {
+    await authority(request, widget, principal)
+    if (readinessFailure) throw readinessFailure.error
+  }
   catch (error) { await response.body?.cancel(); throw error }
+  finally { opening = false }
   return response.status === 200 ? response : json({ error: { code: 'realtime_unavailable', message: 'Realtime stream could not be opened.' } }, response.status)
 }
 
