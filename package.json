@@ -67,6 +67,7 @@
     "@stacksjs/orm": "^0.75.585",
     "@stacksjs/path": "^0.75.585",
     "@stacksjs/payments": "^0.75.585",
+    "@stacksjs/realtime": "^0.75.585",
     "@stacksjs/queue": "^0.75.585",
     "@stacksjs/router": "^0.75.585",
     "@stacksjs/security": "^0.75.585",

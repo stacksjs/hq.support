@@ -113,6 +113,8 @@ declare global {
   const Project: typeof import('../../../app/Models/Project')['default']
   const ProviderCostBucket: typeof import('../../../app/Models/ProviderCostBucket')['default']
   const QueueWorker: typeof import('../../../app/Models/QueueWorker')['default']
+  const SupportReplayChannel: typeof import('../../../app/Models/SupportReplayChannel')['default']
+  const SupportReplayEvent: typeof import('../../../app/Models/SupportReplayEvent')['default']
   const SupportRoutingAgent: typeof import('../../../app/Models/SupportRoutingAgent')['default']
   const SupportTeam: typeof import('../../../app/Models/SupportTeam')['default']
   const SupportTeamMember: typeof import('../../../app/Models/SupportTeamMember')['default']

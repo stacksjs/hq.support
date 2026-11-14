@@ -175,6 +175,8 @@
     "Subscriber": true,
     "SubscriberEmail": true,
     "Subscription": true,
+    "SupportReplayChannel": true,
+    "SupportReplayEvent": true,
     "SupportRoutingAgent": true,
     "SupportTeam": true,
     "SupportTeamMember": true,
