@@ -5,10 +5,12 @@ import type { Row } from './database'
 import { db, insert, one, query, workspaceTransaction } from './database'
 import { fail, identifier, SupportError, text } from './errors'
 import { contact, member, object, secret } from './service'
-import { knowledgeText } from './knowledge'
+import { knowledgeText, localeOf } from './knowledge'
+import type { KnowledgeAuthor } from './knowledge'
+import { importIntercomArticle, importIntercomCollection } from './import-articles'
 
 export const importLimits = { bytes: 10_000_000, records: 5000, batch: 25, leaseMs: 60000, maximumConversationParts: 500, maximumPaginatedParts: 5000 } as const
-export type IntercomBundle = { version: 1, provider: 'intercom', format: 'html' | 'plaintext', contacts: Row[], conversations: Row[] }
+export type IntercomBundle = { version: 1, provider: 'intercom', format: 'html' | 'plaintext', contacts: Row[], conversations: Row[], articles: Row[], collections: Row[], articleLocale?: string }
 export type ImportPrincipal = number | { kind: 'integration', keyDigest: string }
 async function authorizeImport(project: Row, principal: ImportPrincipal) {
   if (typeof principal === 'number') await member(principal, Number(project.workspace_id), ['owner', 'admin'])
@@ -37,7 +39,9 @@ export function parseIntercomBundle(bytes: Uint8Array): IntercomBundle {
   try { parsed = object(JSON.parse(new TextDecoder().decode(bytes))) }
   catch { fail(422, 'invalid_import_json', 'Upload a valid Intercom migration bundle JSON file.') }
   if (parsed.version !== 1 || parsed.provider !== 'intercom' || !Array.isArray(parsed.contacts) || !Array.isArray(parsed.conversations) || !['html', 'plaintext'].includes(String(parsed.format ?? 'html'))) fail(422, 'invalid_import_bundle', 'Use bundle version 1 with provider intercom, contacts and full conversations arrays.')
-  if (parsed.contacts.length + parsed.conversations.length < 1 || parsed.contacts.length + parsed.conversations.length > importLimits.records) fail(422, 'import_record_limit', 'A bundle must contain 1 to 5000 contact/conversation records.')
+  if ((parsed.articles !== undefined && !Array.isArray(parsed.articles)) || (parsed.collections !== undefined && !Array.isArray(parsed.collections))) fail(422, 'invalid_import_bundle', 'Optional articles and collections must be arrays.')
+  const records = parsed.contacts.length + parsed.conversations.length + (Array.isArray(parsed.articles) ? parsed.articles.length : 0) + (Array.isArray(parsed.collections) ? parsed.collections.length : 0)
+  if (records < 1 || records > importLimits.records) fail(422, 'import_record_limit', 'A bundle must contain 1 to 5000 supplied contact, conversation, collection or article records.')
   const pending: { value: unknown, depth: number }[] = [{ value: parsed, depth: 0 }]
   let entries = 0
   while (pending.length) {
@@ -45,7 +49,7 @@ export function parseIntercomBundle(bytes: Uint8Array): IntercomBundle {
     if (++entries > 100000 || item.depth > 32) fail(422, 'import_structure_limit', 'Source JSON exceeds the bounded nesting/object budget.')
     if (item.value && typeof item.value === 'object') for (const value of Object.values(item.value)) pending.push({ value, depth: item.depth + 1 })
   }
-  return { version: 1, provider: 'intercom', format: (parsed.format ?? 'html') as 'html' | 'plaintext', contacts: parsed.contacts.map(object), conversations: parsed.conversations.map(object) }
+  return { version: 1, provider: 'intercom', format: (parsed.format ?? 'html') as 'html' | 'plaintext', contacts: parsed.contacts.map(object), conversations: parsed.conversations.map(object), articles: Array.isArray(parsed.articles) ? parsed.articles.map(object) : [], collections: Array.isArray(parsed.collections) ? parsed.collections.map(object) : [], ...(parsed.articleLocale === undefined ? {} : { articleLocale: localeOf(parsed.articleLocale) }) }
 }
 function runView(row: Row) {
   return { id: String(row.id), provider: String(row.provider), sourceName: String(row.source_name), sourceHash: String(row.source_hash), sourceBytes: Number(row.source_bytes), totalRecords: Number(row.total_records), cursor: Number(row.cursor), processed: Number(row.processed), imported: Number(row.imported), skipped: Number(row.skipped), failed: Number(row.failed), status: String(row.status), lastError: String(row.last_error), createdAt: row.created_at, updatedAt: row.updated_at }
@@ -70,7 +74,9 @@ export async function uploadIntercomBundle(project: Row, principal: ImportPrinci
       await query('UPDATE support_import_runs SET lease_token = ?, lease_until = ? WHERE id = ?', [lease, Date.now() + importLimits.leaseMs, existing.id])
       return { ...existing, lease_token: lease }
     }
-    return await insert('support_import_runs', { workspace_id: project.workspace_id, project_id: project.id, provider: 'intercom', source_hash: hash, source_key: `support-imports/${project.workspace_id}/${project.public_id}/${crypto.randomUUID()}.json`, source_disk: disk, source_name: file.name.replace(/[\r\n\\/\x00-\x1F]/g, '_').slice(0, 255), source_bytes: bytes.byteLength, total_records: bundle.contacts.length + bundle.conversations.length, status: 'uploading', lease_token: lease, lease_until: Date.now() + importLimits.leaseMs })
+    const created = await insert('support_import_runs', { workspace_id: project.workspace_id, project_id: project.id, provider: 'intercom', source_hash: hash, source_key: `support-imports/${project.workspace_id}/${project.public_id}/${crypto.randomUUID()}.json`, source_disk: disk, source_name: file.name.replace(/[\r\n\\/\x00-\x1F]/g, '_').slice(0, 255), source_bytes: bytes.byteLength, total_records: importRecords(bundle).length, status: 'uploading', lease_token: lease, lease_until: Date.now() + importLimits.leaseMs })
+    if (bundle.articles.length || bundle.collections.length) await rememberImportActor(project, created.id, principal)
+    return created
   })
   if (row.status !== 'uploading') return { run: runView(row), duplicate: true }
   try {
@@ -93,10 +99,44 @@ export async function uploadIntercomBundle(project: Row, principal: ImportPrinci
 async function mapping(project: Row, type: string, id: string) {
   return await one("SELECT * FROM support_import_mappings WHERE project_id = ? AND workspace_id = ? AND provider = 'intercom' AND entity_type = ? AND external_id = ?", [project.id, project.workspace_id, type, id])
 }
-async function remember(project: Row, type: string, id: string, targetId: unknown, payload: Row) {
+async function remember(project: Row, type: string, id: string, targetId: unknown, payload: Row, hashInput: Row = payload) {
   const previous = await mapping(project, type, id)
-  if (previous) await query('UPDATE support_import_mappings SET source_hash = ?, source_payload = ?, updated_at = ? WHERE id = ?', [fingerprint(payload), JSON.stringify(payload), new Date().toISOString(), previous.id])
-  else await insert('support_import_mappings', { workspace_id: project.workspace_id, project_id: project.id, provider: 'intercom', entity_type: type, external_id: id, target_id: targetId, source_hash: fingerprint(payload), source_payload: JSON.stringify(payload) })
+  if (previous) await query('UPDATE support_import_mappings SET source_hash = ?, source_payload = ?, updated_at = ? WHERE id = ?', [fingerprint(hashInput), JSON.stringify(payload), new Date().toISOString(), previous.id])
+  else await insert('support_import_mappings', { workspace_id: project.workspace_id, project_id: project.id, provider: 'intercom', entity_type: type, external_id: id, target_id: targetId, source_hash: fingerprint(hashInput), source_payload: JSON.stringify(payload) })
+}
+function importRecords(bundle: IntercomBundle) {
+  // Keep pre-existing contact/conversation positions stable for version-one resumptions.
+  return [...bundle.contacts.map(payload => ({ type: 'contact', payload })), ...bundle.conversations.map(payload => ({ type: 'conversation', payload })), ...bundle.collections.map(payload => ({ type: 'collection', payload })), ...bundle.articles.map(payload => ({ type: 'article', payload }))]
+}
+async function importPrincipalAuthor(project: Row, principal: ImportPrincipal): Promise<KnowledgeAuthor> {
+  await authorizeImport(project, principal)
+  if (typeof principal === 'number') return principal
+  const key = await one("SELECT id FROM support_api_keys WHERE project_id = ? AND workspace_id = ? AND digest = ? AND scope = 'write' AND revoked_at = 0", [project.id, project.workspace_id, principal.keyDigest])
+  if (!key) fail(401, 'import_authorization_revoked', 'The migration integration key was revoked.')
+  return { integrationKeyId: Number(key.id) }
+}
+async function rememberImportActor(project: Row, runId: unknown, principal: ImportPrincipal) {
+  const author = await importPrincipalAuthor(project, principal)
+  const payload = typeof author === 'number' ? { kind: 'user', userId: author } : { kind: 'integration', integrationKeyId: author.integrationKeyId }
+  await remember(project, 'import_actor', String(runId), typeof author === 'number' ? author : author.integrationKeyId, payload)
+}
+async function importRunAuthor(project: Row, runId: unknown): Promise<KnowledgeAuthor> {
+  const actor = await mapping(project, 'import_actor', String(runId))
+  if (!actor) fail(409, 'import_actor_missing', 'Article migration requires the persisted initiating native user or integration key.')
+  const payload = object(JSON.parse(String(actor.source_payload)))
+  if (payload.kind === 'user') { const userId = identifier(payload.userId); await member(userId, Number(project.workspace_id), ['owner', 'admin']); return userId }
+  if (payload.kind === 'integration') {
+    const integrationKeyId = identifier(payload.integrationKeyId)
+    if (!await one("SELECT id FROM support_api_keys WHERE id = ? AND project_id = ? AND workspace_id = ? AND scope = 'write' AND revoked_at = 0", [integrationKeyId, project.id, project.workspace_id])) fail(401, 'import_authorization_revoked', 'The initiating integration key was revoked. Reconcile this migration before continuing.')
+    return { integrationKeyId }
+  }
+  fail(409, 'import_actor_invalid', 'The persisted migration principal requires operator review.')
+}
+async function importRecord(project: Row, item: { type: string, payload: Row }, bundle: IntercomBundle, author: () => Promise<KnowledgeAuthor>) {
+  if (item.type === 'contact') return await importContact(project, item.payload)
+  if (item.type === 'conversation') return await importConversation(project, item.payload, bundle.format)
+  const context = { fingerprint, external, timestamp, mapping, remember, author, defaultLocale: bundle.articleLocale }
+  return item.type === 'collection' ? await importIntercomCollection(project, item.payload, context) : await importIntercomArticle(project, item.payload, context)
 }
 async function importContact(project: Row, source: Row) {
   const id = external(source.id), previous = await mapping(project, 'contact', id)
@@ -219,7 +259,7 @@ export async function processImportBatch(id: unknown, options: { batchSize?: num
   try {
     const bytes = await Storage.disk(String(claimed.source_disk)).readToBuffer(String(claimed.source_key))
     if (bytes.byteLength !== Number(claimed.source_bytes) || createHash('sha256').update(bytes).digest('hex') !== claimed.source_hash) fail(409, 'source_archive_changed', 'Private migration source failed its stored byte/hash verification.')
-    const bundle = parseIntercomBundle(new Uint8Array(bytes)), records = [...bundle.contacts.map(payload => ({ type: 'contact', payload })), ...bundle.conversations.map(payload => ({ type: 'conversation', payload }))]
+    const bundle = parseIntercomBundle(new Uint8Array(bytes)), records = importRecords(bundle)
     let advanced = 0
     for (let count = 0; count < batchSize; count++) {
       const result = await workspaceTransaction(Number(claimed.workspace_id), async () => {
@@ -228,14 +268,14 @@ export async function processImportBatch(id: unknown, options: { batchSize?: num
         const cursor = Number(run.cursor), item = records[cursor]
         if (!item) return false
         const project = (await one('SELECT * FROM support_projects WHERE id = ? AND workspace_id = ?', [run.project_id, run.workspace_id]))!
-        let outcome: { id?: unknown, skipped?: boolean } = {}, review: SupportError | undefined
+        let outcome: { id?: unknown, skipped?: boolean, message?: string } = {}, review: SupportError | undefined
         try {
-          outcome = await db.transaction(async () => item.type === 'contact' ? await importContact(project, item.payload) : await importConversation(project, item.payload, bundle.format))
+          outcome = await db.transaction(async () => await importRecord(project, item, bundle, () => importRunAuthor(project, runId)))
         }
         catch (error) { if (error instanceof SupportError) review = error; else throw error }
         const status = review ? 'needs_review' : outcome.skipped ? 'skipped' : 'imported', previous = await one('SELECT id, status, target_id FROM support_import_records WHERE import_run_id = ? AND position = ?', [run.id, cursor])
         const recordStatus = status === 'skipped' && previous?.status === 'imported' && Number(previous.target_id) === Number(outcome.id) ? 'imported' : status
-        const report = { entity_type: item.type, external_id: typeof item.payload.id === 'string' || typeof item.payload.id === 'number' ? String(item.payload.id).slice(0, 200) : '(missing)', status: recordStatus, target_id: outcome.id ?? 0, error_code: review?.code || '', message: review?.message || '', source_payload: JSON.stringify(item.payload) }
+        const report = { entity_type: item.type, external_id: typeof item.payload.id === 'string' || typeof item.payload.id === 'number' ? String(item.payload.id).slice(0, 200) : '(missing)', status: recordStatus, target_id: outcome.id ?? 0, error_code: review?.code || '', message: review?.message || outcome.message || '', source_payload: JSON.stringify(item.payload) }
         if (previous) await query('UPDATE support_import_records SET status = ?, target_id = ?, error_code = ?, message = ?, source_payload = ?, updated_at = ? WHERE id = ?', [report.status, report.target_id, report.error_code, report.message, report.source_payload, new Date().toISOString(), previous.id])
         else await insert('support_import_records', { workspace_id: run.workspace_id, project_id: run.project_id, import_run_id: run.id, position: cursor, ...report })
         const totals = await query('SELECT status, COUNT(*) AS count FROM support_import_records WHERE import_run_id = ? GROUP BY status', [run.id])
@@ -315,14 +355,14 @@ class PreviewRollback extends Error {
 export async function previewIntercomBundle(project: Row, principal: ImportPrincipal, file: File) {
   await authorizeImport(project, principal)
   if (!file.size || file.size > importLimits.bytes) fail(413, 'import_size', 'Migration bundles must be 1 to 10000000 bytes.')
-  const bundle = parseIntercomBundle(new Uint8Array(await file.arrayBuffer())), records = [...bundle.contacts.map(payload => ({ type: 'contact', payload })), ...bundle.conversations.map(payload => ({ type: 'conversation', payload }))]
+  const bundle = parseIntercomBundle(new Uint8Array(await file.arrayBuffer())), records = importRecords(bundle)
   try {
     await workspaceTransaction(Number(project.workspace_id), async () => {
       await authorizeImport(project, principal)
       const reports: { status: string, code: string, message: string }[] = []
       for (const item of records) {
         try {
-          const result = await db.transaction(async () => item.type === 'contact' ? await importContact(project, item.payload) : await importConversation(project, item.payload, bundle.format))
+          const result = await db.transaction(async () => await importRecord(project, item, bundle, () => importPrincipalAuthor(project, principal)))
           reports.push({ status: result.skipped ? 'skipped' : 'compatible', code: '', message: '' })
         }
         catch (error) { if (error instanceof SupportError) reports.push({ status: 'needs_review', code: error.code, message: error.message }); else throw error }

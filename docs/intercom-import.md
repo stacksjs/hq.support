@@ -1,12 +1,12 @@
 # Resumable Intercom migration
 
-This importer accepts a private file containing supplied Intercom contact and full conversation response objects. It makes no live Intercom API calls and stores no Intercom credentials. It does not claim to discover omitted or filtered source data.
+This importer accepts a private file containing supplied Intercom contacts, full conversations, articles and explicit collection metadata. It makes no live Intercom API calls and stores no Intercom credentials. It does not claim to discover omitted or filtered source data.
 
 Current Intercom API 2.18 retrieval supports numbered part pagination. Without a page request it returns the most recent 500 parts; list/search responses do not supply full message histories. Retrieve every unfiltered page from page one through `conversation_parts.pages.next:null`, preferably with `display_as=plaintext` to preserve link destinations. [Intercom retrieval reference](https://developers.intercom.com/docs/references/rest-api/api.intercom.io/conversations/retrieveconversation)
 
 ## Bundle format
 
-Upload JSON with `version:1`, `provider:"intercom"`, `format:"plaintext"` (or `"html"`), and `contacts`/`conversations` arrays. Contacts contain the original Contact response objects. Conversations contain either a complete retrieve response or an explicit page sequence:
+Upload JSON with `version:1`, `provider:"intercom"`, `format:"plaintext"` (or `"html"`), and `contacts`/`conversations` arrays. These two arrays may be empty for article-only migration. Optional `articles` and `collections` arrays contain their complete original retrieve responses. Contacts contain the original Contact response objects. Conversations contain either a complete retrieve response or an explicit page sequence:
 
 ```ts
 interface PagedConversation {
@@ -19,7 +19,21 @@ interface PagedConversation {
 
 Every response page must name the same conversation, contain at most 500 parts and include its original next-page cursor. The chain must be contiguous, begin at one and end at null; part IDs cannot repeat. Complete explicit page sequences support up to 5,000 parts per conversation. An ambiguous unpaged 500-part response, unfinished chain or missing full `conversation_parts` is held for review. A source-controlled completeness flag cannot bypass these checks. These structural checks validate the supplied bundle; an operator remains responsible for supplying an unfiltered source export.
 
-The administrative upload is multipart `file` at `POST /api/support/projects/{project}/imports/intercom`, with native owner/admin authentication and ordinary cookie CSRF protection. Limits are 10,000,000 bytes, 5,000 contact/conversation records, nesting depth 32 and 100,000 JSON values. The response is HTTP 202 with the actual persisted run state. Source bytes go to a private native Stacks storage disk with a SHA-256 digest. The same archive hash returns its existing run.
+The administrative upload is multipart `file` at `POST /api/support/projects/{project}/imports/intercom`, with native owner/admin authentication and ordinary cookie CSRF protection. Limits are 10,000,000 bytes, 5,000 total supplied records, nesting depth 32 and 100,000 JSON values. The response is HTTP 202 with the actual persisted run state. Source bytes go to a private native Stacks storage disk with a SHA-256 digest. The same archive hash returns its existing run.
+
+## Article migration
+
+Supply full Article retrieve responses, including title, HTML `body` or `body_markdown`, source author, state and UTC Unix timestamps. Intercom supplies `default_locale` for multilingual help centers; for a single-language response without it, set bundle `articleLocale` explicitly. Supplied `translated_content` locales are checked together before any locale is committed. A duplicate default-locale entry must agree with the top-level fields. [Intercom Article reference](https://developers.intercom.com/docs/references/rest-api/api.intercom.io/articles/article)
+
+Each supplied locale becomes a native **internal draft**, including articles originally published or restricted in Intercom. Native knowledge sanitization produces plain text, and native article revisions retain its history. Stable project/provider/article-ID/locale mappings preserve native targets across archives. Collection responses are retained as source metadata; an explicitly supplied single collection supplies the article's flat label and available translated name. Nested collection trees, sections and multiple-parent placement require review. [Intercom Collection reference](https://developers.intercom.com/docs/references/rest-api/api.intercom.io/help-center/retrievecollection)
+
+The actual upload principal is persisted for worker restart and checked again when each article is written. Native revisions name that native operator or integration key. Original authors, timestamps, audience, collection data and source payload remain private mapping provenance; no external author becomes a native login, owner or audit actor. A revoked integration key cannot continue article writes under an owner's identity.
+
+Contacts and conversations retain their existing checkpoint order, followed by collections and articles. One article checkpoint atomically commits all its supplied locales. Identical source mappings skip writes. Changed source creates a native revision only while the prior imported native revision and content baseline still match; native edits, publication changes, removed targets and older source versions require reconciliation. Omitted articles/locales are not inferred as deleted, and their existing native targets remain unchanged. Reconcile source inventory separately before claiming a complete migration.
+
+Missing bodies, partial translations, explicit truncation/redaction, missing timestamps/locales, separate staged drafts, remote HTML/Markdown media and unresolved collection placement produce per-record review codes. The archive and failed source payload remain available for review, with no partial native article or phantom media transfer. Publishing, widening audience and indexing are separate operator actions after content and permissions review. Article migration never calls an embedding provider, creates an index generation, sends notifications or consumes conversation, customer AI, copilot or indexing quota.
+
+The same `dryRun=true` rehearsal validates collection dependencies, native content, existing mappings and reconciliation conflicts through actual native transactions, then rolls back every target, revision and mapping. `tests/feature/import-articles.test.ts` verifies actual HTTP upload, private storage, native queue restart and revoked actors on disposable SQLite and PostgreSQL using installed framework packages. These controlled fixtures do not qualify a production Intercom export as complete.
 
 ## Recovery and provenance
 
