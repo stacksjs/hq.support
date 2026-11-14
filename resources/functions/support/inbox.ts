@@ -7,7 +7,7 @@ import type { AgentIdentity, Assignment, RoutingAgent, SupportTeamMember, Suppor
 import { routingReasonLabel } from './team-routing'
 
 interface Project { id: string | number, public_id: string, name: string, workspace_id: string | number }
-interface Conversation { id: string | number, subject: string, status: string, customer_id?: string | number, updated_at?: string, unread_count?: number, assignee_id?: string | number, team_id?: string | number, inbox_id?: string | number, routing_reason?: string }
+interface Conversation { id: string | number, subject: string, status: string, customer_id?: string | number, updated_at?: string, unread_count?: number, assignee_id?: string | number, team_id?: string | number, inbox_id?: string | number, routing_reason?: string, resolved_at?: number, continued_from_id?: string | null, continuation_id?: string | null }
 interface Message { id: string | number, body: string, visibility: string, author_type: string, created_at: string }
 interface Contact { id?: string | number, name?: string, email?: string, company?: string }
 
@@ -228,7 +228,7 @@ export function createInbox() {
     await refresh()
   }
 
-  async function select(item: Conversation) {
+  async function select(item: Conversation, loaded?: { conversation: Conversation, messages: Message[], contact: Contact | null }) {
     if (sending() || routingBusy()) return
     stashDraft()
     const version = ++selection
@@ -241,7 +241,7 @@ export function createInbox() {
     error.set('')
     notice.set('Loading conversation...'); threadLoading.set(true)
     try {
-      const data = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(item.id))}`)
+      const data = loaded ?? await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(item.id))}`)
       if (disposed || version !== selection || selectedProject !== project()) return
       current.set(data.conversation); syncRouting(data.conversation)
       messages.set(data.messages || [])
@@ -250,6 +250,21 @@ export function createInbox() {
     }
     catch (failure) { if (!disposed && version === selection) { error.set(failure instanceof Error ? failure.message : 'Conversation could not be loaded.'); notice.set('') } }
     finally { if (!disposed && version === selection) threadLoading.set(false) }
+  }
+
+  async function openLinked(direction: 'previous' | 'next') {
+    const item = current(), selectedProject = project(), selected = selection
+    const id = direction === 'previous' ? item?.continued_from_id : item?.continuation_id
+    if (!id || threadLoading() || sending() || routingBusy()) return
+    stashDraft(); threadLoading.set(true); error.set('')
+    try {
+      const data = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(id)}`)
+      if (disposed || selected !== selection || selectedProject !== project()) return
+      if (String(data.conversation?.id) !== id) throw new Error('The linked request could not be confirmed. Your current reply draft is unchanged.')
+      await select(data.conversation, data)
+    }
+    catch (failure) { if (!disposed && selected === selection) error.set(failure instanceof Error ? failure.message : 'The linked request could not be loaded. Your draft is unchanged.') }
+    finally { if (!disposed && selected === selection) threadLoading.set(false) }
   }
 
   async function markRead() {
@@ -344,5 +359,5 @@ export function createInbox() {
     return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   }
   function destroy() { disposed = true; cancelList(); selection++; clearPrivateState(); user.set(null); workspaces.set([]); projects.set([]); project.set(''); activeProject = '';  for (const cleanup of detailsCleanup.splice(0)) cleanup(); detailsScroll?.set(false); detailsOpener = null }
-  return { searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, markRead, send, changeStatus, createWorkspace, formatDate, destroy }
+  return { searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy }
 }
