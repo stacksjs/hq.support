@@ -1,9 +1,20 @@
 <script component type="application/json">
-{"tag":"hq-support-messenger","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"opened":{"type":"boolean","default":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"thread":{"type":"array","attribute":false,"reflect":false},"conversationId":{"type":"string","attribute":false,"reflect":false},"heading":{"type":"string","default":"How can we help?"}},"events":{"ready":{},"opened":{},"closed":{},"unread":{},"delivery":{},"error":{}}}
+{"tag":"hq-support-messenger","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"opened":{"type":"boolean","default":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"thread":{"type":"array","attribute":false,"reflect":false},"conversationId":{"type":"string","attribute":false,"reflect":false},"heading":{"type":"string","default":"How can we help?"},"csat":{"type":"object","attribute":false,"reflect":false},"csatOffer":{"type":"object","attribute":false,"reflect":false},"csatPending":{"type":"boolean","attribute":false,"reflect":false},"csatNotice":{"type":"string","attribute":false,"reflect":false},"csatChanged":{"type":"boolean","attribute":false,"reflect":false}},"events":{"ready":{},"opened":{},"closed":{},"unread":{},"delivery":{},"error":{}}}
 </script>
 <script client>
 interface Message { id: string, body: string, author_type: string }
+interface CsatOffer { question: string, revision: number }
+interface CsatAnswer { id: string, score: number, comment: string, question: string, revision: number, createdAt: string }
+interface CsatStatus { available?: boolean, reason?: string, survey?: CsatOffer, response?: CsatAnswer }
+interface CsatPayload { score: number, comment: string, revision: number }
 interface ComponentState {
+  csat: CsatStatus
+  csatOffer: Partial<CsatOffer>
+  _csatConversation?: string
+  _csatScore?: string
+  _csatComment?: string
+  _csatRefreshing?: boolean
+  _csatOperation?: { key: string, payload: CsatPayload } | null
   thread: Message[]
   _generation?: number
   _abort?: AbortController
@@ -13,7 +24,7 @@ interface ComponentState {
   _sendKey?: string | null
   _draft?: string
 }
-interface ResponseError { message?: string, error?: { message?: string } | string }
+interface ResponseError { message?: string, error?: { message?: string, code?: string } | string }
 interface SessionResponse { token: string }
 interface ConversationsResponse { conversations?: { id: string }[] }
 interface ConversationResponse { messages?: Message[] }
@@ -51,6 +62,7 @@ async function boot(options: { url?: string, project?: string, token?: string } 
       const detail = await this.request<ConversationResponse>('/conversations/' + encodeURIComponent(this.conversationId))
       if (generation !== this._generation) return
       this.thread = detail.messages || []
+      await this.refreshCsat()
     }
     this._poll = setInterval(() => this.refresh().catch(() => {}), 5000)
     this.emit('ready', { project: this.projectId })
@@ -98,8 +110,10 @@ function shutdown(): void {
   this.notice = ''
   this._sendKey = null
   this._draft = ''
+  this.clearCsat()
 }
 async function request<T = unknown>(path: string, options: RequestInit = {}, authenticated = true): Promise<T> {
+  const generation = this._generation
   const response = await fetch(this.apiUrl + '/api/widget/projects/' + encodeURIComponent(this.projectId) + path, {
     ...options,
     credentials: 'omit',
@@ -108,7 +122,8 @@ async function request<T = unknown>(path: string, options: RequestInit = {}, aut
     headers: { 'Content-Type': 'application/json', ...(authenticated ? { Authorization: 'Bearer ' + this.sessionToken } : {}) },
   })
   const result: T & ResponseError = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(result.message || (typeof result.error === 'object' ? result.error?.message : '') || (typeof result.error === 'string' ? result.error : '') || 'Support request failed (' + response.status + ').')
+  if (response.status === 401 && authenticated && generation === this._generation) { this.shutdown(); this.emit('error', { message: 'Your customer session expired. Reconnect support.' }) }
+  if (!response.ok) { const failure = new Error(result.message || (typeof result.error === 'object' ? result.error?.message : '') || (typeof result.error === 'string' ? result.error : '') || 'Support request failed (' + response.status + ').'); Object.assign(failure, { status: response.status, code: typeof result.error === 'object' ? result.error?.code : undefined }); throw failure }
   return result
 }
 function editDraft(event: Event) {
@@ -130,11 +145,73 @@ async function refresh(): Promise<void> {
       this._unread = this.opened ? 0 : (this._unread || 0) + received
       this.emit('unread', { count: this._unread })
     }
+    await this.refreshCsat()
   }
   catch (error) {
     if (generation === this._generation && !(error instanceof Error && error.name === 'AbortError')) this.emit('error', { message: error instanceof Error ? error.message : 'Messages could not be refreshed.' })
   }
   finally { if (generation === this._generation) this._refreshing = false }
+}
+function clearCsat(): void {
+  this.csat = {}; this.csatOffer = {}; this.csatPending = false; this.csatNotice = ''; this.csatChanged = false
+  this._csatConversation = ''; this._csatScore = ''; this._csatComment = ''; this._csatOperation = null; this._csatRefreshing = false
+}
+function editCsatScore(event: Event): void { if (event.target instanceof HTMLInputElement) this._csatScore = event.target.value }
+function editCsatComment(event: Event): void { if (event.target instanceof HTMLTextAreaElement) this._csatComment = event.target.value }
+function scoreLabel(score: number): string { return ['Very dissatisfied', 'Dissatisfied', 'Neither satisfied nor dissatisfied', 'Satisfied', 'Very satisfied'][score - 1] || '' }
+async function refreshCsat(review = false): Promise<void> {
+  if (!this.sessionToken || !this.conversationId || this.csatPending || this._csatRefreshing) return
+  if (this._csatConversation !== this.conversationId) { this.clearCsat(); this._csatConversation = this.conversationId }
+  const generation = this._generation, conversation = this.conversationId
+  this._csatRefreshing = true
+  try {
+    const result = await this.request<CsatStatus>('/conversations/' + encodeURIComponent(conversation) + '/csat')
+    if (generation !== this._generation || conversation !== this.conversationId) return
+    if (typeof result.available !== 'boolean') throw new Error('Feedback availability could not be confirmed.')
+    if (JSON.stringify(result) !== JSON.stringify(this.csat)) this.csat = result
+    if (result.response) { this.csatOffer = {}; this._csatScore = ''; this._csatComment = ''; this._csatOperation = null; this.csatChanged = false; this.csatNotice = ''; return }
+    if (!result.available || !result.survey) return
+    const draft = !!(this._csatScore || this._csatComment || this._csatOperation)
+    if (review || !this.csatOffer.revision || !draft) {
+      if (JSON.stringify(this.csatOffer) !== JSON.stringify(result.survey)) this.csatOffer = result.survey
+      this.csatChanged = false
+      if (review) { this._csatOperation = null; this.csatNotice = 'Question refreshed. Review your score and comment before sending.' }
+    }
+    else if (result.survey.revision !== this.csatOffer.revision) this.csatChanged = true
+  }
+  catch (failure) {
+    if (generation !== this._generation || (failure instanceof Error && failure.name === 'AbortError')) return
+    if ((failure as Error & { status?: number }).status === 401) { this.shutdown(); this.emit('error', { message: 'Your customer session expired. Reconnect support.' }); return }
+    if (this.csatOffer.revision) this.csatNotice = failure instanceof Error ? failure.message : 'Feedback could not be refreshed. Your draft is unchanged.'
+  }
+  finally { if (generation === this._generation) this._csatRefreshing = false }
+}
+async function reviewCsatQuestion(): Promise<void> { await this.refreshCsat(true) }
+async function submitCsat(event: Event): Promise<void> {
+  event.preventDefault()
+  if (!(event.target instanceof HTMLFormElement) || this.csatPending || !this.sessionToken || !this.csat.available || this.csatChanged || this._csatConversation !== this.conversationId) return
+  const fields = new FormData(event.target), score = Number(fields.get('score')), comment = String(fields.get('comment') || '')
+  this._csatScore = String(fields.get('score') || ''); this._csatComment = comment
+  if (!Number.isSafeInteger(score) || score < 1 || score > 5 || comment.length > 2000 || !this.csatOffer.revision) { this.csatNotice = 'Choose a score from 1 to 5 and keep your optional comment within 2000 characters.'; return }
+  const payload = { score, comment: comment.trim(), revision: Number(this.csatOffer.revision) }
+  if (!this._csatOperation || JSON.stringify(this._csatOperation.payload) !== JSON.stringify(payload)) this._csatOperation = { key: crypto.randomUUID(), payload }
+  const operation = this._csatOperation, generation = this._generation, conversation = this.conversationId
+  this.csatPending = true; this.csatNotice = ''
+  try {
+    const result = await this.request<{ response?: CsatAnswer }>('/conversations/' + encodeURIComponent(conversation) + '/csat', { method: 'POST', body: JSON.stringify({ ...operation.payload, idempotencyKey: operation.key }) })
+    if (generation !== this._generation || conversation !== this.conversationId) return
+    if (!result.response?.id) throw new Error('Feedback could not be confirmed. Retry with the same score and comment.')
+    this.csat = { available: false, reason: 'answered', response: result.response }; this.csatOffer = {}; this._csatScore = ''; this._csatComment = ''; this._csatOperation = null; this.csatChanged = false
+  }
+  catch (failure) {
+    if (generation !== this._generation || (failure instanceof Error && failure.name === 'AbortError')) return
+    const error = failure as Error & { status?: number, code?: string }
+    if (error.status === 401) { this.shutdown(); this.emit('error', { message: 'Your customer session expired. Reconnect support.' }); return }
+    this.csatNotice = error.message || 'Feedback could not be saved. Retry with the same score and comment.'
+    if (error.code === 'csat_question_changed') this.csatChanged = true
+    if (error.code === 'csat_already_answered' || error.code === 'csat_unavailable') { this.csatPending = false; await this.refreshCsat() }
+  }
+  finally { if (generation === this._generation) this.csatPending = false }
 }
 async function send(event: Event) {
   event.preventDefault()
@@ -165,6 +242,7 @@ async function send(event: Event) {
     const detail = await this.request<ConversationResponse>('/conversations/' + encodeURIComponent(this.conversationId))
     if (generation !== this._generation) return
     this.thread = detail.messages || []
+    await this.refreshCsat()
     this.emit('delivery', { conversationId: this.conversationId, status: 'sent' })
   }
   catch (error) {
@@ -192,10 +270,18 @@ async function send(event: Event) {
       @if(this.notice)
         <p class="notice" role="alert">{{ this.notice }}</p>
       @endif
+      @if(this.csat.response)
+        <section class="csat-answer" aria-label="Your satisfaction response"><h3>Feedback received</h3><p>{{ this.csat.response.question }}</p><p><strong>{{ this.csat.response.score }} / 5</strong> · Question revision {{ this.csat.response.revision }}</p>@if(this.csat.response.comment)<p class="csat-comment">{{ this.csat.response.comment }}</p>@endif</section>
+      @elseif(this.csat.available && this.csatOffer.revision)
+        <form class="csat-form" @submit.prevent="submitCsat"><fieldset :disabled="this.csatPending"><legend>{{ this.csatOffer.question }}</legend><p class="csat-help">Rate this resolved conversation · Question revision {{ this.csatOffer.revision }}</p><div class="csat-scores">@foreach([1,2,3,4,5] as score)<label class="csat-score">@if(String(this._csatScore || '') === String(score))<input type="radio" name="score" value="{{ score }}" @change="editCsatScore" checked required>@else<input type="radio" name="score" value="{{ score }}" @change="editCsatScore" required>@endif<span>{{ score }}</span><span class="sr-only"> — {{ this.scoreLabel(score) }}</span></label>@endforeach</div><p class="csat-help">1 = very dissatisfied · 5 = very satisfied</p><label for="csat-comment">Optional comment</label><textarea id="csat-comment" name="comment" @input="editCsatComment" maxlength="2000" rows="3" placeholder="What worked, or what could improve?">{{ this._csatComment || '' }}</textarea></fieldset>@if(this.csatChanged)<p class="notice" role="alert">The question changed. Your original question and draft are preserved. Review the current question before sending.</p><button type="button" class="csat-review" @click="reviewCsatQuestion" :disabled="this.csatPending">Review current question</button>@endif @if(this.csatNotice)<p class="notice" role="alert">{{ this.csatNotice }}</p>@endif @if(this.csatChanged)<button type="submit" disabled>Send feedback</button>@else<button type="submit" :disabled="this.csatPending">{{ this.csatPending ? 'Saving feedback...' : 'Send feedback' }}</button>@endif</form>
+      @elseif(this.csatOffer.revision && this.csatNotice)
+        <section class="csat-answer" aria-label="Satisfaction feedback"><p>{{ this.csatOffer.question }}</p><p role="status">{{ this.csatNotice }}</p><button type="button" class="csat-review" @click="reviewCsatQuestion">Check feedback availability</button></section>
+      @endif
       <form @submit.prevent="send"><label for="support-body">Your message</label><textarea id="support-body" name="body" @input="editDraft" required maxlength="10000" placeholder="Write your message..." rows="3" :disabled="this.pending">{{ this._draft || '' }}</textarea><div class="send-row"><span>{{ this.pending ? 'Connecting...' : 'Powered by HQ.support' }}</span><button type="submit" :disabled="this.pending">Send message</button></div></form>
     </section>
   @endif
 </template>
 <style>
 :host{display:block;font-family:Geist,ui-sans-serif,system-ui,sans-serif;color:#20332f;--support-accent:#126d60}.messenger{width:min(380px,calc(100vw - 32px));background:#fff;border:1px solid #dce5e1;border-radius:20px;box-shadow:0 18px 70px #122e2929;overflow:hidden}*{box-sizing:border-box}header{background:#f0f7f4;padding:24px;display:flex;gap:12px;justify-content:space-between}.brand{font-size:12px;font-weight:700;color:#126d60}h2{margin:18px 0 8px;font-size:25px;letter-spacing:-.8px;line-height:1.2}p{line-height:1.5;font-size:14px;margin:0}header p{color:#526760}.close{align-self:flex-start;width:32px;height:32px;background:transparent;color:#526760;border:0;font-size:25px;border-radius:8px;cursor:pointer}.messages{min-height:220px;max-height:340px;overflow:auto;padding:20px}.welcome{padding:30px 6px;color:#526760}.welcome strong{color:#263c34;font-size:14px}.welcome p{margin-top:9px}.message{background:#f3f6f4;padding:12px 14px;border-radius:12px;margin:0 0 12px}.message small{font-size:11px;color:#536d62;font-weight:650}.message p{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:5px}form{padding:16px 20px;border-top:1px solid #e5ebe7}label{display:block;font-size:12px;font-weight:600;margin-bottom:8px}textarea{width:100%;font:inherit;font-size:14px;border:1px solid #cddbd3;border-radius:10px;padding:12px;resize:vertical;min-height:80px;color:#20332f;background:#fff}.send-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px}.send-row span{font-size:10px;color:#62736c}button[type=submit]{font:inherit;background:var(--support-accent);color:#fff;border:0;border-radius:8px;padding:10px 13px;font-size:12px;font-weight:650;cursor:pointer}button:disabled{opacity:.55;cursor:wait}button:focus-visible,textarea:focus-visible{outline:3px solid #68bcab;outline-offset:3px}.notice{padding:12px 20px;color:#923a25;background:#fff4ee;font-size:12px}@media(prefers-reduced-motion:no-preference){button{transition:background .15s}button:hover{filter:brightness(.94)}}
+.csat-form fieldset{border:0;margin:0;padding:0;min-width:0}.csat-form legend{font-size:15px;font-weight:650;line-height:1.5;margin-bottom:8px}.csat-help{font-size:11px;color:#526760;margin:7px 0 12px}.csat-scores{display:flex;gap:8px;margin:14px 0}.csat-score{position:relative;display:flex;align-items:center;gap:4px;flex:1;padding:9px 4px;border:1px solid #cddbd3;border-radius:8px;cursor:pointer;justify-content:center}.csat-score:has(input:checked){border-color:#126d60;background:#e5f3ed}.csat-score input{margin:0;accent-color:#126d60}.csat-form>button{margin-top:12px}.csat-form .notice{margin-top:12px;border-radius:8px}.csat-answer{padding:18px 20px;border-top:1px solid #e5ebe7;background:#f3f8f5}.csat-answer h3{margin:0 0 10px;font-size:15px}.csat-answer p{font-size:12px;line-height:1.7;margin:7px 0}.csat-comment{white-space:pre-wrap;overflow-wrap:anywhere}.csat-review{font:inherit;font-size:12px;color:#126d60;background:#fff;border:1px solid #cddbd3;border-radius:8px;padding:9px 12px;cursor:pointer}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}input:focus-visible{outline:3px solid #68bcab;outline-offset:3px}
 </style>

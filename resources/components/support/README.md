@@ -104,6 +104,22 @@ and `hq-support-ticket-status` accept `apiUrl`, `projectId`, and the non-reflect
 `sessionToken` property. The ticket status element also accepts `ticketId` and
 loads on `refresh()`.
 
+## Resolved-conversation feedback
+
+Messenger reads the actual scoped CSAT endpoint after loading/refreshing its
+conversation. Projects remain opted out until an owner/admin enables the
+question. An eligible own resolved conversation receives a five-score native
+radio group and optional comment, without an outbound survey message. The form
+keeps its offered question/revision and draft through uncertain delivery, reuses
+the operation key for an unchanged retry, and requires explicit review of a
+changed question. Its own saved receipt remains an immutable snapshot.
+
+Feedback values and receipts never reflect into host attributes. Switching
+customer/project/API identity, shutdown, disconnection or a current revoked
+session clears them; generation checks reject stale previous-session responses.
+See `docs/customer-satisfaction.md` for the native API/browser proof and its
+currently failing upstream production STX qualification gate.
+
 ## Compiler boundary
 
 Standalone elements use native component metadata, reactive properties,
