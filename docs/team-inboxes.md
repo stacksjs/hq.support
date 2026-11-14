@@ -57,8 +57,17 @@ cursor pages, shows assignment and capacity, and exposes audited manual or
 round-robin routing to owners/admins. Agents can claim unassigned team work or
 release their own assignment. Overflow and manual inboxes display the actual
 unassigned reason. The latest 100 audit decisions show the native actor or
-workflow run and before/after context. These controls do not change provider
+workflow run and before/after context. Rejected assignment requests display
+the backend error; they do not claim a reopen, unassignment or any other
+transition that did not happen. These controls do not change provider
 readiness or start a background overflow drain.
+
+At tablet and phone widths (1250px and below), the customer and assignment
+pane opens as a labelled dialog drawer from the thread header. It keeps the
+background inert, locks background scrolling, contains keyboard focus and
+supports Escape, backdrop and close-button dismissal. Closing returns focus to
+the trigger. The same native assignment and claim/release controls remain
+accessible at 375px; opening or dismissing the drawer preserves the reply draft.
 
 Reply and private-note drafts stay in memory under their project/conversation
 identity through list refreshes, transport errors and thread selection. They
@@ -70,8 +79,8 @@ not clear the reply composer. An acknowledged reply is labelled saved.
 `scripts/qualify-team-browser.ts` boots a disposable native database, actual
 authentication/session cookies, the production SSG output and Chromium. It
 exercises owner/agent guards, real team/member/inbox mutations, inactive
-configuration recovery, routing/audit, explicit availability and retained
-private drafts across failed HTTP sends and refreshes. Its final assertion
+configuration recovery, routing/audit, explicit availability, real rejected-assignment invariance, tablet/375px
+keyboard/focus and claim/release flows, and retained private drafts across failed HTTP sends and refreshes. Its final assertion
 requires zero runtime errors. Installed stx 0.2.872 currently emits the known
 classic-script `import.meta` error; functional evidence does not pass that
 strict qualification gate. No console errors are filtered or suppressed.

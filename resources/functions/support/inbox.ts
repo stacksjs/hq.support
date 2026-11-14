@@ -1,4 +1,7 @@
-import { derived, state } from '@stacksjs/stx'
+import { derived, nextTick, state } from '@stacksjs/stx'
+import { useEventListener } from '@stacksjs/stx/composables/use-event-listener'
+import { useMediaQuery } from '@stacksjs/stx/composables/use-media-query'
+import { useScrollLock } from '@stacksjs/stx/composables/use-scroll-lock'
 import type { AgentIdentity, Assignment, RoutingAgent, SupportTeamMember, SupportTeam, TeamInbox } from './team-routing'
 import { routingReasonLabel } from './team-routing'
 
@@ -30,6 +33,41 @@ export function createInbox() {
   const creating = state(false)
   const needsWorkspace = state(false)
   const detailsOpen = state(true)
+  const narrowDetails = state(false)
+  let detailsOpener: HTMLElement | null = null, desktopDetailsOpen = true
+  let detailsScroll: ReturnType<typeof useScrollLock> | undefined
+  const detailsCleanup: Array<() => void> = []
+  function panel() { return document.getElementById('customer-details') }
+  function panelFocusables() { return Array.from(panel()?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])') || []).filter(element => element.getClientRects().length && !element.closest('[inert]')) }
+  async function openDetails() {
+    detailsOpener = document.getElementById('customer-details-toggle')
+    detailsOpen.set(true); if (!narrowDetails()) desktopDetailsOpen = true
+    detailsScroll?.set(narrowDetails()); await nextTick()
+    if (narrowDetails() && detailsOpen()) panelFocusables()[0]?.focus()
+  }
+  async function closeDetails() {
+    detailsOpen.set(false); if (!narrowDetails()) desktopDetailsOpen = false
+    detailsScroll?.set(false); await nextTick()
+    const target = detailsOpener?.isConnected ? detailsOpener : document.getElementById('customer-details-toggle')
+    target?.focus()
+  }
+  function toggleDetails() { return detailsOpen() ? closeDetails() : openDetails() }
+  function setupDetails() {
+    detailsScroll = useScrollLock()
+    const media = useMediaQuery('(max-width: 1250px)')
+    detailsCleanup.push(media.subscribe(matches => { narrowDetails.set(matches); detailsOpen.set(matches ? false : desktopDetailsOpen); detailsScroll?.set(false) }))
+    detailsCleanup.push(useEventListener('keydown', event => {
+      if (!narrowDetails() || !detailsOpen()) return
+      const key = event as KeyboardEvent
+      if (key.key === 'Escape') { key.preventDefault(); void closeDetails(); return }
+      if (key.key !== 'Tab') return
+      const items = panelFocusables(), first = items[0], last = items.at(-1)
+      if (!first) { key.preventDefault(); panel()?.focus(); return }
+      if (key.shiftKey && (document.activeElement === first || !panel()?.contains(document.activeElement))) { key.preventDefault(); last?.focus() }
+      else if (!key.shiftKey && (document.activeElement === last || !panel()?.contains(document.activeElement))) { key.preventDefault(); first.focus() }
+    }, { target: document, capture: true }).remove)
+    detailsCleanup.push(useEventListener('focusin', event => { if (narrowDetails() && detailsOpen() && !panel()?.contains(event.target as Node)) panelFocusables()[0]?.focus() }, { target: document }).remove)
+  }
   const inboxes = state<TeamInbox[]>([]), identities = state<AgentIdentity[]>([]), agents = state<RoutingAgent[]>([]), teams = state<SupportTeam[]>([]), teamMembers = state<SupportTeamMember[]>([])
   const inboxFilter = state(''), nextCursor = state<string | null>(null), routingInbox = state('0'), routingAssignee = state('0'), routingBusy = state(false), routingError = state(''), routingNotice = state(''), assignments = state<Assignment[]>([])
   const selectedWorkspace = derived(() => workspaces().find(row => Number(row.id) === Number(projects().find(item => item.public_id === project())?.workspace_id)))
@@ -91,7 +129,7 @@ export function createInbox() {
       if (disposed || selectedProject !== project() || selected !== selection) return
       current.set(data.conversation); syncRouting(data.conversation); conversations.update(rows => rows.map(row => String(row.id) === String(item.id) ? { ...row, ...data.conversation } : row)); routingNotice.set(routingReasonLabel(data.reason)); await Promise.all([loadCatalog(generation), loadHistory()])
     }
-    catch (failure) { if (!disposed && selected === selection) { const code = (failure as { code?: string }).code; routingError.set(code && ['agent_capacity', 'agent_unavailable', 'not_in_team', 'inbox_inactive', 'inactive_membership'].includes(code) ? routingReasonLabel(code) : failure instanceof Error ? failure.message : 'Assignment was not saved. Your reply draft is unchanged.'); await loadCatalog(generation) } }
+    catch (failure) { if (!disposed && selected === selection) { routingError.set(failure instanceof Error ? failure.message : 'Assignment was not saved. Your reply draft is unchanged.'); await loadCatalog(generation) } }
     finally { if (!disposed) routingBusy.set(false) }
   }
   let activeProject = ''
@@ -285,6 +323,6 @@ export function createInbox() {
     const date = new Date(value)
     return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   }
-  function destroy() { disposed = true; generation++; selection++; drafts.clear() }
-  return { threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, markRead, send, changeStatus, createWorkspace, formatDate, destroy }
+  function destroy() { disposed = true; generation++; selection++; drafts.clear(); for (const cleanup of detailsCleanup.splice(0)) cleanup(); detailsScroll?.set(false); detailsOpener = null }
+  return { narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, markRead, send, changeStatus, createWorkspace, formatDate, destroy }
 }
