@@ -3,6 +3,8 @@ import { createHmac } from 'node:crypto'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { config, overridesReady } from '@stacksjs/config'
 import { route } from '@stacksjs/router'
+import { Storage, createSignedStorageToken } from '@stacksjs/storage'
+import { upload } from '../../app/Support/attachments'
 import { injectGlobalAutoImports } from '@stacksjs/server'
 import { runIsolated, assertIsolatedOk } from '@stacksjs/testing/isolated'
 import { channelAction } from '../../app/Actions/Support/ChannelAction'
@@ -20,22 +22,40 @@ assert.equal((await runDatabaseMigration()).isOk, true)
 assert.equal((await migrateAuthTables()).success, true)
 await injectGlobalAutoImports()
 await route.importRoutes()
+Storage.init({ default: 'local', disks: { local: { driver: 'local', root: process.env.SUPPORT_TEST_STORAGE! } } })
+const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVgAAAABJRU5ErkJggg==', 'base64')
+let applicationOrigin = '', providerMediaGets = 0, lastMediaUrl = '', inboundMediaUrlOverride = '', providerMediaDownloads = 0
 let rotateSlack: (() => Promise<void>) | undefined
 let providerPosts = 0, failure: 'unknown' | 'rejected' | undefined, smsCallback = '', whatsappCallback = ''
 const accountSid = `AC${'a'.repeat(32)}`, numberSid = `PN${'b'.repeat(32)}`, senderSid = `XE${'c'.repeat(32)}`, contentSid = `HX${'d'.repeat(32)}`, authToken = 'channel-fixture-secret'
-process.env.SUPPORT_MESSAGING_PRICING = JSON.stringify({ [accountSid]: { smsMaxMicrosPerSegment: 20000, whatsappMaxMicros: 100000 } })
+process.env.SUPPORT_MESSAGING_PRICING = JSON.stringify({ [accountSid]: { smsMaxMicrosPerSegment: 20000, mmsMaxMicros: 100000, whatsappMaxMicros: 100000 } })
 const messages = new Map<string, Record<string, unknown>>()
 const provider = Bun.serve({ port: 0, hostname: '127.0.0.1', async fetch(request) {
   const original = new URL(request.headers.get('x-provider-url')!)
   const auth = request.headers.get('authorization')
   if (original.hostname.includes('twilio.com')) {
     assert.equal(auth, `Basic ${btoa(`${accountSid}:${authToken}`)}`)
+    if (original.pathname.includes('/Media/')) { providerMediaDownloads++; return new Response(image, { headers: { 'Content-Type': 'image/png', 'Content-Length': String(image.length) } }) }
     if (original.pathname.includes('/IncomingPhoneNumbers')) return Response.json({ incoming_phone_numbers: [{ sid: numberSid, phone_number: '+14155550100', sms_url: smsCallback, sms_method: 'POST', sms_application_sid: null }] })
     if (original.pathname.includes('/Channels/Senders/')) return Response.json({ sid: senderSid, sender_id: 'whatsapp:+14155550100', status: 'ONLINE', webhook: { callback_url: whatsappCallback } })
     if (original.pathname.includes('/ApprovalRequests')) return Response.json({ sid: contentSid, account_sid: accountSid, whatsapp: { status: 'approved', category: 'UTILITY' } })
     if (request.method === 'POST' && original.pathname.endsWith('/Messages.json')) {
       providerPosts++
       const fields = new URLSearchParams(await request.text())
+      const mediaUrl = fields.get('MediaUrl')
+      if (mediaUrl) {
+        lastMediaUrl = mediaUrl
+        const parsed = new URL(mediaUrl)
+        assert.equal(parsed.origin, 'https://support.example.test')
+        for (const method of ['HEAD', 'GET']) {
+          const response = await fetch(applicationOrigin + parsed.pathname + parsed.search, { method })
+          assert.equal(response.status, 200)
+          assert.equal(response.headers.get('content-type'), 'image/png')
+          assert.equal(Number(response.headers.get('content-length')), image.length)
+          if (method === 'GET') assert.deepEqual(Buffer.from(await response.arrayBuffer()), image)
+          providerMediaGets++
+        }
+      }
       const sid = 'SM' + providerPosts.toString(16).padStart(32, '0')
       const message = { sid, from: fields.get('From'), to: fields.get('To'), body: fields.get('Body') || '', status: 'queued', date_created: new Date().toUTCString(), price: null, price_unit: 'USD' }
       messages.set(sid, message)
@@ -64,11 +84,12 @@ const transport = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const headers = new Headers(init?.headers); headers.set('x-provider-url', String(input))
   return await fetch(`http://127.0.0.1:${provider.port}/provider`, { ...init, headers })
 }) as typeof fetch
-const dependencies = { fetch: transport }
+const dependencies = { fetch: transport, mediaFetch: transport }
 for (const [suffix, operation, method] of [['channels', 'list', 'GET'], ['channels', 'save', 'POST'], ['channels/{channel}/verify', 'verify', 'POST'], ['channels/{channel}/poll', 'poll', 'POST'], ['channel-deliveries/{delivery}/reconcile', 'reconcile', 'POST']] as const) route[method === 'GET' ? 'get' : 'post'](`/api/_channels/projects/{project}/${suffix}`, channelAction(operation, method, dependencies)).middleware('auth')
 route.post('/api/_channels/{channel}/incoming', channelAction('incoming', 'POST', dependencies)).skipCsrf()
 route.post('/api/_channels/{channel}/deliveries/{delivery}/status', channelAction('status', 'POST', dependencies)).skipCsrf()
 const server = await route.serve({ port: 0, hostname: '127.0.0.1' }), base = `http://127.0.0.1:${server.port}/api`
+applicationOrigin = `http://127.0.0.1:${server.port}`
 let csrf = '', cookie = '', checks = 0
 const check = (value: unknown, message: string) => { assert.ok(value, message); checks++ }
 async function http(path: string, method = 'GET', body?: unknown, token?: string, extra: Record<string, string> = {}) {
@@ -77,15 +98,15 @@ async function http(path: string, method = 'GET', body?: unknown, token?: string
   try { data = JSON.parse(raw) } catch { data = raw }
   return { status: response.status, data, headers: response.headers }
 }
-async function inbound(channel: any, body: string, sid: string, sender = '+14155550101') {
+async function inbound(channel: any, body: string, sid: string, sender = '+14155550101', media = false) {
   const from = channel.provider === 'whatsapp' ? `whatsapp:${sender}` : sender, to = channel.provider === 'whatsapp' ? 'whatsapp:+14155550100' : '+14155550100'
   messages.set(sid, { sid, from, to, body, status: 'received', date_created: new Date().toUTCString() })
-  const form = new URLSearchParams({ AccountSid: accountSid, MessageSid: sid, From: from, To: to, Body: body, NumMedia: '0' })
+  const form = new URLSearchParams({ AccountSid: accountSid, MessageSid: sid, From: from, To: to, Body: body, NumMedia: media ? '1' : '0', ...(media ? { MediaUrl0: inboundMediaUrlOverride || `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages/${sid}/Media/ME${'3'.repeat(32)}`, MediaContentType0: 'image/png' } : {}) })
   let signed = `https://support.example.test/api/channels/${channel.publicId}/incoming`
   for (const key of [...form.keys()].sort()) signed += key + form.get(key)
   return await http(`/_channels/${channel.publicId}/incoming`, 'POST', form.toString(), undefined, { 'content-type': 'application/x-www-form-urlencoded', 'x-twilio-signature': createHmac('sha1', authToken).update(signed).digest('base64') })
 }
-async function processLastInbound() { const row = await one("SELECT * FROM support_inbound WHERE provider LIKE 'channel:%' ORDER BY id DESC LIMIT 1"); assert.ok(row); return await applyChannelInbound(row.id) }
+async function processLastInbound() { const row = await one("SELECT * FROM support_inbound WHERE provider LIKE 'channel:%' ORDER BY id DESC LIMIT 1"); assert.ok(row); return await applyChannelInbound(row.id, dependencies) }
 try {
   const seed = await http('/csrf-token'); csrf = seed.data.token; cookie = seed.headers.get('set-cookie')!.split(';')[0]!
   await http('/register', 'POST', { name: 'Channel Owner', email: 'channels@example.test', password: 'ChannelFixture2026!', password_confirmation: 'ChannelFixture2026!' })
@@ -156,6 +177,33 @@ try {
   const restartPosts = providerPosts
   assertIsolatedOk(await runIsolated('tests/fixtures/channel-recover.ts', { args: [String(crashedRow.id)], envFile: false, preload: [], timeoutMs: 30000 }), 'PASS channel restart')
   check(providerPosts === restartPosts, 'fresh process conservatively holds an expired dispatch lease without HTTP')
+  const mediaFile = (await upload(project, thread.conversation_id, new File([image], 'customer-image.png', { type: 'image/png' }), 'outbound-image-fixture')).attachment
+  const mediaReply = await createChannelReply(project, thread.conversation_id, { body: '', attachmentIds: [mediaFile.id], idempotencyKey: 'reply-private-image' }, Number(owner.id), dependencies)
+  const mediaDelivery = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [mediaReply.delivery!.id]))!
+  check((await dispatchChannelDelivery(Number(mediaDelivery.id), dependencies)).outcome === 'accepted' && providerMediaGets === 2, 'native provider GET and HEAD fetch a scoped signed private image')
+  const mediaUrl = new URL(lastMediaUrl)
+  check((await fetch(applicationOrigin + mediaUrl.pathname)).status === 403, 'private provider media requires its exact capability')
+  const expired = createSignedStorageToken(`channel-media/${mediaDelivery.public_id}/${mediaFile.id}`, { expiresIn: new Date(Date.now() - 1000), issuer: 'hq-support-provider-media' })
+  check((await fetch(applicationOrigin + mediaUrl.pathname + '?token=' + encodeURIComponent(expired))).status === 403, 'expired provider image URLs are refused')
+  check((await fetch(applicationOrigin + mediaUrl.pathname.replace(/\/\d+$/, '/9999999') + mediaUrl.search)).status === 403, 'media tokens cannot be replayed against another attachment')
+  const mediaBeforeMessages = Number((await one('SELECT COUNT(*) AS count FROM support_messages WHERE conversation_id = ?', [thread.conversation_id]))!.count)
+  const mediaInboundSid = `SM${'4'.repeat(32)}`
+  await inbound(sms, '', mediaInboundSid, '+14155550101', true)
+  check((await processLastInbound()).processed, 'real provider media-only inbound is stored privately without invented transcript text')
+  const sourceMedia = (await one("SELECT * FROM support_inbound WHERE provider_event_id = ?", [mediaInboundSid]))!
+  const chargedStorage = Number((await one('SELECT storage_bytes FROM support_workspaces WHERE id = ?', [workspace.id]))!.storage_bytes)
+  await query("UPDATE support_inbound SET status = 'pending', lease_until = 0, available_at = 0 WHERE id = ?", [sourceMedia.id])
+  check((await applyChannelInbound(sourceMedia.id, dependencies)).processed, 'media checkpoint replay resumes through native source idempotency')
+  check(Number((await one('SELECT storage_bytes FROM support_workspaces WHERE id = ?', [workspace.id]))!.storage_bytes) === chargedStorage, 'provider media recovery never double-charges storage')
+  check(Number((await one('SELECT COUNT(*) AS count FROM support_messages WHERE conversation_id = ?', [thread.conversation_id]))!.count) === mediaBeforeMessages + 1, 'provider media replay never duplicates the customer message')
+  const badImage = (await upload(project, thread.conversation_id, new File(['<script>not an image</script>'], 'spoofed.png', { type: 'image/png' }), 'spoofed-image-fixture')).attachment
+  await assert.rejects(createChannelReply(project, thread.conversation_id, { body: '', attachmentIds: [badImage.id], idempotencyKey: 'spoofed-image-send' }, Number(owner.id), dependencies), /bytes must match/)
+  const fetchesBefore = providerMediaDownloads
+  inboundMediaUrlOverride = 'http://127.0.0.1:5432/private'; const privateMediaSid = `SM${'5'.repeat(32)}`
+  await inbound(sms, '', privateMediaSid, '+14155550101', true)
+  check(!(await processLastInbound()).processed && providerMediaDownloads === fetchesBefore, 'private or off-provider source URLs never reach the external fetch transport')
+  check(String((await one('SELECT payload FROM support_inbound WHERE provider_event_id = ?', [privateMediaSid]))!.payload).includes(inboundMediaUrlOverride), 'refused provider media remains in durable provenance for review')
+  inboundMediaUrlOverride = ''
   const stoppedSid = `SM${'f'.repeat(32)}`
   await inbound(sms, 'STOP', stoppedSid)
   check(await channelOptedOut(await loadChannel(project, sms.id), '+14155550101'), 'signed STOP persists before conversation admission')

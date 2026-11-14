@@ -164,28 +164,34 @@ export async function detail(projectRow: Row, id: unknown, person?: Row, beforeM
   const page = await query(`SELECT * FROM support_messages WHERE project_id = ? AND conversation_id = ? AND id < ?${person ? " AND visibility = 'public'" : ''} ORDER BY id DESC LIMIT 501`, [projectRow.id, row.id, before])
   const messages = page.slice(0, 500).reverse(), messagesNextCursor = page.length > 500 ? String(messages[0]!.id) : null
   const personRow = await one('SELECT * FROM support_contacts WHERE id = ? AND project_id = ?', [row.contact_id, projectRow.id])
-  return { conversation: summary(row), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.map(messageView), messagesNextCursor }
+  const attachments = await query(`SELECT id, file_name, mime_type, bytes, status, visibility FROM support_attachments WHERE project_id = ? AND conversation_id = ? AND status = 'stored'${person ? " AND (visibility = 'public' OR contact_id = ?)" : ''} ORDER BY id ASC`, [projectRow.id, row.id, ...(person ? [person.id] : [])])
+  return { attachments: attachments.map(file => ({ id: String(file.id), fileName: file.file_name, mimeType: file.mime_type, bytes: Number(file.bytes), status: file.status, visibility: file.visibility })), conversation: summary(row), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.map(messageView), messagesNextCursor }
 }
-export async function createConversation(projectRow: Row, identity: Row, input: Row, person?: Row, automation?: { workflowRunId: number, automationDepth: number }) {
+export async function createConversation(projectRow: Row, identity: Row, input: Row, person?: Row, automation?: { workflowRunId: number, automationDepth: number }, options?: { mediaOnly?: boolean }) {
   return await idempotent(projectRow, `conversation:${person?.id ?? identity.externalId}`, input.idempotencyKey, input, async () => {
     const owner = await entitled(number(projectRow, 'workspace_id'))
     const who = person ?? await contact(projectRow, identity)
     await consume(number(projectRow, 'workspace_id'), 'conversations', limitsFor(owner.plan as Plan).conversationCeiling)
     const row = await insert('support_conversations', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, contact_id: who.id, subject: text(input.subject, 'subject', 200), status: 'open', unread_count: 1 })
-    const message = await insert('support_messages', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, conversation_id: row.id, contact_id: who.id, body: text(input.body, 'body', 20000), visibility: 'public', author_type: 'customer' })
+    const message = await insert('support_messages', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, conversation_id: row.id, contact_id: who.id, body: options?.mediaOnly && input.body === '' ? '' : text(input.body, 'body', 20000), visibility: 'public', author_type: 'customer' })
     await enqueue(projectRow, 'conversation.created', { conversationId: row.id, messageId: message.id, ...(automation || {}) })
     return { conversation: summary(row) }
   })
 }
-export async function reply(projectRow: Row, id: unknown, input: Row, actor: { customer?: Row, userId?: number }) {
+export async function reply(projectRow: Row, id: unknown, input: Row, actor: { customer?: Row, userId?: number, deferDelivery?: boolean, mediaOnly?: boolean }) {
   const visibility = actor.customer ? 'public' : input.visibility ?? 'public'
   if (actor.customer && input.visibility && input.visibility !== 'public') fail(403, 'forbidden', 'Customer messages must be public.')
   if (!['public', 'internal'].includes(String(visibility))) fail(422, 'invalid_input', 'Visibility must be public or internal.')
   return await idempotent(projectRow, `reply:${id}:${actor.customer?.id ?? actor.userId ?? 'server'}`, input.idempotencyKey, input, async () => {
     const row = await conversation(projectRow, id, actor.customer)
-    const message = await insert('support_messages', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, conversation_id: row.id, contact_id: row.contact_id, body: text(input.body, 'body', 20000), visibility, author_type: actor.customer ? 'customer' : 'agent', author_id: actor.userId ?? 0 })
+    const message = await insert('support_messages', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, conversation_id: row.id, contact_id: row.contact_id, body: actor.mediaOnly && input.body === '' ? '' : text(input.body, 'body', 20000), visibility, author_type: actor.customer ? 'customer' : 'agent', author_id: actor.userId ?? 0 })
     await query('UPDATE support_conversations SET updated_at = ?, unread_count = unread_count + ? WHERE id = ? AND project_id = ?', [new Date().toISOString(), actor.customer ? 1 : 0, row.id, projectRow.id])
     await enqueue(projectRow, visibility === 'internal' ? 'note.created' : 'message.created', { conversationId: row.id, messageId: message.id })
+    if (actor.userId && visibility === 'public' && !actor.deferDelivery) {
+      await (await import('./attachments')).shareAttachments(projectRow, row.id, input.attachmentIds)
+      const { recordTicketFirstResponse } = await import('./ticket-sla')
+      await recordTicketFirstResponse(projectRow, row.id)
+    }
     return { message: messageView(message) }
   })
 }

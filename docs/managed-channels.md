@@ -40,11 +40,19 @@ Active agents can reply to their project conversations.
 - `POST /api/support/projects/{project}/channel-conversations/{conversation}/messages`
 
 Reply input is `{ body, idempotencyKey, visibility?: 'public', contentSid?,
-contentVariables? }`. The normal inbox public agent reply route delegates to
+contentVariables?, attachmentIds? }`. A scoped image may have an empty body. The normal inbox public agent reply route delegates to
 this orchestration automatically for channel-backed conversations. Internal
 notes stay internal. Responses include the stored message and a durable
 `delivery` with its status, opaque ID and any acknowledged provider message ID.
 HTTP 201 means queued/stored, not recipient delivery.
+
+Agent uploads start private. Customer metadata/downloads include only explicitly
+public files or that customer’s own uploads. Internal notes never publish files.
+A public inbox reply publishes its selected stored `attachmentIds`; a managed
+channel reply publishes them only after provider acceptance. Provider-signed
+media capabilities can fetch the selected private image during dispatch without
+making other thread files public. Both stored length and SHA-256 are verified
+when files are downloaded.
 
 Provider callbacks use:
 
@@ -91,8 +99,9 @@ enforce its account/sender-level opt-out policy.
 
 Authenticated incoming payloads are durably retained before conversation
 allowance checks. Contacts use channel-scoped provider identity, never email
-matching or native user creation. Effects and the processed checkpoint commit
-together; retries do not duplicate the first message. Overflow remains pending
+matching or native user creation. SQL admission is idempotent; media work has a separate durable checkpoint,
+and the source is marked processed only after private files finish. Retries
+do not duplicate the first message. Overflow remains pending
 and resumes when allowance returns. Discord advances its cursor only after a
 whole page is retained, ignores its own bot messages, and keeps separate
 customer identities.
@@ -111,10 +120,26 @@ rotation, idempotency, lost acknowledgements and callbacks, a fresh-process
 crash hold, exact fractional billing, scoped consent, allowance overflow,
 WhatsApp approval/windows, signed Slack events and Discord cursor recovery.
 
-Current provider media sends are explicitly refused. Signed inbound media
-provenance remains durable/pending; it is not represented as a successfully
-stored attachment. Private provider-media ingestion/delivery and live provider
-account qualification remain required before advertising full media support.
+Outbound SMS/WhatsApp accepts one scoped `attachmentIds` JPEG/PNG image, with
+verified stored bytes/checksum and a combined media+text cap below 5 MB. SMS
+images require the additional server `mmsMaxMicros` pricing ceiling. The native
+provider fetches it through a 15-minute signed storage capability bound to the
+exact operation and attachment; unsigned, expired or substituted paths fail.
+GET and HEAD serve the verified MIME type and length. Arbitrary public media
+URLs and incompatible template/image combinations are refused.
+
+Inbound provider media uses strict provider host/account/message paths and
+native pinned public HTTPS with bounded bytes and redirects. Credentials are
+removed by the native fetcher on an origin change. Native private Storage and
+the existing attachment service enforce actual bytes, per-file and aggregate
+quotas. SQL admission has a persisted idempotent result before filesystem work,
+so retrying a failed download/upload does not create another message or charge
+storage twice. Media-only messages keep an empty original body. Conversation
+detail exposes stored private attachment metadata; downloads remain authorized.
+Unsupported source URLs/counts, exhausted storage, or incomplete downloads keep
+the original source pending. Full provider media types beyond the implemented
+JPEG/PNG outbound path and live provider media delivery still need qualification.
+See [Twilio media validation and MIME rules](https://www.twilio.com/docs/messaging/guides/accepted-mime-types).
 Slack/Discord bot installation, Twilio/WhatsApp onboarding, Meta app review,
 email sender/inbound configuration, and actual live delivery have not been
 inferred from fixtures. The framework native SMS/chat additions must be

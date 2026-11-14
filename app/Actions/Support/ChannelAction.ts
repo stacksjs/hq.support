@@ -5,14 +5,16 @@ import { query } from '../../Support/database'
 import { loadChannel, publicChannel, saveChannel } from '../../Support/channels'
 import { channelDelivery, createChannelReply, deliveryView, pollDiscordChannel, reconcileChannelDelivery, verifyTextChannel } from '../../Support/managed-channels'
 import { SupportError, fail } from '../../Support/errors'
+import { providerMediaResponse } from '../../Support/channel-media'
 import { textChannelWebhook } from '../../Support/channel-webhooks'
 
-export type ChannelOperation = 'list' | 'save' | 'verify' | 'disable' | 'deliveries' | 'delivery' | 'reply' | 'reconcile' | 'poll' | 'incoming' | 'status' | 'challenge'
+export type ChannelOperation = 'list' | 'save' | 'verify' | 'disable' | 'deliveries' | 'delivery' | 'reply' | 'reconcile' | 'poll' | 'incoming' | 'status' | 'challenge' | 'media'
 export function channelAction(operation: ChannelOperation, method: 'GET' | 'POST', dependencies: ChannelDependencies = {}) {
   return new Action({
     name: `Support text channel ${operation}`, method, apiResponse: false,
     async handle(request) {
       try {
+        if (operation === 'media') return await providerMediaResponse(request.getParam('delivery'), request.getParam('attachment'), String(request.get('token') || ''), String(request.method).toUpperCase() === 'HEAD')
         if (operation === 'incoming' || operation === 'status' || operation === 'challenge') return await textChannelWebhook(request, operation, dependencies)
         const account = await request.user()
         if (!account) fail(401, 'unauthorized', 'Sign in to continue.')

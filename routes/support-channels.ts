@@ -14,3 +14,5 @@ route.post('/support/projects/{project}/channel-deliveries/{delivery}/reconcile'
 route.post('/channels/{channel}/incoming', channelAction('incoming', 'POST')).skipCsrf().rateLimit(300, 'minute')
 route.get('/channels/{channel}/incoming', channelAction('challenge', 'GET')).rateLimit(60, 'minute')
 route.post('/channels/{channel}/deliveries/{delivery}/status', channelAction('status', 'POST')).skipCsrf().rateLimit(300, 'minute')
+
+route.get('/channels/media/{delivery}/{attachment}', channelAction('media', 'GET')).rateLimit(120, 'minute')

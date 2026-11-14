@@ -3,14 +3,16 @@ import { fail, text } from './errors'
 import { object } from './service'
 import { channelOptedOut } from './channel-consent'
 
-export interface ChannelDependencies { fetch?: typeof fetch }
+export interface ChannelDependencies { fetch?: typeof fetch, mediaFetch?: typeof fetch }
 export interface ChannelSendOutcome { outcome: 'accepted' | 'rejected' | 'unknown', messageId?: string, error?: string, httpStatus?: number, priceMicros?: number, currency?: string }
 export interface ChannelProvider {
   probe(channel: Row, config: Row, dependencies: ChannelDependencies): Promise<{ externalId: string, receipt: string, cursor?: string }>
   validate?(channel: Row, config: Row, thread: Row, payload: Row, dependencies: ChannelDependencies): Promise<void>
+  validateMediaSources?(channel: Row, config: Row, record: Row, media: unknown): void | Promise<void>
+  ingestMedia?(project: Row, channel: Row, record: Row, conversationId: unknown, payload: Row, dependencies: ChannelDependencies): Promise<unknown>
   estimate(config: Row, payload: Row): number
   send(channel: Row, config: Row, thread: Row, payload: Row, callbackUrl: string, dependencies: ChannelDependencies): Promise<ChannelSendOutcome>
-  reconcile?(config: Row, messageId: string, dependencies: ChannelDependencies): Promise<{ status: string, priceMicros?: number, currency?: string }>
+  reconcile?(config: Row, messageId: string, dependencies: ChannelDependencies): Promise<{ status: string, priceMicros?: number, currency?: string, from?: string, to?: string }>
 }
 const extensions = new Map<string, ChannelProvider>()
 /** A native provider implementation may register here at server boot; never accepts HTTP-supplied adapters. */
@@ -38,7 +40,7 @@ function smsCeiling(config: Row, payload: Row) {
   let policies: Row
   try { policies = object(JSON.parse(process.env.SUPPORT_MESSAGING_PRICING || '{}')) }
   catch { fail(503, 'messaging_pricing_unavailable', 'Managed messaging pricing must be configured on the server.') }
-  const row = object(policies[String(config.accountSid)]), key = String(payload.provider) === 'whatsapp' ? 'whatsappMaxMicros' : 'smsMaxMicrosPerSegment'
+  const row = object(policies[String(config.accountSid)]), key = String(payload.provider) === 'whatsapp' ? 'whatsappMaxMicros' : Array.isArray(payload.attachmentIds) && payload.attachmentIds.length ? 'mmsMaxMicros' : 'smsMaxMicrosPerSegment'
   const unit = Number(row[key])
   if (!Number.isSafeInteger(unit) || unit <= 0 || unit > 1000000000) fail(503, 'messaging_pricing_unavailable', 'An exact conservative USD provider ceiling is required.')
   // UCS-2 worst-case segmentation; provider usage and final quoted price are authoritative.
@@ -86,6 +88,7 @@ const twilioProvider: ChannelProvider = {
   estimate: smsCeiling,
   async send(channel, config, thread, payload, callbackUrl, dependencies) {
     const result = await (await twilio(config, dependencies)).send({ to: String(thread.recipient), body: String(payload.body), statusCallback: callbackUrl,
+      ...(Array.isArray(payload.mediaUrls) ? { mediaUrls: payload.mediaUrls.map(String) } : {}),
       ...(payload.contentSid ? { options: { contentSid: payload.contentSid, contentVariables: object(payload.contentVariables) } } : {}) })
     return { outcome: result.outcome || (result.success && result.messageId ? 'accepted' : 'unknown'), messageId: result.messageId, error: result.error, httpStatus: result.httpStatus, priceMicros: result.priceMicros, currency: result.currency }
   },

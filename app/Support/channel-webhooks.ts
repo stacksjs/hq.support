@@ -49,7 +49,8 @@ export async function textChannelWebhook(request: RequestInstance, operation: 'i
       const current = await channelDelivery(project, delivery.public_id)
       if (current.provider_message_id && current.provider_message_id !== sid) fail(409, 'provider_receipt_conflict', 'Provider receipt changed for this operation.')
       if (current.status === 'rejected') fail(409, 'provider_receipt_conflict', 'This operation was rejected before provider dispatch.')
-      await receiveInbound(project, `channel-status:${channel.id}`, digest(`${delivery.public_id}:${raw}`), { deliveryId: delivery.public_id, fields })
+      const retained = await receiveInbound(project, `channel-status:${channel.id}`, digest(`${delivery.public_id}:${raw}`), { deliveryId: delivery.public_id, fields })
+      await query("UPDATE support_inbound SET status = 'processed' WHERE id = ?", [retained.id])
       if (!current.provider_message_id) {
         const status = current.wallet_reservation_id ? 'cost_pending' : 'accepted'
         await query('UPDATE support_channel_deliveries SET provider_message_id = ?, status = ?, lease_until = 0, updated_at = ? WHERE id = ?', [sid, status, new Date().toISOString(), current.id])
@@ -79,7 +80,7 @@ export async function textChannelWebhook(request: RequestInstance, operation: 'i
     const consent = inboundSmsKind(fields)
     await recordChannelConsent(project, channel, fields.From!, consent.kind, sid, timestamp)
     const media = Array.from({ length: Math.min(Number(fields.NumMedia) || 0, 10) }, (_, index) => ({ url: fields[`MediaUrl${index}`], mimeType: fields[`MediaContentType${index}`] }))
-    const stored = await retainChannelInbound(project, channel, sid, { sender: fields.From, remoteKey: fields.From, body: fields.Body || '', timestamp, media, consent: consent.kind }, { fields })
+    const stored = await retainChannelInbound(project, channel, sid, { sender: fields.From, remoteKey: fields.From, body: fields.Body || '', timestamp, media, mediaOverflow: Number(fields.NumMedia) > 10, consent: consent.kind }, { fields })
     return new Response('<Response/>', { headers: { 'Content-Type': 'text/xml', 'Cache-Control': 'no-store', 'X-Support-Inbound': stored.id } })
   }
   let body: Row

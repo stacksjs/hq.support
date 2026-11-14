@@ -8,12 +8,12 @@ import { fail, identifier, text } from './errors'
 import { conversation, entitled, secret } from './service'
 
 function view(row: Row) {
-  return { id: String(row.id), conversationId: String(row.conversation_id), fileName: String(row.file_name), mimeType: String(row.mime_type), bytes: Number(row.bytes), status: String(row.status) }
+  return { id: String(row.id), conversationId: String(row.conversation_id), fileName: String(row.file_name), mimeType: String(row.mime_type), bytes: Number(row.bytes), status: String(row.status), visibility: String(row.visibility) }
 }
 
 export async function attachment(project: Row, id: unknown, customer?: Row) {
   const row = await one('SELECT * FROM support_attachments WHERE id = ? AND project_id = ?', [identifier(id), project.id])
-  if (!row || row.status === 'deleted') fail(404, 'not_found', 'Attachment not found.')
+  if (!row || row.status === 'deleted' || (customer && row.visibility !== 'public' && String(row.contact_id) !== String(customer.id))) fail(404, 'not_found', 'Attachment not found.')
   await conversation(project, row.conversation_id, customer)
   return row
 }
@@ -31,6 +31,7 @@ export async function upload(project: Row, conversationId: unknown, file: File, 
     const workspace = await entitled(workspaceId), quota = limitsFor(workspace.plan as Plan)
     const existing = await one('SELECT * FROM support_attachments WHERE project_id = ? AND idempotency_key = ?', [project.id, key])
     if (existing) {
+      if (customer && String(existing.contact_id) !== String(customer.id)) fail(409, 'attachment_owner_conflict', 'Attachment key belongs to another uploader.')
       if (existing.sha256 !== hash || Number(existing.conversation_id) !== identifier(conversationId)) fail(409, 'idempotency_conflict', 'Attachment key was used with different content.')
       if (existing.status === 'stored') return existing
       if (!['reserved', 'failed'].includes(String(existing.status))) fail(409, 'attachment_state', 'Attachment is no longer writable.')
@@ -43,7 +44,7 @@ export async function upload(project: Row, conversationId: unknown, file: File, 
       await query("UPDATE support_attachments SET status = 'reserved', lease_token = ?, lease_until = ?, updated_at = ? WHERE id = ?", [lease, Date.now() + 120000, new Date().toISOString(), existing.id])
       return (await one('SELECT * FROM support_attachments WHERE id = ?', [existing.id]))!
     }
-    return await insert('support_attachments', { workspace_id: workspaceId, project_id: project.id, conversation_id: identifier(conversationId), storage_key: `support/${workspace.public_id}/${project.public_id}/${crypto.randomUUID()}`, file_name: file.name.replace(/[\r\n\\/\x00-\x1F]/g, '_').slice(0, 255) || 'attachment', mime_type: file.type.slice(0, 200) || 'application/octet-stream', bytes: bytes.byteLength, status: 'reserved', idempotency_key: key, sha256: hash, storage_disk: disk, lease_token: lease, lease_until: Date.now() + 120000 })
+    return await insert('support_attachments', { workspace_id: workspaceId, project_id: project.id, conversation_id: identifier(conversationId), contact_id: customer?.id ?? 0, visibility: customer ? 'public' : 'private', storage_key: `support/${workspace.public_id}/${project.public_id}/${crypto.randomUUID()}`, file_name: file.name.replace(/[\r\n\\/\x00-\x1F]/g, '_').slice(0, 255) || 'attachment', mime_type: file.type.slice(0, 200) || 'application/octet-stream', bytes: bytes.byteLength, status: 'reserved', idempotency_key: key, sha256: hash, storage_disk: disk, lease_token: lease, lease_until: Date.now() + 120000 })
   })
   if (row.status === 'stored') return { attachment: view(row) }
   try {
@@ -63,11 +64,24 @@ export async function upload(project: Row, conversationId: unknown, file: File, 
   }
 }
 
+/** Explicit public-message/source publication; private agent uploads never become public merely by sharing a thread. */
+export async function shareAttachments(project: Row, conversationId: unknown, ids: unknown) {
+  if (ids === undefined) return
+  if (!Array.isArray(ids) || ids.length > 10) fail(422, 'attachment_selection_invalid', 'Choose at most ten stored conversation attachments.')
+  await workspaceTransaction(Number(project.workspace_id), async () => {
+    for (const id of ids) {
+      const row = await attachment(project, id)
+      if (row.status !== 'stored' || String(row.conversation_id) !== String(identifier(conversationId))) fail(404, 'attachment_not_found', 'Stored attachment does not belong to this public message.')
+      await query("UPDATE support_attachments SET visibility = 'public', updated_at = ? WHERE id = ? AND project_id = ?", [new Date().toISOString(), row.id, project.id])
+    }
+  })
+}
+
 export async function download(project: Row, id: unknown, customer?: Row) {
   const row = await attachment(project, id, customer)
   if (row.status !== 'stored') fail(409, 'attachment_pending', 'Attachment upload is not complete.')
   const bytes = await Storage.disk(String(row.storage_disk)).readToBuffer(String(row.storage_key))
-  if (bytes.byteLength !== Number(row.bytes)) fail(503, 'attachment_unavailable', 'Stored attachment size could not be verified.')
+  if (bytes.byteLength !== Number(row.bytes) || createHash('sha256').update(bytes).digest('hex') !== row.sha256) fail(503, 'attachment_unavailable', 'Stored attachment size could not be verified.')
   return new Response(new Uint8Array(bytes).buffer, { headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(bytes.byteLength), 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(String(row.file_name))}`, 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': 'sandbox', 'Cache-Control': 'private, no-store' } })
 }
 
