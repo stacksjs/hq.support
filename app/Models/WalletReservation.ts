@@ -8,6 +8,7 @@ export default defineModel({
     { name: 'wallet_reservation_operation', columns: ['workspace_id', 'operation_key'], unique: true },
   ],
   attributes: {
+    providerCostMicros: { type: 'bigint', foreignKey: false, fillable: true, required: true, default: -1, validation: { rule: schema.number().integer() } },
     workspaceId: { type: 'bigint', foreignKey: false, fillable: true, required: true, validation: { rule: schema.number().integer() } },
     publicId: { foreignKey: false, fillable: true, required: true, validation: { rule: schema.string() } },
     operationKey: { foreignKey: false, fillable: true, required: true, validation: { rule: schema.string() } },

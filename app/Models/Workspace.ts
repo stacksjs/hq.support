@@ -20,6 +20,8 @@ export default defineModel({
     overagesEnabled: { fillable: true, required: true, validation: { rule: schema.boolean() }, default: false },
     spendingCapCents: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },
     walletCents: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },
+    managedDailyCapCents: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },
+    managedMonthlyCapCents: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },
     storageBytes: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },
   },
 } as const)

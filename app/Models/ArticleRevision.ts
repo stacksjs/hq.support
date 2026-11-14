@@ -13,6 +13,7 @@ export default defineModel({
     articleId: { required: true, validation: { rule: schema.number().integer() } },
     revision: { required: true, validation: { rule: schema.number().integer() } },
     authorId: { required: true, validation: { rule: schema.number().integer() } },
+    integrationKeyId: { type: 'bigint', foreignKey: false, required: true, default: 0, validation: { rule: schema.number().integer() } },
     snapshot: { required: true, type: 'text', validation: { rule: schema.string() } },
   },
 } as const)

@@ -8,6 +8,8 @@ export default defineModel({
   dashboard: { access: false },
   indexes: [{ name: 'support_attachment_idempotency', columns: ['project_id', 'idempotency_key'], unique: true }],
   attributes: {
+    visibility: { fillable: true, required: true, default: 'private', validation: { rule: schema.enum(['private', 'public']) } },
+    contactId: { foreignKey: false, type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
     idempotencyKey: { fillable: true, required: true, validation: { rule: schema.string() } },
     sha256: { fillable: true, required: true, validation: { rule: schema.string() } },
     storageDisk: { fillable: true, required: true, default: 'local', validation: { rule: schema.string() } },
