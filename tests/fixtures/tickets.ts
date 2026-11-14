@@ -85,6 +85,9 @@ try {
   const restart = await runIsolated('tests/fixtures/ticket-sla-resume.ts', { args: [String(firstDue)], envFile: false, preload: [], timeoutMs: 20000 })
   assertIsolatedOk(restart, 'PASS restarted SLA worker')
   check((await query('SELECT * FROM support_ticket_sla_escalations')).length === 1 && (await query("SELECT * FROM support_outbox WHERE kind = 'event.created'")).length === 1, 'new process sees persisted escalation and cannot duplicate outbox work')
+  now = firstDue + 1000
+  const overdue = await http(path + `/tickets/${ticket.id}`, 'PATCH', { priority: 'urgent' }, owner)
+  check(overdue.data.ticket.sla.firstDueAt === firstDue, 'editing an overdue running ticket cannot move its breached deadline')
   await recordTicketFirstResponse(project, conversation.id, firstDue)
   check(Number((await one('SELECT first_breached_at FROM support_ticket_sla_clocks WHERE ticket_id = ?', [ticket.id]))!.first_breached_at) === firstDue, 'response at exact deadline records breach before satisfying clock')
   now = resolutionDue
