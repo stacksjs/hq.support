@@ -15,6 +15,23 @@ import { schema } from '@stacksjs/validation/runtime'
  * deploy secrets is typed exactly like one in your local `.env`.
  */
 const envSchema = defineEnv({
+  CACHE_DRIVER: {
+    validation: schema.enum(['memory', 'redis', 'singlestore', 'sqlite']),
+    default: 'memory',
+  },
+  CACHE_PREFIX: {
+    validation: schema.string(),
+    default: 'hq-support-development:cache',
+  },
+  QUEUE_FAILED_PREFIX: {
+    validation: schema.string(),
+    default: 'hq-support-development:failed',
+  },
+  QUEUE_BATCH_PREFIX: {
+    validation: schema.string(),
+    default: 'hq-support-development:batches',
+  },
+
   SUPPORT_DEPLOYMENT_MODE: {
     validation: schema.enum(['hosted', 'selfhost']),
     default: 'hosted',

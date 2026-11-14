@@ -14,12 +14,14 @@ export default {
    * 'singlestore', or 'sqlite' (entries kept in a file, across restarts and
    * deploys).
    */
-  driver: 'memory',
+  // The env proxy coerces 'false' to false. Convert before defaulting so
+  // every supplied nonempty value reaches native driver validation.
+  driver: (String(env.CACHE_DRIVER ?? '') || 'memory') as CacheConfig['driver'],
 
   /**
    * Key prefix for cache namespacing
    */
-  prefix: 'stacks:cache',
+  prefix: env.CACHE_PREFIX || 'hq-support-development:cache',
 
   /**
    * Default TTL in seconds (0 = no expiration)

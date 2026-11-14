@@ -23,6 +23,8 @@ function variablesFor(environment: 'production' | 'staging' | 'development') {
     DB_CONNECTION: 'postgres', DB_DATABASE: databaseName, DB_USERNAME: databaseName,
     QUEUE_DRIVER: 'database', CACHE_DRIVER: 'redis',
     QUEUE_PREFIX: `${prefix}:queue`, CACHE_PREFIX: `${prefix}:cache`,
+    QUEUE_FAILED_PREFIX: `${prefix}:failed`, QUEUE_BATCH_PREFIX: `${prefix}:batches`,
+    SUPPORT_REALTIME_NAMESPACE: `${prefix}:replay-v1`,
   }
 }
 const variables = variablesFor(target)
