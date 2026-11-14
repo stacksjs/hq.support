@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-HQ-Support-Enterprise
 import type { Row } from '../app/Support/database'
 import type { EnterpriseOidcConfig } from '@stacksjs/auth/enterprise-oidc'
+import type { EnterpriseSamlConfig } from '@stacksjs/auth/enterprise-saml'
 import { insert, one, query, workspaceTransaction } from '../app/Support/database'
 import { fail, identifier, text } from '../app/Support/errors'
 import { digest, secret, workspace } from '../app/Support/service'
@@ -17,7 +18,7 @@ export async function provider(reference: string) {
   return row
 }
 export function oidcConfig(row: Row, transport?: typeof fetch): EnterpriseOidcConfig {
-  if (row.protocol !== 'oidc') fail(503, 'saml_unavailable', 'SAML is not available in this release.')
+  if (row.protocol !== 'oidc') fail(503, 'identity_provider_unavailable', 'An OIDC provider is required.')
   let secrets: Record<string, string> = {}, allowed: unknown = []
   try { secrets = JSON.parse(process.env.SUPPORT_ENTERPRISE_OIDC_CLIENTS || '{}'); allowed = JSON.parse(process.env.SUPPORT_ENTERPRISE_OIDC_ISSUERS || '[]') }
   catch { fail(503, 'identity_provider_unavailable', 'Identity provider operator configuration is invalid.') }
@@ -27,17 +28,28 @@ export function oidcConfig(row: Row, transport?: typeof fetch): EnterpriseOidcCo
   if (appUrl.protocol !== 'https:') fail(503, 'identity_provider_unavailable', 'SSO requires the canonical HTTPS application URL.')
   return { issuer: String(row.issuer), clientId: String(row.client_id), clientSecret, redirectUri: new URL(`/api/enterprise/providers/${row.public_id}/callback`, appUrl).href, ...(transport ? { fetch: transport } : {}) }
 }
+export function samlConfig(row: Row): EnterpriseSamlConfig {
+  if (row.protocol !== 'saml') fail(503, 'identity_provider_unavailable', 'A SAML provider is required.')
+  let approved: unknown = [], providers: Record<string, Record<string, string>> = {}
+  try { approved = JSON.parse(process.env.SUPPORT_ENTERPRISE_SAML_ISSUERS || '[]'); providers = JSON.parse(process.env.SUPPORT_ENTERPRISE_SAML_PROVIDERS || '{}') }
+  catch { fail(503, 'identity_provider_unavailable', 'SAML operator configuration is invalid.') }
+  const config = providers[String(row.public_id)]
+  if (!Array.isArray(approved) || !approved.includes(row.issuer) || !config?.entryPoint || !config.idpCert || !config.privateKey || !config.publicCert) fail(503, 'identity_provider_unavailable', 'SAML certificates and operator approval are not configured.')
+  const appUrl = new URL(process.env.APP_URL || 'https://hq.support')
+  if (appUrl.protocol !== 'https:') fail(503, 'identity_provider_unavailable', 'SSO requires the canonical HTTPS application URL.')
+  return { issuer: String(row.issuer), entityId: String(row.client_id), entryPoint: config.entryPoint, idpCert: config.idpCert.replace(/\\n/g, '\n'), privateKey: config.privateKey.replace(/\\n/g, '\n'), publicCert: config.publicCert.replace(/\\n/g, '\n'), callbackUrl: new URL(`/api/enterprise/providers/${row.public_id}/saml/acs`, appUrl).href }
+}
 export async function configureProvider(workspaceId: number, input: Row, actorId: number) {
   return await workspaceTransaction(workspaceId, async () => {
-    const owner = await workspace(workspaceId); requireEnterprise(owner, 'oidc')
-    if (input.protocol !== 'oidc') fail(503, 'saml_unavailable', 'Only verified OIDC providers are available in this release.')
-    const issuer = text(input.issuer, 'issuer', 500), url = new URL(issuer)
-    if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) fail(422, 'invalid_issuer', 'Use an approved HTTPS issuer URL.')
+    if (!['oidc', 'saml'].includes(String(input.protocol))) fail(422, 'invalid_protocol', 'Choose oidc or saml.')
+    const owner = await workspace(workspaceId); requireEnterprise(owner, input.protocol === 'saml' ? 'saml' : 'oidc')
+    const issuer = text(input.issuer, 'issuer', 500)
+    if (input.protocol === 'oidc') { const url = new URL(issuer); if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) fail(422, 'invalid_issuer', 'Use an approved HTTPS issuer URL.') }
     const existing = await one('SELECT * FROM support_enterprise_providers WHERE workspace_id = ?', [workspaceId])
     // An issuer/client change must not reinterpret old subject links. Rotate by
     // removing those links in a reviewed migration, not by editing this row.
-    if (existing && (existing.issuer !== issuer || existing.client_id !== input.clientId)) fail(409, 'provider_immutable', 'Provider identity is immutable. Use an operator-reviewed identity migration to replace it.')
-    const row = existing ?? await insert('support_enterprise_providers', { workspace_id: workspaceId, public_id: crypto.randomUUID(), protocol: 'oidc', issuer, client_id: text(input.clientId, 'clientId', 500), enabled: true })
+    if (existing && (existing.issuer !== issuer || existing.client_id !== input.clientId || existing.protocol !== input.protocol)) fail(409, 'provider_immutable', 'Provider identity is immutable. Use an operator-reviewed identity migration to replace it.')
+    const row = existing ?? await insert('support_enterprise_providers', { workspace_id: workspaceId, public_id: crypto.randomUUID(), protocol: input.protocol, issuer, client_id: text(input.clientId, 'clientId', 500), enabled: true })
     await audit(workspaceId, actorId, 'identity.provider.configured', row.public_id)
     return row
   })

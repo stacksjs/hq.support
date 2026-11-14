@@ -1,7 +1,7 @@
 # Enterprise identity and licensing
 
 Status: source implementation with automated HTTP/database verification. This is
-not broad-launch acceptance. SAML, SCIM Groups, automatic IdP account creation,
+not broad-launch acceptance. SCIM Groups, automatic IdP account creation,
 organization-wide SSO enforcement, directory role mapping, retention controls,
 external audit sinks and a signed-license issuance/renewal service are not shipped.
 
@@ -54,8 +54,9 @@ including DNS rebinding. The allowlist is checked before discovery, token or JWK
 requests. Runtime requests disable redirects, require HTTPS, time out after ten
 seconds and require discovery endpoints to share the issuer origin. This strict
 same-origin rule excludes providers such as Google's multi-origin OIDC metadata.
-Only RS256-signed ID tokens are supported in this release. There is no SAML
-assertion verifier: `/saml/acs` explicitly answers 503, including unsigned input.
+Only RS256-signed OIDC ID tokens are supported in this release. SAML has the
+separate strict adapter described below. Missing provider configuration answers
+503; malformed or unsigned assertions answer 401.
 
 OIDC authorization uses code flow, S256 PKCE, a nonce, and native persistent
 browser-bound, one-use OAuth flow state with a five-minute lifetime. The native
@@ -76,6 +77,37 @@ HttpOnly database browser session used by the app. Bearers and provider tokens
 never appear in redirect URLs. Configure required MFA at the identity provider;
 there is no workspace SSO enforcement or enterprise-specific MFA assurance policy
 in this release. Native local login remains available for recovery.
+
+## SAML setup
+
+SAML uses the same native account linking, immutable provider subject mapping,
+workspace authorization and database browser sessions as OIDC. Configure the
+provider with `protocol: "saml"`, IdP entity ID as `issuer`, and SP entity ID as
+`clientId`. The license must include `saml`. Approve exact IdP entity IDs in
+`SUPPORT_ENTERPRISE_SAML_ISSUERS` (JSON array). Supply
+`SUPPORT_ENTERPRISE_SAML_PROVIDERS` as a JSON object keyed by provider public UUID,
+with `entryPoint` (HTTPS IdP SSO URL), `idpCert` (pinned signing PEM), `privateKey`
+(SP signing PEM, secret) and `publicCert` (SP certificate PEM). Store private keys
+in the operator secret service; API responses do not return them. There is no
+remote XML metadata ingestion or automatic certificate trust.
+
+Register `{APP_URL}/api/enterprise/providers/{provider}/saml/acs` as the exact
+HTTP-POST ACS URL. Native-authenticated users POST to the sibling `/saml/link`;
+linked users visit `/saml/login`. AuthnRequests are RSA-SHA256 signed and use
+persistent NameIDs. The IdP must sign both the Response and its single Assertion
+with RSA-SHA256/SHA256. Issuer, audience, Destination, bearer Recipient,
+InResponseTo, assertion lifetime and request correlation are strict. Unsigned,
+modified, duplicate assertions, entity declarations and unsupported algorithms
+fail closed. This intentionally strict profile may require IdP configuration.
+
+The adapter uses maintained `@node-saml/node-saml` signature verification and
+reads verified signed XML for recipient/destination enforcement, which the
+underlying library otherwise warns about. A native persistent one-use flow
+binds RelayState to the initiating browser with Secure, HttpOnly, SameSite=None
+cookies. Cross-worker concurrent replay has only one session winner. Existing
+linked SAML login remains usable after entitlement expiry. Unsolicited IdP login,
+SAML logout, encrypted assertions and transient NameIDs are unsupported. Real
+third-party IdP interoperability and external security review remain launch gates.
 
 ## SCIM Users
 
@@ -123,6 +155,6 @@ generated model migrations and real disposable SQLite/PostgreSQL. Only the IdP
 HTTP boundary is injected. It exercises signed Ed25519 workspace entitlement,
 SCIM tenant isolation, native invitations, OIDC signature/audience checks,
 one-use browser binding, native session issuance and workspace-scoped revocation and expiry recovery.
-The auth package also has `enterprise-oidc.test.ts` covering issuer, audience,
+The auth package also has signed XML verification tests and `enterprise-oidc.test.ts` covering issuer, audience,
 nonce, expiry, unsigned tokens, callback binding and S256 PKCE. Provider production
 configuration and real third-party conformance testing remain deployment gates.

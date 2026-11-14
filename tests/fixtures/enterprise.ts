@@ -6,6 +6,7 @@ import { injectGlobalAutoImports } from '@stacksjs/server'
 import { route } from '@stacksjs/router'
 import { one, query } from '../../app/Support/database'
 import { inspectLicense } from '../../enterprise/license'
+import { samlTestKey, samlTestCert, samlRequestId, signedSamlResponse } from './enterprise-saml-sign'
 import { enterpriseAction } from '../../app/Actions/Support/EnterpriseAction'
 
 await overridesReady
@@ -57,7 +58,7 @@ const otherKeys = generateKeyPairSync('ed25519')
 process.env.SUPPORT_ENTERPRISE_LICENSE_PUBLIC_KEY = String(licenseKeys.publicKey.export({ type: 'spki', format: 'pem' }))
 process.env.SUPPORT_INSTALLATION_ID = 'fixture-installation'
 function license(workspace: string, expiresAt = Date.now() + 86400000, signingKey = licenseKeys.privateKey) {
-  const body = Buffer.from(JSON.stringify({ version: 1, licenseId: 'fixture-license', installation: 'fixture-installation', workspace, issuedAt: Date.now() - 86400000, expiresAt, features: ['oidc', 'scim', 'audit'] })).toString('base64url')
+  const body = Buffer.from(JSON.stringify({ version: 1, licenseId: 'fixture-license', installation: 'fixture-installation', workspace, issuedAt: Date.now() - 86400000, expiresAt, features: ['oidc', 'saml', 'scim', 'audit'] })).toString('base64url')
   return `${body}.${sign(null, Buffer.from(body), signingKey).toString('base64url')}`
 }
 async function start(provider: string, linkingToken?: string) {
@@ -143,6 +144,37 @@ try {
   check((await request(workspacePath + `/scim-tokens/${issued.data.id}`, 'DELETE', undefined, owner)).status === 200, 'token revocation allowed after expiry')
   check((await request(scimPath + '/Users', 'GET', undefined, scimToken)).status === 401, 'revoked SCIM token unusable')
   check((await request(`/enterprise/providers/${idp.public_id}/saml/acs`, 'POST', { SAMLResponse: 'unsigned' })).status === 503, 'SAML explicitly unavailable')
+  process.env.SUPPORT_ENTERPRISE_LICENSE = license(otherWorkspace.public_id)
+  const samlIssuer = 'https://saml.example.test/entity', entityId = 'https://support.example.test/saml/entity'
+  const configuredSaml = await request(`/support/workspaces/${otherWorkspace.id}/enterprise/provider`, 'POST', { protocol: 'saml', issuer: samlIssuer, clientId: entityId }, agent)
+  check(configuredSaml.status === 201, `SAML provider configuration ${JSON.stringify(configuredSaml.data)}`)
+  const samlProvider = configuredSaml.data.provider.public_id
+  process.env.SUPPORT_ENTERPRISE_SAML_ISSUERS = JSON.stringify([samlIssuer])
+  process.env.SUPPORT_ENTERPRISE_SAML_PROVIDERS = JSON.stringify({ [samlProvider]: { entryPoint: 'https://saml.example.test/sso', idpCert: samlTestCert, privateKey: samlTestKey, publicCert: samlTestCert } })
+  const callback = `https://support.example.test/api/enterprise/providers/${samlProvider}/saml/acs`
+  async function samlStart(linking = false) {
+    const result = await request(`/enterprise/providers/${samlProvider}/saml/${linking ? 'link' : 'login'}`, linking ? 'POST' : 'GET', linking ? {} : undefined, linking ? agent : undefined)
+    check(result.status === 302, `native SAML authorization ${result.status} ${JSON.stringify(result.data)}`)
+    const location = result.headers.get('location')!
+    return { state: new URL(location).searchParams.get('RelayState')!, requestId: samlRequestId(location), cookie: result.headers.get('set-cookie')!.split(';')[0]! }
+  }
+  async function samlFinish(flow: { state: string, requestId: string, cookie: string }, mode = 'signed', cookies = flow.cookie) {
+    return await request(`/enterprise/providers/${samlProvider}/saml/acs`, 'POST', { RelayState: flow.state, SAMLResponse: signedSamlResponse(flow.requestId, samlIssuer, entityId, callback, mode) }, undefined, cookies)
+  }
+  const samlLink = await samlStart(true)
+  check((await samlFinish(samlLink, 'signed', '')).status === 401, 'SAML POST requires bound browser cookie')
+  check((await samlFinish(samlLink)).status === 200, 'real signed SAML assertion links only native authenticated account')
+  check((await samlFinish(samlLink)).status === 401, 'SAML RelayState cannot replay')
+  for (const mode of ['unsigned', 'audience', 'recipient']) {
+    const flow = await samlStart()
+    check((await samlFinish(flow, mode)).status === 401, `actual HTTP rejects ${mode} SAML assertion`)
+  }
+  process.env.SUPPORT_ENTERPRISE_LICENSE = license(otherWorkspace.public_id, Date.now() - 1000)
+  const samlLogin = await samlStart()
+  const [samlFirst, samlReplay] = await Promise.all([samlFinish(samlLogin), samlFinish(samlLogin)])
+  check([samlFirst.status, samlReplay.status].sort().join(',') === '302,401', 'concurrent SAML replay has exactly one native session winner')
+  const samlCookie = [samlFirst, samlReplay].find(value => value.status === 302)!.headers.getSetCookie().find(value => value.startsWith('session_id='))!.split(';')[0]!
+  check((await request(`/support/projects/${otherProject.public_id}/inbox`, 'GET', undefined, undefined, samlCookie)).status === 200, 'SAML sign-in uses native session and survives license expiry')
   const local = await request('/login', 'POST', { email: 'owner@example.test', password: 'SecureSupport2026!' })
   check(local.status === 200, 'native login preserved after license expiry')
   console.log(`PASS enterprise HTTP (${checks} checks)`)

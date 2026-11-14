@@ -7,9 +7,9 @@ import { insert, one, query, workspaceTransaction } from '../app/Support/databas
 import { SupportError, fail, identifier } from '../app/Support/errors'
 import { member, object, workspace } from '../app/Support/service'
 import { inspectLicense, requireEnterprise } from './license'
-import { audit, configureProvider, issueScimToken, oidcConfig, provider, provision, revokeScimToken, scimIdentity, scimPrincipal, scimResource, setProvisionedActive } from './identity'
+import { audit, configureProvider, issueScimToken, oidcConfig, samlConfig, provider, provision, revokeScimToken, scimIdentity, scimPrincipal, scimResource, setProvisionedActive } from './identity'
 
-export type EnterpriseOperation = 'status' | 'configure' | 'token.issue' | 'token.revoke' | 'audit' | 'oidc.start' | 'oidc.link' | 'oidc.callback' | 'scim.config' | 'scim.list' | 'scim.get' | 'scim.create' | 'scim.replace' | 'scim.patch' | 'scim.delete' | 'saml'
+export type EnterpriseOperation = 'status' | 'configure' | 'token.issue' | 'token.revoke' | 'audit' | 'oidc.start' | 'oidc.link' | 'oidc.callback' | 'scim.config' | 'scim.list' | 'scim.get' | 'scim.create' | 'scim.replace' | 'scim.patch' | 'scim.delete' | 'saml.start' | 'saml.link' | 'saml.callback'
 const json = (body: unknown, status = 200, scim = false) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', ...(scim ? { 'Content-Type': 'application/scim+json' } : {}) } })
 async function account(request: RequestInstance) {
   const user = await request.user()
@@ -24,13 +24,73 @@ function activePatch(input: Row): boolean {
   if (typeof value !== 'boolean') fail(400, 'invalidValue', 'active must be a boolean.')
   return value
 }
+async function finishIdentity(idp: Row, identity: { subject: string, email: string | null, emailVerified: boolean }, flow: { userId: number | null }, clearFlow: string) {
+  const workspaceId = Number(idp.workspace_id)
+  return await workspaceTransaction(workspaceId, async () => {
+        const current = await provider(String(idp.public_id))
+        if (current.issuer !== idp.issuer || current.client_id !== idp.client_id) fail(401, 'invalid_sso_state', 'The identity provider changed during sign-in.')
+        let linked = await one('SELECT * FROM support_enterprise_identities WHERE workspace_id = ? AND provider_id = ? AND subject = ?', [workspaceId, idp.id, identity.subject])
+        if (flow.userId) {
+          requireEnterprise(await workspace(workspaceId), idp.protocol === 'saml' ? 'saml' : 'oidc')
+          const membership = await member(flow.userId, workspaceId)
+          if (!identity.emailVerified || identity.email?.toLowerCase() !== String(membership.email).toLowerCase()) fail(403, 'identity_link_refused', 'The provider must verify the email of your signed-in workspace membership.')
+          if (linked && Number(linked.user_id) !== flow.userId) fail(409, 'identity_already_linked', 'This provider identity is linked to another account.')
+          if (!linked) {
+            linked = await one('SELECT * FROM support_enterprise_identities WHERE workspace_id = ? AND provider_id = ? AND membership_id = ?', [workspaceId, idp.id, membership.id])
+            if (linked && (!linked.active || linked.subject)) fail(409, 'identity_link_refused', 'The provisioned identity is inactive or already linked.')
+            if (linked) await query('UPDATE support_enterprise_identities SET user_id = ?, subject = ?, updated_at = ? WHERE id = ?', [flow.userId, identity.subject, new Date().toISOString(), linked.id])
+            else linked = await insert('support_enterprise_identities', { workspace_id: workspaceId, provider_id: idp.id, membership_id: membership.id, user_id: flow.userId, external_id: crypto.randomUUID(), subject: identity.subject, active: true })
+          }
+          await audit(workspaceId, flow.userId, 'identity.linked', linked.id)
+          const result = json({ linked: true }); result.headers.append('Set-Cookie', clearFlow); return result
+        }
+        if (!linked?.active || !linked.user_id) fail(403, 'identity_not_linked', 'Sign in with your native account and link this provider before using SSO.')
+        await member(Number(linked.user_id), workspaceId)
+        const issued = await Auth.loginUsingId(Number(linked.user_id))
+        if (!issued) fail(401, 'native_signin_refused', 'The native account is unavailable.')
+        const session = await startBrowserSession(issued.token)
+        if (!session) fail(401, 'native_signin_refused', 'A native session could not be created.')
+        await audit(workspaceId, Number(linked.user_id), 'identity.signed_in', linked.id)
+        const result = new Response(null, { status: 302, headers: { Location: '/', 'Cache-Control': 'no-store' } })
+        result.headers.append('Set-Cookie', browserSessionCookie(session)); result.headers.append('Set-Cookie', clearFlow)
+        return result
+      })
+}
 export async function enterpriseHttp(request: RequestInstance, operation: EnterpriseOperation, transport?: typeof fetch): Promise<Response> {
   const scim = operation.startsWith('scim.')
   let clearFlow = ''
   try {
     const input = object(request.all())
     if (JSON.stringify(input).length > 50_000) fail(413, 'body_too_large', 'Request body is too large.')
-    if (operation === 'saml') fail(503, 'saml_unavailable', 'SAML is not available in this release.')
+    if (operation.startsWith('saml.')) {
+      const idp = await provider(request.getParam('provider')), config = samlConfig(idp)
+      const { enterpriseSamlAuthorization, enterpriseSamlRequest, verifyEnterpriseSamlResponse } = await import('@stacksjs/auth/enterprise-saml')
+      const purpose = `enterprise-saml:${idp.public_id}`
+      if (operation !== 'saml.callback') {
+        let userId: number | undefined
+        if (operation === 'saml.link') {
+          const user = await account(request)
+          requireEnterprise(await workspace(Number(idp.workspace_id)), 'saml')
+          await member(user.id, Number(idp.workspace_id))
+          if (!(await one('SELECT email_verified_at FROM users WHERE id = ?', [user.id]))?.email_verified_at) fail(403, 'verified_account_required', 'Verify your native account before linking SSO.')
+          userId = user.id
+        }
+        const challenge = enterpriseSamlRequest()
+        const flow = await issueOAuthFlow({ purpose, ttlMs: 300_000, bindBrowser: true, ...(userId ? { userId } : {}), data: { ...challenge, issuer: idp.issuer, clientId: idp.client_id }, cookie: { secure: true, sameSite: 'None' } })
+        const result = new Response(null, { status: 302, headers: { Location: await enterpriseSamlAuthorization(config, flow.state, challenge), 'Cache-Control': 'no-store' } })
+        if (flow.cookie) result.headers.append('Set-Cookie', flow.cookie)
+        return result
+      }
+      const form = object((request as { formBody?: Row }).formBody)
+      const state = String(form.RelayState ?? input.RelayState ?? '')
+      clearFlow = await clearOAuthFlowCookie(state, { secure: true, sameSite: 'None' })
+      const flow = await consumeOAuthFlow(state, { purpose, browserSecret: readOAuthFlowCookie(request.headers.get('cookie'), state) })
+      if (!flow?.data || flow.data.issuer !== idp.issuer || flow.data.clientId !== idp.client_id || typeof flow.data.requestId !== 'string' || typeof flow.data.createdAt !== 'number') fail(401, 'invalid_sso_state', 'SAML expired, was already used, or belongs to another browser.')
+      let identity
+      try { identity = await verifyEnterpriseSamlResponse(config, String(form.SAMLResponse ?? input.SAMLResponse ?? ''), { requestId: flow.data.requestId, createdAt: flow.data.createdAt }) }
+      catch { fail(401, 'invalid_sso_assertion', 'The signed SAML assertion could not be verified.') }
+      return await finishIdentity(idp, identity, flow, clearFlow)
+    }
     if (operation.startsWith('oidc.')) {
       const idp = await provider(request.getParam('provider'))
       const config = oidcConfig(idp, transport), workspaceId = Number(idp.workspace_id)
@@ -62,35 +122,7 @@ export async function enterpriseHttp(request: RequestInstance, operation: Enterp
       let identity
       try { identity = await verifyEnterpriseOidcCallback(config, callback, { state, nonce: flow.nonce, verifier: flow.data.verifier }) }
       catch { fail(401, 'invalid_sso_assertion', 'The identity provider response could not be verified.') }
-      return await workspaceTransaction(workspaceId, async () => {
-        const current = await provider(String(idp.public_id))
-        if (current.issuer !== idp.issuer || current.client_id !== idp.client_id) fail(401, 'invalid_sso_state', 'The identity provider changed during sign-in.')
-        let linked = await one('SELECT * FROM support_enterprise_identities WHERE workspace_id = ? AND provider_id = ? AND subject = ?', [workspaceId, idp.id, identity.subject])
-        if (flow.userId) {
-          requireEnterprise(await workspace(workspaceId), 'oidc')
-          const membership = await member(flow.userId, workspaceId)
-          if (!identity.emailVerified || identity.email?.toLowerCase() !== String(membership.email).toLowerCase()) fail(403, 'identity_link_refused', 'The provider must verify the email of your signed-in workspace membership.')
-          if (linked && Number(linked.user_id) !== flow.userId) fail(409, 'identity_already_linked', 'This provider identity is linked to another account.')
-          if (!linked) {
-            linked = await one('SELECT * FROM support_enterprise_identities WHERE workspace_id = ? AND provider_id = ? AND membership_id = ?', [workspaceId, idp.id, membership.id])
-            if (linked && (!linked.active || linked.subject)) fail(409, 'identity_link_refused', 'The provisioned identity is inactive or already linked.')
-            if (linked) await query('UPDATE support_enterprise_identities SET user_id = ?, subject = ?, updated_at = ? WHERE id = ?', [flow.userId, identity.subject, new Date().toISOString(), linked.id])
-            else linked = await insert('support_enterprise_identities', { workspace_id: workspaceId, provider_id: idp.id, membership_id: membership.id, user_id: flow.userId, external_id: crypto.randomUUID(), subject: identity.subject, active: true })
-          }
-          await audit(workspaceId, flow.userId, 'identity.linked', linked.id)
-          const result = json({ linked: true }); result.headers.append('Set-Cookie', clearFlow); return result
-        }
-        if (!linked?.active || !linked.user_id) fail(403, 'identity_not_linked', 'Sign in with your native account and link this provider before using SSO.')
-        await member(Number(linked.user_id), workspaceId)
-        const issued = await Auth.loginUsingId(Number(linked.user_id))
-        if (!issued) fail(401, 'native_signin_refused', 'The native account is unavailable.')
-        const session = await startBrowserSession(issued.token)
-        if (!session) fail(401, 'native_signin_refused', 'A native session could not be created.')
-        await audit(workspaceId, Number(linked.user_id), 'identity.signed_in', linked.id)
-        const result = new Response(null, { status: 302, headers: { Location: '/', 'Cache-Control': 'no-store' } })
-        result.headers.append('Set-Cookie', browserSessionCookie(session)); result.headers.append('Set-Cookie', clearFlow)
-        return result
-      })
+      return await finishIdentity(idp, identity, flow, clearFlow)
     }
     const workspaceId = identifier(request.getParam('workspace'))
     if (scim) {
@@ -121,7 +153,7 @@ export async function enterpriseHttp(request: RequestInstance, operation: Enterp
     }
     const user = await account(request)
     await member(user.id, workspaceId, ['owner', 'admin'])
-    if (operation === 'status') return json({ license: inspectLicense(String((await workspace(workspaceId)).public_id)), provider: await one('SELECT public_id, protocol, issuer, client_id, enabled FROM support_enterprise_providers WHERE workspace_id = ?', [workspaceId]), samlAvailable: false })
+    if (operation === 'status') return json({ license: inspectLicense(String((await workspace(workspaceId)).public_id)), provider: await one('SELECT public_id, protocol, issuer, client_id, enabled FROM support_enterprise_providers WHERE workspace_id = ?', [workspaceId]), samlAvailable: true })
     if (operation === 'configure') return json({ provider: await configureProvider(workspaceId, input, user.id) }, 201)
     if (operation === 'token.issue') return json(await issueScimToken(workspaceId, user.id), 201)
     if (operation === 'token.revoke') { await revokeScimToken(workspaceId, request.getParam('id'), user.id); return json({ revoked: true }) }

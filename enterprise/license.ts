@@ -2,7 +2,7 @@
 import { createPublicKey, verify } from 'node:crypto'
 import { fail } from '../app/Support/errors'
 
-export type EnterpriseFeature = 'oidc' | 'scim' | 'audit'
+export type EnterpriseFeature = 'oidc' | 'saml' | 'scim' | 'audit'
 export interface EnterpriseLicense {
   version: 1
   licenseId: string
@@ -29,7 +29,7 @@ export function inspectLicense(workspace: string, env: LicenseEnvironment = {
     const key = createPublicKey(env.publicKey.replace(/\\n/g, '\n'))
     if (key.asymmetricKeyType !== 'ed25519' || !verify(null, Buffer.from(payload), key, Buffer.from(signature, 'base64url'))) throw new Error('Invalid license signature')
     const data = JSON.parse(Buffer.from(payload, 'base64url').toString()) as EnterpriseLicense
-    if (data.version !== 1 || typeof data.licenseId !== 'string' || !data.licenseId || data.installation !== env.installation || data.workspace !== workspace || !Number.isSafeInteger(data.issuedAt) || !Number.isSafeInteger(data.expiresAt) || data.issuedAt > now || data.expiresAt <= data.issuedAt || !Array.isArray(data.features) || !data.features.every(feature => ['oidc', 'scim', 'audit'].includes(feature))) throw new Error('Invalid license claims')
+    if (data.version !== 1 || typeof data.licenseId !== 'string' || !data.licenseId || data.installation !== env.installation || data.workspace !== workspace || !Number.isSafeInteger(data.issuedAt) || !Number.isSafeInteger(data.expiresAt) || data.issuedAt > now || data.expiresAt <= data.issuedAt || !Array.isArray(data.features) || !data.features.every(feature => ['oidc', 'saml', 'scim', 'audit'].includes(feature))) throw new Error('Invalid license claims')
     return { status: data.expiresAt <= now ? 'expired' : 'active', license: data }
   }
   catch { return { status: 'invalid', license: null } }
