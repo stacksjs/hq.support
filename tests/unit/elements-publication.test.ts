@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, spyOn, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import { archivePayload, elements, inspectPayload, packageName, payloadHashes, sha256 } from '../../scripts/lib/support-elements-artifact'
 import type { Payload } from '../../scripts/lib/support-elements-artifact'
@@ -106,6 +106,33 @@ describe('public registry readback', () => {
       expect(requests).toBe(1)
     }
     finally { server.stop(true) }
+  })
+  test('an early timer wake cannot retry before Retry-After or configured backoff is eligible', async () => {
+    for (const retryAfter of ['3600', undefined]) {
+      const received: number[] = [], retryDelayMs = 30
+      let respondedAt = 0
+      const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch() {
+        received.push(performance.now())
+        if (received.length > 1) return new Response('public bytes')
+        respondedAt = performance.now()
+        return new Response('busy', { status: 429, headers: retryAfter ? { 'Retry-After': retryAfter } : undefined })
+      } })
+      // Model the observed early timer wake, while keeping all HTTP and later waits real.
+      const sleep = spyOn(Bun, 'sleep').mockImplementationOnce(async () => {})
+      try {
+        const read = createRegistryReader({ deadlineMs: retryAfter ? 80 : 2000, retryDelayMs })
+        if (retryAfter) {
+          await expect(read(server.url)).rejects.toThrow('deadline exceeded')
+          expect(received).toHaveLength(1)
+        }
+        else {
+          expect(new TextDecoder().decode(await read(server.url))).toBe('public bytes')
+          expect(received).toHaveLength(2)
+          expect(received[1]! - respondedAt).toBeGreaterThanOrEqual(retryDelayMs)
+        }
+      }
+      finally { sleep.mockRestore(); server.stop(true) }
+    }
   })
   test('bounds stalled response headers and bodies', async () => {
     for (const stallBody of [false, true]) {

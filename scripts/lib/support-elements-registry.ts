@@ -45,10 +45,12 @@ export function createRegistryReader(options: RegistryOptions = {}) {
       }
       const remaining = deadline - performance.now()
       if (remaining <= 0) break
-      // A rate limit may ask for more time than the remaining budget. Never extend it.
+      // A timer may wake early. Only the absolute retry time permits another read.
       const retryAfter = response?.headers.get('retry-after')
       const requestedDelay = retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : retryDelayMs
-      await Bun.sleep(Math.min(remaining, Math.max(retryDelayMs, requestedDelay)))
+      const retryAt = performance.now() + Math.max(retryDelayMs, requestedDelay), wakeAt = Math.min(deadline, retryAt)
+      while (performance.now() < wakeAt) await Bun.sleep(Math.max(1, Math.ceil(wakeAt - performance.now())))
+      if (retryAt >= deadline) break
     }
     throw new Error(`Public registry readback deadline exceeded after ${deadlineMs}ms (${reason}); upload acceptance does not establish public consumer verification`)
   }
