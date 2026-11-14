@@ -9433,10 +9433,41 @@
             "type": "index"
           }
         ]
+      },
+      {
+        "table": "support_replay_operator_locks",
+        "columns": [
+          {
+            "name": "id",
+            "type": "bigint",
+            "isPrimaryKey": true,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "isPrimaryKey": false,
+            "isUnique": true,
+            "isNullable": false,
+            "hasDefault": false,
+            "maxLength": 32
+          }
+        ],
+        "indexes": [
+          {
+            "name": "support_replay_operator_locks_name_unique",
+            "columns": [
+              "name"
+            ],
+            "type": "unique"
+          }
+        ]
       }
     ]
   },
-  "hash": "6a34ba890e36768016ae7d24a486986aad77c9f9b912a271b76f8ea3cc77ce6b",
+  "hash": "c9fe87fc681fd08b7b517ad65dc363ef6acedddd914082addf6d79495bb32b11",
   "dialect": "postgres",
-  "updatedAt": "2026-11-14T17:33:10.461Z"
+  "updatedAt": "2026-11-14T17:55:36.306Z"
 }

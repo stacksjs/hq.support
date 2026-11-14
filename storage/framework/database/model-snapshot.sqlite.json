@@ -9430,10 +9430,41 @@
             "type": "index"
           }
         ]
+      },
+      {
+        "table": "support_replay_operator_locks",
+        "columns": [
+          {
+            "name": "id",
+            "type": "bigint",
+            "isPrimaryKey": true,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "isPrimaryKey": false,
+            "isUnique": true,
+            "isNullable": false,
+            "hasDefault": false,
+            "maxLength": 32
+          }
+        ],
+        "indexes": [
+          {
+            "name": "support_replay_operator_locks_name_unique",
+            "columns": [
+              "name"
+            ],
+            "type": "unique"
+          }
+        ]
       }
     ]
   },
-  "hash": "edbc712fedd636228e5f1d91df46dee32669ba77d9ae841a6bf84447deb755c5",
+  "hash": "0414f835cbe31bc2b51da00040af404ad610e0de374f99469179761518b92125",
   "dialect": "sqlite",
-  "updatedAt": "2026-11-14T17:33:10.283Z"
+  "updatedAt": "2026-11-14T17:55:35.866Z"
 }

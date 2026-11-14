@@ -11,6 +11,12 @@ export interface WorkspaceTransaction {
 }
 interface WorkspaceContext { active: boolean, parent?: WorkspaceContext, handle: WorkspaceTransaction }
 const workspaceContext = new AsyncLocalStorage<WorkspaceContext>()
+const operatorContext = new AsyncLocalStorage<{ active: boolean }>()
+function assertOperator() {
+  const context = operatorContext.getStore()
+  if (context && !context.active) throw new Error('Active operator transaction required')
+  if (context) assertActiveTransaction()
+}
 function assertActive(context: WorkspaceContext) {
   if (workspaceContext.getStore() !== context) throw new Error('Matching active workspace transaction context required')
   for (let owner: WorkspaceContext | undefined = context; owner; owner = owner.parent) {
@@ -30,6 +36,7 @@ export function requireWorkspaceTransaction(workspaceId: number): WorkspaceTrans
 
 /** SQL is authored here by the application; values always travel separately. */
 export async function query(sql: string, values: unknown[] = []): Promise<Row[]> {
+  assertOperator()
   await ensureDatabaseConfigLoaded()
   let ordinal = 0
   const statement = resolvedDatabaseConfig().driver === 'postgres'
@@ -41,6 +48,23 @@ export async function query(sql: string, values: unknown[] = []): Promise<Row[]>
     return await context.handle.query(statement, values)
   }
   return await db.unsafe(statement, values).execute()
+}
+
+/** Admission alone takes the global lock, always before any workspace/channel lock. */
+export async function replayOperatorTransaction<T>(action: () => Promise<T>): Promise<T> {
+  if (workspaceContext.getStore() || operatorContext.getStore() || isInTransaction()) throw new Error('Operator admission must own the outer transaction')
+  await ensureDatabaseConfigLoaded()
+  return await db.transaction(async () => {
+    const context = { active: true }
+    return await operatorContext.run(context, async () => {
+      try {
+        await query("INSERT INTO support_replay_operator_locks (name) VALUES ('operator') ON CONFLICT DO NOTHING")
+        await query("UPDATE support_replay_operator_locks SET name = name WHERE name = 'operator'")
+        return await action()
+      }
+      finally { context.active = false }
+    })
+  })
 }
 
 export async function one(sql: string, values: unknown[] = []): Promise<Row | undefined> {

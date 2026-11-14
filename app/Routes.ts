@@ -3,6 +3,7 @@ import defaults from '@stacksjs/defaults/app/Routes.ts'
 
 export default {
   ...defaults,
+  supportRealtime: { path: 'support-realtime', prefix: '/api' },
   supportCsat: { path: 'support-csat', prefix: '/api' },
   supportRouting: { path: 'support-routing', prefix: '/api' },
   supportCredentials: { path: 'support-credentials', prefix: '/api' },
