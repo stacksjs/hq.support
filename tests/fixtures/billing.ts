@@ -107,6 +107,10 @@ try {
   const bucket = (await one("SELECT * FROM support_provider_cost_buckets WHERE workspace_id = ? AND provider = 'twilio'", [workspaceId]))!
   assert.equal(Number(bucket.provider_cost_micros), 8300)
   assert.equal(Number(bucket.charged_cents), 1)
+  const duplicateReceipt = await reserveWallet(workspaceId, 'duplicate-provider-receipt', 1, 'twilio')
+  await assert.rejects(settleProviderWallet(workspaceId, String(duplicateReceipt.public_id), 100, 'micro-receipt-0'), /another operation/)
+  assert.equal((await one('SELECT status FROM support_wallet_reservations WHERE id = ?', [duplicateReceipt.id]))!.status, 'reserved', 'conflicting receipts retain the unresolved reservation')
+  assert.equal(Number((await one('SELECT provider_cost_micros FROM support_provider_cost_buckets WHERE id = ?', [bucket.id]))!.provider_cost_micros), 8300, 'a receipt cannot enter two operations in the provider aggregate')
   console.info('PASS support billing')
 }
 finally { server.stop(true) }

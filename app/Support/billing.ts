@@ -224,6 +224,7 @@ export function managedCostFromMicros(providerCostMicros: number): number {
 
 export async function settleProviderWallet(workspaceId: number, reservationId: string, providerCostMicros: number, providerReference: string) {
   managedCostFromMicros(providerCostMicros)
+  text(providerReference, 'providerReference')
   return await workspaceTransaction(workspaceId, async () => {
     const reservation = await one('SELECT * FROM support_wallet_reservations WHERE workspace_id = ? AND public_id = ?', [workspaceId, reservationId])
     if (!reservation) fail(404, 'not_found', 'Reservation not found.')
@@ -232,6 +233,8 @@ export async function settleProviderWallet(workspaceId: number, reservationId: s
       if (reservation.provider_reference !== providerReference) fail(409, 'settlement_conflict', 'Provider receipt changed.')
       return reservation
     }
+    const previousReceipt = await one('SELECT id FROM support_wallet_reservations WHERE workspace_id = ? AND provider = ? AND provider_reference = ? AND provider_cost_micros >= 0 AND id <> ?', [workspaceId, reservation.provider, providerReference, reservation.id])
+    if (previousReceipt) fail(409, 'settlement_conflict', 'Provider receipt belongs to another operation.')
     const createdAt = reservation.created_at instanceof Date ? reservation.created_at : new Date(String(reservation.created_at))
     if (!Number.isFinite(createdAt.getTime())) fail(503, 'wallet_unavailable', 'The billing period could not be read.')
     const period = createdAt.toISOString().slice(0, 7)
