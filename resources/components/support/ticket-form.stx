@@ -17,7 +17,7 @@ async function submit(event) {
     this._key = this._key || crypto.randomUUID()
     const response = await fetch(this.apiUrl.replace(/\/$/, '') + '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/tickets', { method: 'POST', credentials: 'omit', signal: this._abort.signal, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + this.sessionToken }, body: JSON.stringify({ title: values.get('subject'), description: values.get('body'), idempotencyKey: this._key }) })
     const data = await response.json()
-    if (!response.ok) throw new Error(data.message || 'Your ticket could not be submitted. Please retry.')
+    if (!response.ok) throw new Error(data.error?.message || data.message || 'Your ticket could not be submitted. Please retry.')
     this._key = null
     this._subject = ''
     this._body = ''

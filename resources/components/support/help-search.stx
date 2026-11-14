@@ -13,7 +13,7 @@ async function search(event) {
   try {
     const response = await fetch(this.apiUrl.replace(/\/$/, '') + '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/articles?q=' + encodeURIComponent(query), { signal: this._abort.signal, credentials: 'omit', headers: { Authorization: 'Bearer ' + this.sessionToken } })
     const data = await response.json()
-    if (!response.ok) throw new Error(data.message || 'Help search is unavailable.')
+    if (!response.ok) throw new Error(data.error?.message || data.message || 'Help search is unavailable.')
     this.results = (data.articles || []).map(article => ({ title: article.title, excerpt: article.excerpt || article.body || '' }))
     this.notice = this.results.length ? '' : 'No matching articles. Try another search or message the team.'
     this.emit('results', { count: this.results.length })

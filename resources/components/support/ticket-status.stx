@@ -10,7 +10,7 @@ async function refresh() {
   try {
     const response = await fetch(this.apiUrl.replace(/\/$/, '') + '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/tickets/' + encodeURIComponent(this.ticketId), { credentials: 'omit', signal: this._abort.signal, headers: { Authorization: 'Bearer ' + this.sessionToken } })
     const data = await response.json()
-    if (!response.ok) throw new Error(data.message || 'Ticket could not be loaded.')
+    if (!response.ok) throw new Error(data.error?.message || data.message || 'Ticket could not be loaded.')
     this.ticket = data.ticket || data
     this.notice = ''
     this.emit('loaded', { ticket: this.ticket })

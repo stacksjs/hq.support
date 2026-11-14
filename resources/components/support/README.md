@@ -5,10 +5,49 @@ native `buddy build:web-components` pipeline. Their internal styles live in
 isolated open shadow roots. The application pages use ts-css utilities.
 
 Run `bun scripts/build-support-elements.ts` before serving or deploying the app.
-It copies the generated ESM bundle and manifest into ignored `public/widgets/`.
-Load that module from your host or install the generated library. A remote module
+It emits a content-addressed version under `public/widgets/<app-version>-<hash>/`,
+plus the stable ESM entry `public/support.js` and a publication manifest at
+`public/widgets/manifest.json`. Rebuilding a version may not alter its bytes.
+The manifest records SHA-256, SHA-384 integrity, raw size and gzip size for each
+file. These are publication checksums; browser dynamic imports do not enforce
+Subresource Integrity automatically. Load the hosted entry or install the generated library. A remote module
 URL requires `Access-Control-Allow-Origin: *` on the public asset response;
 customer API CORS separately requires an exact origin allowed by the project.
+
+## Hosted loader
+
+Import the ESM entry in your own external module, then await boot before commands:
+
+```ts
+import support, { createSupport } from 'https://hq.support/support.js'
+await support.boot({ project: 'PUBLIC_PROJECT_ID', sessionToken: customerSessionToken })
+support.open()
+await support.update({ sessionToken: nextCustomerSessionToken })
+await support.track('project.viewed', { section: 'settings' })
+support.close()
+support.shutdown() // Sign-out: clears identity, stops work and removes its owned DOM.
+```
+
+The customer token must come from your server. Never use a project API key in a
+browser. `endpoint` defaults to the hosted module origin; supply it for a separate API
+origin. The loader imports the native bundle only when boot is called, mounts a
+launcher and messenger, and forwards native events through `on(name, listener)`
+(which returns an unsubscribe function) and `addEventListener`/`removeEventListener`.
+It does not install globals. The current messenger supports English (`en`) only;
+other locale requests fail explicitly. Use `createSupport({ container: HTMLElement, inline?: boolean })` for independent
+instances owned by a component. A supplied container defaults to inline positioning.
+Boot options `mount: HTMLElement` and `inline: boolean` can override those defaults.
+Do not mount multiple fixed instances over one another. Reboot or shutdown while
+an import/request is pending invalidates the previous operation.
+
+For CSP, allow this asset origin in `script-src` and the API origin in `connect-src`.
+The emitted code needs neither inline scripts nor eval. Native shadow styles need
+the exact `csp.styleSrc` hashes in the publication manifest. The optional boot
+`nonce` is applied as a property to the loader layout style. A strict host should
+pin `immutableEntrypoint` from the manifest so a later stable-entry update cannot
+change styles independently of its CSP hashes. The browser fixture `/loader-proof`
+checks a policy with no unsafe-inline or unsafe-eval and verifies independent
+instances, token handling, identity updates and complete shutdown.
 
 ## Messenger lifecycle
 

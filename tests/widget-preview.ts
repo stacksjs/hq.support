@@ -38,6 +38,16 @@ const server = Bun.serve({
   async fetch(request) {
     const url = new URL(request.url)
     if (url.pathname === '/proof') return new Response(Bun.file(resolve(root, 'tests/widget-host.html')))
+    if (url.pathname === '/loader-proof') {
+      const manifest = await Bun.file(resolve(root, 'public/widgets/manifest.json')).json()
+      return new Response(Bun.file(resolve(root, 'tests/widget-loader-host.html')), { headers: { 'Content-Security-Policy': `default-src 'none'; script-src 'self' http://127.0.0.1:4411; style-src ${manifest.csp.styleSrc.join(' ')}; connect-src 'self'; base-uri 'none'` } })
+    }
+    if (url.pathname === '/loader-proof.js') {
+      const proof = await Bun.build({ entrypoints: [resolve(root, 'tests/widget-loader-proof.ts')], target: 'browser', format: 'esm' })
+      if (!proof.success) throw new Error('Hosted loader fixture did not compile.')
+      return new Response(proof.outputs[0], { headers: { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' } })
+    }
+    if (url.pathname === '/support.js') return new Response(Bun.file(resolve(root, 'public/support.js')), { headers: { 'Content-Type': 'text/javascript' } })
     if (url.pathname.startsWith('/api/widget/projects/proof/')) {
       const resource = url.pathname.slice('/api/widget/projects/proof'.length)
       if (resource === '/session') return Response.json({ token: 'fixture-session', contact: { id: 'fixture' } })
