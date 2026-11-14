@@ -1697,6 +1697,17 @@ declare module '@stacksjs/database' {
       provider_event_id: string
       event_at: number | bigint
     }
+    support_channel_conversations: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      channel_id: number | bigint
+      thread_id: number | bigint
+      conversation_id: number | bigint
+    }
     support_channel_cursors: {
       // columns
       id: number
@@ -1797,6 +1808,9 @@ declare module '@stacksjs/database' {
       id: number
       created_at: string
       updated_at: string | null
+      resolved_at: number | bigint
+      continued_from_id: number | bigint | null
+      continuation_id: number | bigint | null
       team_id: number | bigint
       inbox_id: number | bigint
       routing_reason: string
