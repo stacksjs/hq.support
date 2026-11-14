@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { startTestService } from '@stacksjs/testing/service'
+import type { TestService } from '@stacksjs/testing/service'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { assertIsolatedOk, runIsolated } from '@stacksjs/testing/isolated'
 import WorkflowJob from '../../app/Jobs/RunSupportWorkflows'
 import { config, overridesReady } from '@stacksjs/config'
 import { db, workspaceTransaction, requireWorkspaceTransaction, query, one } from '../../app/Support/database'
-import { createWorkspace, createProject, createSession, createConversation, reply, enqueue, usage } from '../../app/Support/service'
+import { createWorkspace, createProject, createSession, createConversation, conversation, reply, enqueue, usage } from '../../app/Support/service'
 import { routeConversation } from '../../app/Support/routing'
 import { markRead } from '../../app/Support/reads'
 import { upload } from '../../app/Support/attachments'
@@ -40,15 +45,36 @@ await workspaceTransaction(Number(workspace.id), async tx => {
 })
 const notices: string[] = []
 const bus = supportReplayInvalidations()
-const unsubscribe = await bus.subscribe({ channels: names, onInvalidate: notice => { if (notice.reason === 'hint') notices.push(...notice.channels) } })
+// A different process observes Redis wire delivery; producer self-delivery cannot pass this proof.
+let subscriber: TestService | undefined, subscriberUrl: string | undefined, subscriberDirectory: string | undefined
+let unsubscribe = () => {}
+try {
+if (process.env.SUPPORT_REALTIME_REDIS_URL) {
+  subscriberDirectory = await mkdtemp(join(tmpdir(), 'support-replay-subscriber-'))
+  const bunfig = join(subscriberDirectory, 'bunfig.toml')
+  await writeFile(bunfig, 'preload = []\n')
+  subscriber = startTestService([process.execPath, `--config=${bunfig}`, '--no-env-file', 'tests/fixtures/durable-realtime-subscriber.ts', JSON.stringify(names)], { env: { ...process.env }, startupTimeoutMs: 10_000, stderr: 'inherit', stdout: 'ignore' })
+  subscriberUrl = (await subscriber.ready as { url: string }).url
+}
+else unsubscribe = await bus.subscribe({ channels: names, onInvalidate: notice => { if (notice.reason === 'hint') notices.push(...notice.channels) } })
+async function refreshNotices() {
+  if (subscriberUrl) notices.splice(0, notices.length, ...await (await fetch(subscriberUrl)).json() as string[])
+}
 async function receivedHints(count: number) {
   const deadline = Date.now() + 3000
-  while (notices.length < count && Date.now() < deadline) await Bun.sleep(5)
+  do { await refreshNotices(); if (notices.length >= count) break; await Bun.sleep(5) } while (Date.now() < deadline)
   assert.equal(notices.length, count, 'committed hint arrives through the native bus')
 }
 const payload = { subject: 'Public conversation', body: 'Help please', idempotencyKey: 'conversation-1' }
-const created = await createConversation(project, { externalId: 'customer-1' }, payload, customer)
+const created = await workspaceTransaction(Number(workspace.id), async () => {
+  const result = await createConversation(project, { externalId: 'customer-1' }, payload, customer)
+  await Bun.sleep(50); await refreshNotices()
+  assert.equal(notices.length, 0, 'public mutation stays silent until its held outer transaction commits')
+  return result
+})
 await receivedHints(2)
+assert.equal(String((await conversation(project, created.conversation.id, { id: String(customer.id) })).id), String(created.conversation.id), 'canonical HTTP and database identifier representations name the same customer')
+await assert.rejects(conversation(project, created.conversation.id, { id: customer.id + 1 }), /Conversation not found/)
 async function head(name: string) {
   return await workspaceTransaction(Number(workspace.id), async tx => await supportReplayStore(project, tx).replay({ channel: name, after: null }))
 }
@@ -63,6 +89,7 @@ const noticeCount = notices.filter(name => name === names[1]).length
 await reply(project, created.conversation.id, { body: 'Private investigation', visibility: 'internal', idempotencyKey: 'note-1' }, { userId: Number(user.id) })
 await receivedHints(3)
 assert.deepEqual(await head(names[1]!), beforePrivate, 'private note does not advance customer head or recorded timestamps')
+await Bun.sleep(50); await refreshNotices()
 assert.equal(notices.filter(name => name === names[1]).length, noticeCount, 'private note sends no customer hint')
 assert.equal((await head(names[0]!)).head.seq, 2)
 await routeConversation(project, created.conversation.id, { assigneeId: Number(user.id) }, { userId: Number(user.id), source: 'manual' })
@@ -70,6 +97,7 @@ const firstMessage = await one('SELECT id FROM support_messages WHERE conversati
 await markRead(project, created.conversation.id, Number(user.id), firstMessage!.id)
 await upload(project, created.conversation.id, new File(['Private evidence'], 'internal.txt', { type: 'text/plain' }), 'private-file')
 assert.deepEqual(await head(names[1]!), beforePrivate, 'assignment, read cursor and private attachment leave customer head/time unchanged')
+await Bun.sleep(50); await refreshNotices()
 assert.equal(notices.filter(name => name === names[1]).length, noticeCount)
 await reply(project, created.conversation.id, { body: 'Public reply', idempotencyKey: 'reply-1' }, { customer })
 assert.equal((await head(names[1]!)).head.seq, 2)
@@ -78,13 +106,14 @@ const beforeRollback = await head(names[0]!), beforeCustomerRollback = await hea
 const beforeHints = notices.length
 await assert.rejects(workspaceTransaction(Number(workspace.id), async () => {
   await createConversation(project, { externalId: 'customer-1' }, { ...payload, idempotencyKey: 'rolled-back' }, customer)
+  await Bun.sleep(50); await refreshNotices()
   assert.equal(notices.length, beforeHints, 'inner savepoint never hints before outer commit')
   throw new Error('roll back domain and replay')
 }), /roll back domain and replay/)
 assert.deepEqual(await head(names[0]!), beforeRollback)
 assert.deepEqual(await head(names[1]!), beforeCustomerRollback)
 assert.equal(await usage(Number(workspace.id), 'conversations'), 1)
-await Bun.sleep(50)
+await Bun.sleep(50); await refreshNotices()
 assert.equal(notices.length, beforeHints)
 // Matching native transaction state alone never grants workspace authority.
 await db.transaction(async () => {
@@ -105,7 +134,51 @@ await workspaceTransaction(Number(workspace.id), async tx => {
   await assert.rejects(escapedQuery(), /active workspace transaction/i)
 })
 await assert.rejects(escapedHandle(), /active workspace transaction/i)
+// Parent work must wait for the native savepoint, including callback-only work.
+const beforeOverlap = await head(names[0]!)
+const hintsBeforeOverlap = notices.length
+let rejectedEffect = false
+await workspaceTransaction(Number(workspace.id), async tx => {
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+  const nested = workspaceTransaction(Number(workspace.id), async () => {
+    entered.resolve()
+    await release.promise
+    throw new Error('overlap inner rollback')
+  })
+  const rejected = nested.catch(error => error)
+  await entered.promise
+  try {
+    await assert.rejects(enqueue(project, 'overlap-parent', {}), /active nested transaction/)
+    await assert.rejects(tx.query('SELECT 1'), /active nested transaction/)
+    assert.throws(() => tx.afterCommit(() => { rejectedEffect = true }), /active nested transaction/)
+  }
+  finally { release.resolve() }
+  assert.match((await rejected).message, /overlap inner rollback/)
+  await enqueue(project, 'after-overlap-parent', {})
+})
+assert.equal(await one("SELECT id FROM support_outbox WHERE kind = 'overlap-parent'"), undefined)
+assert.equal((await head(names[0]!)).head.seq, beforeOverlap.head.seq + 1)
+await receivedHints(hintsBeforeOverlap + 1)
+assert.equal(rejectedEffect, false)
+// A bare native child can close while the application workspace remains active.
+await workspaceTransaction(Number(workspace.id), async tx => {
+  let escaped: (() => Promise<void>) | undefined
+  await db.transaction(async () => {
+    const resource = new (await import('node:async_hooks')).AsyncResource('escaped-native-test')
+    escaped = resource.bind(async () => {
+      await assert.rejects(query('SELECT 1'), /closed transaction callback/)
+      await assert.rejects(tx.query('SELECT 1'), /closed transaction callback/)
+      await assert.rejects(enqueue(project, 'escaped-native', {}), /closed transaction callback/)
+      assert.throws(() => tx.afterCommit(() => { rejectedEffect = true }), /closed transaction callback/)
+    })
+  })
+  await escaped!()
+})
+assert.equal(await one("SELECT id FROM support_outbox WHERE kind = 'escaped-native'"), undefined)
+assert.equal(rejectedEffect, false)
 const beforeInnerFailure = await head(names[0]!)
+await refreshNotices()
+const beforeFailedSavepointHints = notices.length
 await workspaceTransaction(Number(workspace.id), async () => {
   await assert.rejects(workspaceTransaction(Number(workspace.id), async () => {
     await enqueue(project, 'failed-savepoint', {})
@@ -114,6 +187,7 @@ await workspaceTransaction(Number(workspace.id), async () => {
   await enqueue(project, 'successful-outer', {})
 })
 assert.equal((await head(names[0]!)).head.seq, beforeInnerFailure.head.seq + 1)
+await receivedHints(beforeFailedSavepointHints + 1)
 assert.equal(await one("SELECT id FROM support_outbox WHERE kind = 'failed-savepoint'"), undefined)
 const outboxCount = Number((await one('SELECT COUNT(*) AS n FROM support_outbox'))!.n)
 const messageCount = Number((await one('SELECT COUNT(*) AS n FROM support_messages'))!.n)
@@ -135,8 +209,11 @@ assert.equal(await one('SELECT id FROM support_replay_channels WHERE name = ?', 
 async function worker(input: Record<string, unknown>) {
   assertIsolatedOk(await runIsolated('tests/fixtures/durable-realtime-worker.ts', { args: [JSON.stringify({ projectId: project.id, ...input })], envFile: false, preload: [], timeoutMs: 30_000 }), 'PASS durable support replay worker')
 }
+await receivedHints(beforeFailedSavepointHints + 3)
+const beforeWorkerHints = notices.length
 const beforeWorkers = await head(names[0]!)
 await Promise.all([worker({ mode: 'append' }), worker({ mode: 'append' })])
+if (subscriber) await receivedHints(beforeWorkerHints + 10)
 await worker({ mode: 'read', channel: names[0], sequence: beforeWorkers.head.seq + 10 })
 const beforeDrain = await head(names[0]!)
 await WorkflowJob.dispatch()
@@ -144,10 +221,22 @@ assert.ok(await one("SELECT id FROM jobs WHERE queue = 'support-workflows'"), 'n
 await worker({ mode: 'queue' })
 assert.deepEqual(await head(names[0]!), beforeDrain, 'delayed outbox delivery never appends replay again')
 assert.equal(await one("SELECT id FROM support_outbox WHERE kind LIKE 'realtime.%'"), undefined, 'hints introduce no generic outbox kind')
+await Bun.sleep(50); await refreshNotices()
+const beforeLostHintNotices = notices.length
 unsubscribe()
-await bus.close()
+await bus.close() // Producer-only failure: the independent Redis subscriber stays healthy.
 const beforeLostHint = await head(names[0]!)
 await reply(project, created.conversation.id, { body: 'Redis hint unavailable', idempotencyKey: 'lost-hint' }, { customer })
 assert.equal((await head(names[0]!)).head.seq, beforeLostHint.head.seq + 1, 'a failed publisher cannot undo or advance past the committed SQL event')
-await worker({ mode: 'read', channel: names[0], sequence: beforeLostHint.head.seq + 1 })
+await worker({ mode: 'read', channel: names[0], after: beforeLostHint.head, sequence: beforeLostHint.head.seq + 1 })
+await Bun.sleep(50); await refreshNotices()
+assert.equal(notices.length, beforeLostHintNotices, 'lost producer hint is recovered from SQL while the subscriber stays live')
 console.log('PASS durable support replay')
+
+}
+finally {
+  unsubscribe()
+  await bus.close()
+  await subscriber?.stop()
+  if (subscriberDirectory) await rm(subscriberDirectory, { recursive: true, force: true })
+}

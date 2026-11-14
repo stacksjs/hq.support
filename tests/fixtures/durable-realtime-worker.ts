@@ -26,9 +26,9 @@ else if (input.mode === 'queue') {
   finally { await stopProcessor({ graceMs: 1000 }); assert.equal((await processing).isOk, true) }
 }
 else {
-  const page = await workspaceTransaction(Number(project.workspace_id), async tx => await supportReplayStore(project, tx).replay({ channel: input.channel, after: null }))
+  const page = await workspaceTransaction(Number(project.workspace_id), async tx => await supportReplayStore(project, tx).replay({ channel: input.channel, after: input.after ?? null }))
   assert.equal(page.head.seq, input.sequence, 'new process reads the persisted checkpoint')
-  assert.deepEqual(page.messages.map(message => message.seq), Array.from({ length: input.sequence }, (_, index) => index + 1), 'committed sequences stay contiguous')
+  assert.deepEqual(page.messages.map(message => message.seq), Array.from({ length: input.sequence - (input.after?.seq ?? 0) }, (_, index) => (input.after?.seq ?? 0) + index + 1), 'committed sequences stay contiguous')
   assert.ok(page.messages.every(message => message.event === 'changed' && message.data === null))
 }
 console.log('PASS durable support replay worker')

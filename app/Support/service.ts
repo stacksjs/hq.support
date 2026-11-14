@@ -165,8 +165,8 @@ export function messageView(row: Row) {
   return { id: String(row.id), conversation_id: String(row.conversation_id), body: String(row.body), visibility: String(row.visibility), author_type: String(row.author_type), created_at: isoTime(row.created_at), delivery_status: String(row.delivery_status) }
 }
 export async function conversation(projectRow: Row, id: unknown, person?: Row): Promise<Row> {
-  const row = await one('SELECT * FROM support_conversations WHERE id = ? AND project_id = ?', [identifier(id), projectRow.id])
-  if (!row || (person && row.contact_id !== person.id)) fail(404, 'not_found', 'Conversation not found.')
+  const row = await one(`SELECT * FROM support_conversations WHERE id = ? AND project_id = ?${person ? ' AND contact_id = ?' : ''}`, [identifier(id), projectRow.id, ...(person ? [identifier(person.id)] : [])])
+  if (!row) fail(404, 'not_found', 'Conversation not found.')
   return row
 }
 /** States supported by actual conversation transitions, independent of ticket state names. */

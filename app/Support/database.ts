@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { db, enqueueAfterCommit, ensureDatabaseConfigLoaded, isInTransaction, resolvedDatabaseConfig } from '@stacksjs/database/runtime'
+import { assertActiveTransaction, db, enqueueAfterCommit, ensureDatabaseConfigLoaded, isInTransaction, resolvedDatabaseConfig } from '@stacksjs/database/runtime'
 
 export type Row = Record<string, unknown>
 
@@ -17,6 +17,7 @@ function assertActive(context: WorkspaceContext) {
     if (!owner.active) throw new Error('An active workspace transaction is required')
   }
   if (!isInTransaction()) throw new Error('An active workspace transaction is required')
+  assertActiveTransaction()
 }
 /** Requires both the matching workspace lock and a live transaction-bound handle. */
 export function requireWorkspaceTransaction(workspaceId: number): WorkspaceTransaction {
@@ -62,7 +63,7 @@ export async function workspaceTransaction<T>(workspaceId: number, action: (tx: 
   await ensureDatabaseConfigLoaded()
   const dialect = resolvedDatabaseConfig().driver
   if (dialect !== 'sqlite' && dialect !== 'postgres') throw new Error('Support requires SQLite or PostgreSQL')
-  return await db.transaction(async (tx) => {
+  return await db.transaction(async () => {
     const context: WorkspaceContext = { active: true, parent, handle: undefined! }
     const handle: WorkspaceTransaction = {
       workspaceId, dialect,
@@ -70,7 +71,7 @@ export async function workspaceTransaction<T>(workspaceId: number, action: (tx: 
         assertActive(context)
         let ordinal = 0
         const statement = dialect === 'postgres' ? sql.replace(/\?/g, () => `$${++ordinal}`) : sql
-        return await tx.unsafe(statement, values).execute()
+        return await db.unsafe(statement, values).execute()
       },
       afterCommit(callback) {
         assertActive(context)
