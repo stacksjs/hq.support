@@ -98,7 +98,12 @@ external server deployment rotating its own environment variables.
 Settings includes metadata pagination, immediate revoke and same-scope rotation.
 It keeps a failed operation ID in memory for an explicit retry and explains
 metadata-only recovery. Secrets clear on hide, another mutation, project change
-or controller destruction. Customer widget shutdown is unchanged: removing one
+or controller destruction. Starting logout invalidates all pending response
+contexts and clears keys, metadata and retry state before any await. This
+controller stays closed to credential work if logout fails or navigation stalls;
+the Sign out button remains available to retry native logout, and a page reload
+can establish a fresh authenticated controller. A mutation still waiting for
+CSRF is refused before dispatch once its context ends. Customer widget shutdown is unchanged: removing one
 messenger instance must not invalidate another instance sharing its token.
 
 The opt-in production STX/browser proof is:
@@ -117,3 +122,11 @@ module emission, publish it, and rerun this proof with the normal installed
 release before claiming complete browser qualification. A screenshot with all
 secrets hidden is written under
 `storage/framework/runtime/credential-browser/settings.png` during the proof.
+
+The HTTP fixture also runs the production Settings controller over actual native
+HTTP/auth/SQL with delayed transport boundaries. It holds committed issue,
+rotate and metadata responses across logout pending/success/failure, project
+changes and destruction, including late transport errors and delayed CSRF.
+These cases verify that secrets/retry state cannot return, old metadata cannot
+replace the new project, queued mutations cannot dispatch after context closure,
+new credential work stays blocked, and failed native logout can still be retried.

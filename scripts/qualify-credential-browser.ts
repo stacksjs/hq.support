@@ -9,5 +9,6 @@ await withDisposableDatabase('sqlite', async database => {
   })
   assertIsolatedOk(result, 'PASS credential browser')
   console.info(result.stdout.match(/PASS credential browser \(\d+ checks\)/)?.[0])
+  console.info(result.stdout.match(/PASS credential Settings response boundaries \(\d+ checks\)/)?.[0])
   console.info(result.stdout.match(/PASS credential HTTP \(\d+ checks\)/)?.[0])
 })

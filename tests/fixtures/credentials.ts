@@ -143,6 +143,14 @@ try {
   const receipts = await query("SELECT response FROM support_idempotency WHERE operation LIKE 'key.%'")
   check(receipts.length > 0 && receipts.every(row => Object.keys(JSON.parse(String(row.response))).every(key => ['keyIds', 'replacedKeyId'].includes(key))), 'credential replay receipts have an explicit metadata-only shape')
   if (process.env.SUPPORT_CREDENTIAL_BROWSER === '1') await (await import('./credentials-browser')).qualifyCredentialSettings({ api: base.replace(/\/api$/, ''), browserCookie: browserSessionCookie(browser!), project: project.public_id, projectId: Number(project.id), keyId: String(explicitRecovery.key.id), oldKey: explicitRecovery.secret })
+  const boundaryWorkspace = (await http('/support/workspaces', 'POST', { name: 'Controller boundary' }, owner.token)).data.workspace
+  const boundaryProject = (await http(`/support/workspaces/${boundaryWorkspace.id}/projects`, 'POST', { name: 'Second owned project' }, owner.token)).data.project
+  await (await import('./credential-settings-boundary')).qualifyCredentialSettingsBoundary({ api: base.replace(/\/api$/, ''), project: project.public_id, otherProject: boundaryProject.public_id, async signIn() {
+    const login = await http('/login', 'POST', { email: 'key-owner@example.test', password: 'SecureSupport2026!' })
+    const browser = await startBrowserSession(login.data.access_token ?? login.data.token)
+    assert.ok(browser, 'Native owner browser session is issued')
+    return browserSessionCookie(browser).split(';')[0]!
+  } })
   for (let index = 0; index < 205; index++) await insert('support_api_keys', { workspace_id: workspace.id, project_id: project.id, digest: digest(`fixture-pagination-${index}`), scope: 'read' })
   const pageOne = await http(path + '/keys', 'GET', undefined, owner.token)
   const pageTwo = await http(path + `/keys?cursor=${pageOne.data.nextCursor}`, 'GET', undefined, owner.token)
