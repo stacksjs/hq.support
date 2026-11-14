@@ -59,7 +59,9 @@ async function build() {
 interface Manifest { version: string, csp: { styleSrc: string[] }, files: { path: string, sha256: string }[] }
 async function snapshotAssets() {
   temporary = await mkdtemp(resolve(tmpdir(), 'hq-support-browser-'))
-  const assets = resolve(temporary, 'public'), manifest: Manifest = await Bun.file(resolve(root, 'public/widgets/manifest.json')).json()
+  const source = resolve(process.env.SUPPORT_BROWSER_ASSETS || resolve(root, 'public'))
+  assert.ok(!process.env.SUPPORT_BROWSER_ASSETS || args.includes('--skip-build'), 'Reviewed hosted artifacts require --skip-build, never a rebuild')
+  const assets = resolve(temporary, 'public'), manifest: Manifest = await Bun.file(resolve(source, 'widgets/manifest.json')).json()
   assert.match(manifest.version, /^[a-zA-Z0-9.+-]+$/)
   assert.ok(manifest.files.length >= 4, 'Manifest must describe the compiled publication')
   const paths = new Set(['/widgets/manifest.json', '/widgets/bundle.js', ...manifest.files.map(file => file.path)])
@@ -68,7 +70,7 @@ async function snapshotAssets() {
     const target = resolve(assets, '.' + path)
     assert.ok(target.startsWith(assets + sep))
     await mkdir(resolve(target, '..'), { recursive: true })
-    await copyFile(resolve(root, 'public', '.' + path), target)
+    await copyFile(resolve(source, '.' + path), target)
   }
   for (const file of manifest.files) assert.equal(createHash('sha256').update(new Uint8Array(await Bun.file(resolve(assets, '.' + file.path)).arrayBuffer())).digest('hex'), file.sha256, `Published artifact checksum: ${file.path}`)
   const compatibility = await Bun.file(resolve(assets, 'widgets/bundle.js')).arrayBuffer(), immutable = await Bun.file(resolve(assets, 'widgets', manifest.version, 'bundle.js')).arrayBuffer()

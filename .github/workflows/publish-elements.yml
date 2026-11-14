@@ -1,0 +1,124 @@
+name: Publish support elements
+
+on:
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: Successful main CI run for this exact commit and its component artifact
+        required: true
+        type: string
+      version:
+        description: Reviewed version pinned in config/library.ts, for example 0.1.0-alpha.0
+        required: true
+        type: string
+      publish:
+        description: Publish the verified candidate to npm after the dry run
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: support-elements-publication
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'stacksjs/hq.support' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SUPPORT_ELEMENTS_CI_RUN: ${{ inputs.ci_run_id }}
+      SUPPORT_ELEMENTS_VERSION: ${{ inputs.version }}
+      SUPPORT_ELEMENTS_SOURCE_SHA: ${{ github.sha }}
+      CHROME_PATH: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: Verify exact successful main CI run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun --no-env-file scripts/verify-elements-ci.ts
+      - uses: actions/download-artifact@v8
+        with:
+          name: support-elements-${{ github.sha }}
+          path: storage/framework/runtime/support-elements-release
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ github.token }}
+      - name: Restore exact reviewed package without rebuilding
+        run: bun --no-env-file scripts/support-elements-release.ts restore
+      - name: Verify archive, strict clean consumer and per-element browser imports
+        run: bun --no-env-file scripts/support-elements-release.ts verify
+      - name: Verify hosted loader against the same package bundle
+        env:
+          SUPPORT_BROWSER_ASSETS: storage/framework/runtime/support-elements-release/hosted
+        run: bun --no-env-file scripts/qualify-support-browser.ts --skip-build
+      - name: Native npm dry run with explicit alpha tag
+        run: ./buddy libs:publish --publisher bun --tag alpha --dry-run
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: support-elements-publication-proof-${{ github.run_attempt }}
+          path: |
+            storage/framework/runtime/support-browser
+            storage/framework/runtime/support-elements-release/*report.json
+          retention-days: 7
+
+  publish:
+    if: inputs.publish
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      SUPPORT_ELEMENTS_CI_RUN: ${{ inputs.ci_run_id }}
+      SUPPORT_ELEMENTS_VERSION: ${{ inputs.version }}
+      SUPPORT_ELEMENTS_SOURCE_SHA: ${{ github.sha }}
+      CHROME_PATH: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: Recheck CI ownership before publication
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun --no-env-file scripts/verify-elements-ci.ts
+      - uses: actions/download-artifact@v8
+        with:
+          name: support-elements-${{ github.sha }}
+          path: storage/framework/runtime/support-elements-release
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ github.token }}
+      - run: bun --no-env-file scripts/support-elements-release.ts restore
+      - name: Publish the restored artifact through native Buddy
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+          BUN_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: ./buddy libs:publish --publisher bun --tag alpha
+      - name: Verify actual public npm bytes, strict install and browser consumers
+        run: bun --no-env-file scripts/support-elements-release.ts registry
+      - name: Verify hosted loader against the published npm bundle
+        env:
+          SUPPORT_BROWSER_ASSETS: storage/framework/runtime/support-elements-release/hosted
+        run: bun --no-env-file scripts/qualify-support-browser.ts --skip-build
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: support-elements-registry-proof-${{ github.run_attempt }}
+          path: |
+            storage/framework/runtime/support-browser
+            storage/framework/runtime/support-elements-release/*report.json
+          retention-days: 7
