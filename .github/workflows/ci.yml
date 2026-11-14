@@ -62,6 +62,18 @@ jobs:
           path: storage/framework/runtime/support-browser
           if-no-files-found: error
           retention-days: 7
+      - name: Prepare reviewed component publication artifact
+        env:
+          SUPPORT_ELEMENTS_VERSION: 0.1.0-alpha.0
+          CHROME_PATH: /usr/bin/google-chrome
+        run: bun --no-env-file scripts/support-elements-release.ts prepare
+      - name: Retain same-commit component publication candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: support-elements-${{ github.sha }}
+          path: storage/framework/runtime/support-elements-release
+          if-no-files-found: error
+          retention-days: 14
       - run: ./buddy lint
       - run: ./buddy typecheck
       - run: ./buddy migrate
