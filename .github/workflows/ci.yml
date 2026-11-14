@@ -2,129 +2,36 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
-
+    branches: [main]
   pull_request:
-    branches:
-      - main
-
-  # So a maintainer can ship without pushing an empty commit.
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  lint:
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-      fail-fast: false
-
-    runs-on: ${{ matrix.os }}
-
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_ENV: testing
+      NODE_ENV: test
+      DB_CONNECTION: sqlite
+      DB_DATABASE: database/ci.sqlite
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Pantry
-        uses: pantry-pm/pantry/packages/action@cdb82193cb344c2b881a88ea79f88243f5522e0f # v0.11.75
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          install: 'false'
-
-      - name: Use cached node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: node-modules-${{ hashFiles('**/bun.lock') }}
-          restore-keys: |
-            node-modules-
-
-      - name: Install Dependencies
-        # Frozen: a lockfile that no longer matches package.json fails here,
-        # not in the deploy that installs from it.
-        run: bun install --frozen-lockfile
-
-      - name: Lint
-        run: bun buddy lint
-
-  typecheck:
-    runs-on: ${{ matrix.os }}
-
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-      fail-fast: false
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Pantry
-        uses: pantry-pm/pantry/packages/action@cdb82193cb344c2b881a88ea79f88243f5522e0f # v0.11.75
-        with:
-          install: 'false'
-
-      - name: Use cached node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: node-modules-${{ hashFiles('**/bun.lock') }}
-          restore-keys: |
-            node-modules-
-
-      - name: Install dependencies
-        # Frozen: a lockfile that no longer matches package.json fails here,
-        # not in the deploy that installs from it.
-        run: bun install --frozen-lockfile
-
-      - name: Set Application Key
-        run: bun buddy key:generate
-
-      - name: Typecheck
-        run: bun buddy test:types
-
-  test:
-    runs-on: ${{ matrix.os }}
-
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-      fail-fast: false
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Pantry
-        uses: pantry-pm/pantry/packages/action@cdb82193cb344c2b881a88ea79f88243f5522e0f # v0.11.75
-        with:
-          install: 'false'
-
-      - name: Use cached node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: node-modules-${{ hashFiles('**/bun.lock') }}
-          restore-keys: |
-            node-modules-
-
-      - name: Install Dependencies
-        # Frozen: a lockfile that no longer matches package.json fails here,
-        # not in the deploy that installs from it.
-        run: bun install --frozen-lockfile
-
-      - name: Set Application Key
-        run: bun buddy key:generate
-
-      # Feature tests query real tables, and a fresh checkout has no database
-      # file at all: it is gitignored, being machine-local state. Without this
-      # the suite fails in beforeAll with "no such table", which reads like a
-      # broken test rather than a missing schema.
-      - name: Migrate the database
-        run: bun buddy migrate
-
-      - name: Test Suite
-        run: bun run test
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: ./buddy key:generate
+      - run: ./buddy lint
+      - run: ./buddy typecheck
+      - run: ./buddy migrate
+      - run: ./buddy test
+      - run: bun scripts/build-support-elements.ts
+      - run: ./buddy build:views

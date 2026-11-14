@@ -1,0 +1,15 @@
+# Hosted billing
+
+The typed catalog in `app/Support/limits.ts` drives exact monthly/annual subscription prices and quotas. Annual subscriptions charge ten monthly payments. Core self-hosted operation remains uncapped.
+
+Owners and administrators prepare a hosted subscription through `POST /api/support/workspaces/{workspace}/subscription/checkout` with `plan` (starter, growth, enterprise), `interval` (month or year), and a stable `idempotencyKey`. Preparing checkout grants no access. A verified Stripe webhook triggers a fresh server-side subscription retrieval and checks the checkout attribution, workspace, one exact recurring catalog price, quantity, currency and period. Unknown or conflicting subscription state fails closed. A generation guard prevents an earlier in-flight provider read overwriting a newer state. Unpaid, canceled or expired subscriptions fall back to the previously qualified Free workspace, otherwise the ordinary trial; existing support reads and replies continue. New admission checks the paid period even when a provider webhook is missing.
+
+Subscription settings and the native Stripe billing portal are owner/admin-only. Configure the merchant portal for payment-method management and cancellation only; arbitrary price changes are refused until application-controlled plan changes are implemented. Additional paid agents, paid conversation/AI overages, automatic top-up and invoice administration are not implemented by this slice.
+
+Wallet top-ups use `POST /api/support/workspaces/{workspace}/wallet/checkout` with integer `amountCents` and `idempotencyKey`. Minimum $20, maximum $1,000 per checkout. Credit comes only from a verified paid provider event matching a server-created checkout. Duplicate checkout completion events cannot double-credit. Refunds apply the cumulative difference and may leave debt after spent funds; debt prevents new reservations.
+
+The native Stripe SDK verifies exact raw bytes at `POST /api/billing/stripe/webhook`, using `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`. Checkout and payment metadata identify this product as `supporthq`; authentic unrelated merchant events are ignored. Never enable production billing with fixture credentials.
+
+Channel operations reserve prepaid funds under the workspace database lock, then settle against a unique provider receipt. The available balance excludes held funds. Failed operations release their reservation. A retried receipt must match the settled cost and reference. Provider costs plus the 15% platform margin round once to integer cents after aggregation. A provider result without confirmed cost must remain unresolved; it is not free.
+
+`tests/feature/billing.test.ts` and `subscriptions.test.ts` run real native auth, HTTP, SQL migrations and Stripe signature verification on disposable SQLite/PostgreSQL databases. Only outbound provider calls use deterministic fixtures. Live Stripe account qualification, invoice reconciliation and managed-channel cost qualification remain required before launch.

@@ -2,6 +2,7 @@ import type { EmailConfig } from '@stacksjs/types'
 import { env } from '@stacksjs/env'
 
 export default {
+  default: (env.MAIL_MAILER || 'log') as EmailConfig['default'],
   from: {
     name: env.MAIL_FROM_NAME || 'Hq Support',
     address: env.MAIL_FROM_ADDRESS || 'hello@example.com',

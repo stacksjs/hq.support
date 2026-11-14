@@ -12,6 +12,9 @@ import type { ServerConfig } from '@stacksjs/types'
 export default {
   // Opt in after publishing the native Request model and migrating its table.
   captureRequests: false,
+  headers: {
+    '/widgets/*': { 'Access-Control-Allow-Origin': '*' },
+  },
   /**
    * **API Proxy**
    *
