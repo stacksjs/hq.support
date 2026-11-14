@@ -6,6 +6,10 @@ import { injectGlobalAutoImports } from '@stacksjs/server'
 import { route } from '@stacksjs/router'
 import { one, query } from '../../app/Support/database'
 import { inspectLicense } from '../../enterprise/license'
+import { createConversation } from '../../app/Support/service'
+import { upload } from '../../app/Support/attachments'
+import { Storage } from '@stacksjs/storage'
+import { retentionMarker } from '../../enterprise/retention'
 import { samlTestKey, samlTestCert, samlRequestId, signedSamlResponse } from './enterprise-saml-sign'
 import { enterpriseAction } from '../../app/Actions/Support/EnterpriseAction'
 
@@ -58,7 +62,7 @@ const otherKeys = generateKeyPairSync('ed25519')
 process.env.SUPPORT_ENTERPRISE_LICENSE_PUBLIC_KEY = String(licenseKeys.publicKey.export({ type: 'spki', format: 'pem' }))
 process.env.SUPPORT_INSTALLATION_ID = 'fixture-installation'
 function license(workspace: string, expiresAt = Date.now() + 86400000, signingKey = licenseKeys.privateKey) {
-  const body = Buffer.from(JSON.stringify({ version: 1, licenseId: 'fixture-license', installation: 'fixture-installation', workspace, issuedAt: Date.now() - 86400000, expiresAt, features: ['oidc', 'saml', 'scim', 'audit'] })).toString('base64url')
+  const body = Buffer.from(JSON.stringify({ version: 1, licenseId: 'fixture-license', installation: 'fixture-installation', workspace, issuedAt: Date.now() - 86400000, expiresAt, features: ['oidc', 'saml', 'scim', 'audit', 'retention'] })).toString('base64url')
   return `${body}.${sign(null, Buffer.from(body), signingKey).toString('base64url')}`
 }
 async function start(provider: string, linkingToken?: string) {
@@ -102,6 +106,15 @@ try {
   const provisioned = await request(scimPath + '/Users', 'POST', { schemas: ['urn:ietf:params:scim:schemas:core:2.0:User'], externalId: 'idp-agent-1', userName: 'agent@example.test', active: true, roles: ['owner'] }, scimToken)
   check(provisioned.status === 201, `SCIM provisions ${JSON.stringify(provisioned.data)}`)
   check((await one('SELECT role FROM support_memberships WHERE workspace_id = ? AND email = ?', [workspace.id, 'agent@example.test']))?.role === 'agent', 'SCIM cannot grant privileged role')
+  const group = await request(scimPath + '/Groups', 'POST', { externalId: 'support-team', displayName: 'Support Team', members: [{ value: provisioned.data.id }], roles: ['owner'] }, scimToken)
+  check(group.status === 201 && group.data.members.length === 1, `SCIM group provisioning ${JSON.stringify(group.data)}`)
+  check((await request(`/scim/v2/${otherWorkspace.id}/Groups/${group.data.id}`, 'GET', undefined, scimToken)).status === 401, 'directory group token cannot cross workspace boundary')
+  check((await request(scimPath + `/Groups/${group.data.id}`, 'PATCH', { Operations: [{ op: 'add', path: 'members', value: [{ value: '999999999' }] }] }, scimToken)).status === 404, 'directory group rejects unscoped or unknown user resource')
+  const removedMember = await request(scimPath + `/Groups/${group.data.id}`, 'PATCH', { Operations: [{ op: 'remove', path: `members[value eq "${provisioned.data.id}"]` }] }, scimToken)
+  check(removedMember.status === 200 && removedMember.data.members.length === 0, 'SCIM filtered member removal')
+  check((await request(scimPath + `/Groups/${group.data.id}`, 'PATCH', { Operations: [{ op: 'add', path: 'members', value: [{ value: provisioned.data.id }] }] }, scimToken)).status === 200, 'SCIM group member add')
+  const groups = await request(scimPath + '/Groups?filter=' + encodeURIComponent('displayName eq "Support Team"'), 'GET', undefined, scimToken)
+  check(groups.status === 200 && groups.data.totalResults === 1, 'SCIM directory group filter')
   const membership = await one('SELECT * FROM support_memberships WHERE workspace_id = ? AND email = ?', [workspace.id, 'agent@example.test'])
   check(membership?.status === 'pending' && membership.user_id === null, 'SCIM creates invitation without account takeover')
   const unlinked = await start(idp.public_id)
@@ -120,6 +133,34 @@ try {
   const unsigned = await start(idp.public_id); assertionUnsigned = true
   check((await request(`/_enterprise/providers/${idp.public_id}/callback?code=test&state=${unsigned.state}`, 'GET', undefined, undefined, unsigned.cookie)).status === 401, 'unsigned assertion refused over HTTP')
   assertionUnsigned = false
+  Storage.init({ default: 'local', disks: { local: { driver: 'local', root: process.env.SUPPORT_TEST_STORAGE! } } })
+  const retained = (await createConversation(affectedProject, { externalId: 'retention-customer' }, { idempotencyKey: 'retention-one', subject: 'Old private subject', body: 'Old private message' })).conversation
+  const held = (await createConversation(affectedProject, { externalId: 'retention-customer' }, { idempotencyKey: 'retention-held', subject: 'Held private subject', body: 'Held private message' })).conversation
+  const open = (await createConversation(affectedProject, { externalId: 'retention-customer' }, { idempotencyKey: 'retention-open', subject: 'Open private subject', body: 'Open private message' })).conversation
+  const foreign = (await createConversation(otherProject, { externalId: 'independent-retention' }, { idempotencyKey: 'foreign-retention', subject: 'Foreign old subject', body: 'Foreign old message' })).conversation
+  const file = await upload(affectedProject, retained.id, new File(['private attachment contents'], 'private.txt', { type: 'text/plain' }), 'retention-file')
+  const old = new Date(Date.now() - 100 * 86400000).toISOString()
+  for (const thread of [retained, held, foreign]) await query("UPDATE support_conversations SET status = 'closed', updated_at = ? WHERE id = ?", [old, thread.id])
+  await query('UPDATE support_conversations SET updated_at = ? WHERE id = ?', [old, open.id])
+  check((await request(workspacePath + '/retention', 'PUT', { days: 1, enabled: true }, owner)).status === 422, 'retention refuses unsafe short window')
+  check((await request(workspacePath + '/retention', 'PUT', { days: 30, enabled: true }, outsider)).status === 403, 'retention configuration requires workspace administrator')
+  check((await request(workspacePath + '/retention', 'PUT', { days: 30, enabled: true }, owner)).status === 200, 'native opt-in retention policy configured')
+  check((await request(workspacePath + `/retention/holds/${held.id}`, 'PUT', { active: true, reason: 'Customer legal hold' }, owner)).status === 200, 'workspace legal hold set')
+  check((await request(workspacePath + `/retention/holds/${foreign.id}`, 'PUT', { active: true, reason: 'Invalid foreign hold' }, owner)).status === 404, 'retention hold cannot cross workspace')
+  const preview = await request(workspacePath + '/retention/preview', 'GET', undefined, owner)
+  check(preview.status === 200 && preview.data.conversations.length === 1 && String(preview.data.conversations[0].id) === retained.id, 'retention dry-run excludes open, held and foreign threads')
+  const applied = await request(workspacePath + '/retention/run', 'POST', {}, owner)
+  check(applied.status === 200 && applied.data.processed === 1, `retention applies through actual HTTP ${JSON.stringify(applied.data)}`)
+  check((await one('SELECT body FROM support_messages WHERE conversation_id = ?', [retained.id]))?.body === retentionMarker, 'retention redacts eligible message content')
+  check((await one('SELECT body FROM support_messages WHERE conversation_id = ?', [held.id]))?.body === 'Held private message', 'legal hold preserves closed thread content')
+  check((await one('SELECT body FROM support_messages WHERE conversation_id = ?', [open.id]))?.body === 'Open private message', 'retention preserves open thread content')
+  check((await one('SELECT body FROM support_messages WHERE conversation_id = ?', [foreign.id]))?.body === 'Foreign old message', 'retention preserves another workspace content')
+  const attachment = await one('SELECT * FROM support_attachments WHERE id = ?', [file.attachment.id])
+  check(attachment?.status === 'deleted' && !await Storage.disk(String(attachment.storage_disk)).fileExists(String(attachment.storage_key)), 'retention verifies native attachment deletion')
+  check(Number((await one('SELECT storage_bytes FROM support_workspaces WHERE id = ?', [workspace.id]))?.storage_bytes) === 0, 'retention releases attachment byte accounting exactly')
+  const replay = await createConversation(affectedProject, { externalId: 'retention-customer' }, { idempotencyKey: 'retention-one', subject: 'Old private subject', body: 'Old private message' })
+  check(replay.conversation.subject === retentionMarker, 'idempotent replay does not recover retained conversation subject')
+  check((await request(workspacePath + '/retention/run', 'POST', {}, owner)).data.processed === 0, 'retention retry is idempotent')
   process.env.SUPPORT_ENTERPRISE_LICENSE = license(workspace.public_id, Date.now() - 1000)
   check(inspectLicense(workspace.public_id).status === 'expired', 'expiry enforced')
   check((await request(workspacePath + '/scim-tokens', 'POST', {}, owner)).status === 402, 'expired license blocks new enterprise capability')
@@ -141,6 +182,10 @@ try {
   check((await request(`/_enterprise/providers/${idp.public_id}/callback?code=test&state=${revokedLogin.state}`, 'GET', undefined, undefined, revokedLogin.cookie)).status === 403, 'revoked directory identity cannot sign in again through OIDC')
   check((await request(workspacePath + '/audit', 'GET', undefined, owner)).status === 200, 'SCIM does not revoke owner credential')
   check((await request(scimPath + `/Users/${provisioned.data.id}`, 'PATCH', { Operations: [{ op: 'replace', path: 'active', value: true }] }, scimToken)).status === 402, 'expired license blocks reactivation')
+  check((await request(scimPath + `/Groups/${group.data.id}`, 'DELETE', undefined, scimToken)).status === 204, 'directory group deletion remains available after expiry')
+  check((await request(scimPath + `/Groups/${group.data.id}`, 'GET', undefined, scimToken)).status === 404, 'deleted SCIM group cannot be read')
+  check((await request(scimPath + `/Users/${provisioned.data.id}`, 'DELETE', undefined, scimToken)).status === 204, 'SCIM user DELETE deprovisions after expiry')
+  check((await request(scimPath + `/Users/${provisioned.data.id}`, 'GET', undefined, scimToken)).status === 404, 'deleted SCIM user cannot be read')
   check((await request(workspacePath + `/scim-tokens/${issued.data.id}`, 'DELETE', undefined, owner)).status === 200, 'token revocation allowed after expiry')
   check((await request(scimPath + '/Users', 'GET', undefined, scimToken)).status === 401, 'revoked SCIM token unusable')
   check((await request(`/enterprise/providers/${idp.public_id}/saml/acs`, 'POST', { SAMLResponse: 'unsigned' })).status === 503, 'SAML explicitly unavailable')

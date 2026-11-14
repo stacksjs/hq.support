@@ -79,7 +79,7 @@ export async function scimPrincipal(workspaceId: number, token: string) {
   return row
 }
 export async function scimIdentity(workspaceId: number, providerId: unknown, reference: unknown) {
-  const row = await one('SELECT i.*, m.email, m.role, m.status, m.user_id AS membership_user_id FROM support_enterprise_identities i JOIN support_memberships m ON m.id = i.membership_id AND m.workspace_id = i.workspace_id WHERE i.id = ? AND i.workspace_id = ? AND i.provider_id = ?', [identifier(reference), workspaceId, providerId])
+  const row = await one('SELECT i.*, m.email, m.role, m.status, m.user_id AS membership_user_id FROM support_enterprise_identities i JOIN support_memberships m ON m.id = i.membership_id AND m.workspace_id = i.workspace_id WHERE i.id = ? AND i.workspace_id = ? AND i.provider_id = ? AND i.deleted_at = 0', [identifier(reference), workspaceId, providerId])
   if (!row) fail(404, 'not_found', 'Provisioned user not found.')
   return row
 }
@@ -112,7 +112,7 @@ export async function provision(workspaceId: number, principal: Row, input: Row)
     return await scimIdentity(workspaceId, principal.provider_id, row.id)
   })
 }
-export async function setProvisionedActive(workspaceId: number, principal: Row, reference: unknown, active: boolean) {
+export async function setProvisionedActive(workspaceId: number, principal: Row, reference: unknown, active: boolean, deleted = false) {
   return await workspaceTransaction(workspaceId, async () => {
     const current = await one('SELECT id FROM support_enterprise_scim_tokens WHERE id = ? AND workspace_id = ? AND revoked_at = 0 AND expires_at > ?', [principal.id, workspaceId, Date.now()])
     if (!current) fail(401, 'invalid_scim_token', 'Provisioning token is no longer valid.')
@@ -125,7 +125,8 @@ export async function setProvisionedActive(workspaceId: number, principal: Row, 
     // Every workspace API rechecks membership, so revocation stops this
     // workspace immediately without signing the human out elsewhere.
 
+    if (deleted) await query('UPDATE support_enterprise_identities SET deleted_at = ? WHERE id = ? AND workspace_id = ?', [Date.now(), row.id, workspaceId])
     await audit(workspaceId, null, active ? 'scim.user.reactivated' : 'scim.user.revoked', row.id)
-    return await scimIdentity(workspaceId, principal.provider_id, row.id)
+    return deleted ? row : await scimIdentity(workspaceId, principal.provider_id, row.id)
   })
 }

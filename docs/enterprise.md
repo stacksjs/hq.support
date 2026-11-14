@@ -1,8 +1,8 @@
 # Enterprise identity and licensing
 
 Status: source implementation with automated HTTP/database verification. This is
-not broad-launch acceptance. SCIM Groups, automatic IdP account creation,
-organization-wide SSO enforcement, directory role mapping, retention controls,
+not broad-launch acceptance. Automatic IdP account creation,
+organization-wide SSO enforcement, directory role mapping, comprehensive PII retention,
 external audit sinks and a signed-license issuance/renewal service are not shipped.
 
 ## License boundary
@@ -19,7 +19,7 @@ use needs a commercial agreement. An operator supplies:
 
 The payload has `version: 1`, `licenseId`, `installation`, `workspace` (the
 workspace public UUID), `issuedAt` and `expiresAt` (Unix milliseconds), and
-`features` from `oidc`, `scim`, `audit`. Private signing keys never belong in the
+`features` from `oidc`, `saml`, `scim`, `audit`, `retention`. Private signing keys never belong in the
 application. Persist the entitlement and installation identifier through the
 operator's secret/configuration service. The application does not issue licenses
 or call a license server. Rotate the trusted public key as an operator change.
@@ -121,8 +121,11 @@ Send `Authorization: Bearer scim_...`. Supported endpoints are
 `ServiceProviderConfig` and `Users` (GET list/detail, POST, PUT, PATCH and DELETE).
 Listing supports `userName eq "address@example.com"`, `startIndex` and `count`
 with a 100-item maximum. PATCH accepts one replacement of boolean `active`.
-PUT preserves immutable `userName`/`externalId` and updates `active`. Other patch
-paths, filters, bulk, password changes, sorting, ETags and Groups are unsupported.
+PUT preserves immutable `userName`/`externalId` and updates `active`. DELETE
+deactivates and tombstones the resource so subsequent GET/list cannot return it.
+Other Users patch paths, filters, bulk, password changes, sorting and ETags are
+unsupported. Re-provisioning an address with a tombstoned membership currently
+requires an operator-reviewed restoration; automatic restoration is not shipped.
 
 Provisioning creates an agent invitation, not a new global auth account. Native
 registration and invitation acceptance are required before linking SSO. Directory
@@ -140,6 +143,58 @@ refused. Token revocation and provisioning serialize on the workspace row. The
 application does not delete customer contacts, conversations or exports when a
 human agent is deactivated.
 
+## SCIM Groups
+
+`Groups` supports GET list/detail, POST, PUT, PATCH and DELETE under the same
+workspace/provider-bound SCIM base URL. List pagination uses `startIndex`/`count`
+and supports `displayName eq "Support Team"`. POST/PUT accept `displayName`,
+optional immutable `externalId`, and up to 100 `members: [{ "value": "user-id" }]`.
+Every member must be an undeleted SCIM User resource of the same provider and
+workspace. PATCH replaces `displayName` or adds/removes/replaces `members`,
+including `members[value eq "123"]` removal. Unsupported paths fail explicitly.
+Deleting a group makes subsequent reads return 404 and remains possible after
+license expiry. Deleted user tombstones do not appear in group responses.
+
+Directory groups are synchronized records for directory visibility. Group names,
+IdP role claims and membership changes never assign native owner/admin roles or
+change workspace access. Automatic routing-team/RBAC mapping is not included.
+
+## Basic closed-conversation content retention
+
+Owners/admins configure `PUT .../enterprise/retention` with
+`{ "days": 30, "enabled": true }`. The window is 30 to 3650 days, disabled until
+explicitly enabled, and enabling/applying requires the `retention` entitlement.
+GET on that path reads the policy. GET `/retention/preview` returns at most 100
+eligible IDs without deleting anything; POST `/retention/run` processes up to 25
+threads. PUT `/retention/holds/{conversationId}` with `{ "active": true,
+"reason": "..." }` protects a conversation. Hold placement and disabling the
+policy stay available after entitlement expiry; expired licenses stop deletion.
+
+A thread must be closed and inactive for the complete window. Open/recent
+threads, legal holds, active AI work, and unfinished attachment writes are
+excluded. Each run redacts message body, conversation subject, associated ticket
+text, AI answer cache and matching conversation/reply idempotency response copies.
+It preserves records and billing/delivery identifiers. Native storage deletion
+verifies attachment objects are gone before releasing their exact byte charge.
+The job can retry without charging twice or resurrecting an old idempotent reply.
+Workspace row locking serializes policy/hold/provisioning changes and attachment
+accounting. Per-thread row locking protects a concurrent reopen.
+
+`ApplyEnterpriseRetention` is an auto-discovered native Job with hourly rate,
+five attempts and a `support-retention` queue. Production should explicitly
+schedule it through `.onQueue('support-retention').withoutOverlapping().onOneServer()`
+and run a native worker for that queue. Rate-only auto-discovery executes in the
+scheduler process. The sweep visits at most 20 policies and 25 eligible threads
+per workspace per run; monitor backlog and worker failures before raising limits.
+
+This is a basic content policy, not a complete personal-data deletion service.
+Contact identity/attributes, raw provider inbound payloads, event properties,
+workflow contexts, voice recordings/transcripts, attachment metadata, external
+provider copies and backups are outside this policy and require separate
+retention/deletion controls before claiming comprehensive PII erasure. Legal holds
+here govern only the content classes managed by this policy. S3 lifecycle and
+backup retention remain operator infrastructure responsibilities.
+
 ## Audit and verification
 
 Enterprise provider configuration, identity linking/sign-in, provisioning token
@@ -147,14 +202,14 @@ issue/revoke and directory user changes append to a workspace-owned audit table.
 Owners/admins export `GET /api/support/workspaces/{workspace}/enterprise/audit`
 with an optional numeric `cursor`; pages hold at most 100 events. This is an
 Enterprise identity audit trail, not a comprehensive immutable audit record of
-all core product mutations. No cryptographic log sealing, retention scheduler or
-external SIEM sink is included.
+all core product mutations. No cryptographic log sealing or external SIEM sink is included.
 
 `tests/feature/enterprise.test.ts` runs actual native HTTP registration/login,
 generated model migrations and real disposable SQLite/PostgreSQL. Only the IdP
 HTTP boundary is injected. It exercises signed Ed25519 workspace entitlement,
 SCIM tenant isolation, native invitations, OIDC signature/audience checks,
-one-use browser binding, native session issuance and workspace-scoped revocation and expiry recovery.
+one-use browser binding, native session issuance, workspace-scoped revocation, directory groups, legal holds,
+native attachment retention and expiry recovery.
 The auth package also has signed XML verification tests and `enterprise-oidc.test.ts` covering issuer, audience,
 nonce, expiry, unsigned tokens, callback binding and S256 PKCE. Provider production
 configuration and real third-party conformance testing remain deployment gates.

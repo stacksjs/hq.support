@@ -7,9 +7,11 @@ import { insert, one, query, workspaceTransaction } from '../app/Support/databas
 import { SupportError, fail, identifier } from '../app/Support/errors'
 import { member, object, workspace } from '../app/Support/service'
 import { inspectLicense, requireEnterprise } from './license'
+import { applyRetention, configureRetention, previewRetention, retentionHold, retentionPolicy } from './retention'
+import { directoryGroup, groupResource, writeGroup } from './groups'
 import { audit, configureProvider, issueScimToken, oidcConfig, samlConfig, provider, provision, revokeScimToken, scimIdentity, scimPrincipal, scimResource, setProvisionedActive } from './identity'
 
-export type EnterpriseOperation = 'status' | 'configure' | 'token.issue' | 'token.revoke' | 'audit' | 'oidc.start' | 'oidc.link' | 'oidc.callback' | 'scim.config' | 'scim.list' | 'scim.get' | 'scim.create' | 'scim.replace' | 'scim.patch' | 'scim.delete' | 'saml.start' | 'saml.link' | 'saml.callback'
+export type EnterpriseOperation = 'retention.get' | 'retention.configure' | 'retention.preview' | 'retention.run' | 'retention.hold' | 'status' | 'configure' | 'token.issue' | 'token.revoke' | 'audit' | 'oidc.start' | 'oidc.link' | 'oidc.callback' | 'scim.config' | 'scim.list' | 'scim.get' | 'scim.create' | 'scim.replace' | 'scim.patch' | 'scim.delete' | 'scim.groups.list' | 'scim.groups.get' | 'scim.groups.create' | 'scim.groups.replace' | 'scim.groups.patch' | 'scim.groups.delete' | 'saml.start' | 'saml.link' | 'saml.callback'
 const json = (body: unknown, status = 200, scim = false) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', ...(scim ? { 'Content-Type': 'application/scim+json' } : {}) } })
 async function account(request: RequestInstance) {
   const user = await request.user()
@@ -128,6 +130,22 @@ export async function enterpriseHttp(request: RequestInstance, operation: Enterp
     if (scim) {
       const token = /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') ?? '')?.[1] ?? ''
       const principal = await scimPrincipal(workspaceId, token)
+      if (operation.startsWith('scim.groups.')) {
+        if (operation === 'scim.groups.list') {
+          const params = new URL(request.url).searchParams, filter = params.get('filter'), match = filter ? /^displayName eq "([^"\\]+)"$/.exec(filter) : null
+          if (filter && !match) fail(400, 'invalidFilter', 'Only displayName eq filters are supported.')
+          const start = Number(params.get('startIndex') || 1), count = Math.min(100, Number(params.get('count') ?? 100))
+          if (!Number.isSafeInteger(start) || start < 1 || !Number.isSafeInteger(count) || count < 0) fail(400, 'invalidValue', 'Invalid pagination values.')
+          const where = 'workspace_id = ? AND provider_id = ?' + (match ? ' AND display_name = ?' : ''), values = [workspaceId, principal.provider_id, ...(match ? [match[1]] : [])]
+          const total = Number((await one(`SELECT COUNT(*) AS total FROM support_enterprise_groups WHERE ${where}`, values))?.total)
+          const rows = await query(`SELECT * FROM support_enterprise_groups WHERE ${where} ORDER BY id LIMIT ? OFFSET ?`, [...values, count, start - 1])
+          return json({ schemas: ['urn:ietf:params:scim:api:messages:2.0:ListResponse'], totalResults: total, startIndex: start, itemsPerPage: rows.length, Resources: await Promise.all(rows.map(groupResource)) }, 200, true)
+        }
+        if (operation === 'scim.groups.get') return json(await groupResource(await directoryGroup(workspaceId, principal.provider_id, request.getParam('id'))), 200, true)
+        const action = operation.split('.').at(-1) as 'create' | 'replace' | 'patch' | 'delete'
+        const row = await writeGroup(workspaceId, principal, action, input, request.getParam('id'))
+        return row ? json(await groupResource(row), action === 'create' ? 201 : 200, true) : new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } })
+      }
       if (operation === 'scim.config') return json({ schemas: ['urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig'], patch: { supported: true }, bulk: { supported: false, maxOperations: 0, maxPayloadSize: 0 }, filter: { supported: true, maxResults: 100 }, changePassword: { supported: false }, sort: { supported: false }, etag: { supported: false }, authenticationSchemes: [{ type: 'oauthbearertoken', name: 'Workspace bearer token', description: 'A revocable workspace provisioning token', primary: true }] }, 200, true)
       if (operation === 'scim.list') {
         const params = new URL(request.url).searchParams, filter = params.get('filter')
@@ -135,7 +153,7 @@ export async function enterpriseHttp(request: RequestInstance, operation: Enterp
         if (filter && !match) fail(400, 'invalidFilter', 'Only userName eq filters are supported.')
         const start = Math.max(1, Number(params.get('startIndex') || 1)), count = Math.min(100, Math.max(0, Number(params.get('count') ?? 100)))
         if (!Number.isSafeInteger(start) || !Number.isSafeInteger(count)) fail(400, 'invalidValue', 'Invalid pagination values.')
-        const where = 'i.workspace_id = ? AND i.provider_id = ?' + (match ? ' AND m.email = ?' : ''), values = [workspaceId, principal.provider_id, ...(match ? [match[1]!.toLowerCase()] : [])]
+        const where = 'i.workspace_id = ? AND i.provider_id = ? AND i.deleted_at = 0' + (match ? ' AND m.email = ?' : ''), values = [workspaceId, principal.provider_id, ...(match ? [match[1]!.toLowerCase()] : [])]
         const total = Number((await one(`SELECT COUNT(*) AS total FROM support_enterprise_identities i JOIN support_memberships m ON m.id = i.membership_id AND m.workspace_id = i.workspace_id WHERE ${where}`, values))?.total)
         const rows = await query(`SELECT i.*, m.email, m.status FROM support_enterprise_identities i JOIN support_memberships m ON m.id = i.membership_id AND m.workspace_id = i.workspace_id WHERE ${where} ORDER BY i.id LIMIT ? OFFSET ?`, [...values, count, start - 1])
         return json({ schemas: ['urn:ietf:params:scim:api:messages:2.0:ListResponse'], totalResults: total, startIndex: start, itemsPerPage: rows.length, Resources: rows.map(scimResource) }, 200, true)
@@ -148,11 +166,16 @@ export async function enterpriseHttp(request: RequestInstance, operation: Enterp
         const row = await scimIdentity(workspaceId, principal.provider_id, request.getParam('id'))
         if (input.userName !== row.email || (input.externalId !== undefined && input.externalId !== row.external_id)) fail(400, 'mutability', 'Renaming provisioned identities is not supported.')
       }
-      const updated = await setProvisionedActive(workspaceId, principal, request.getParam('id'), active)
+      const updated = await setProvisionedActive(workspaceId, principal, request.getParam('id'), active, operation === 'scim.delete')
       return operation === 'scim.delete' ? new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } }) : json(scimResource(updated), 200, true)
     }
     const user = await account(request)
     await member(user.id, workspaceId, ['owner', 'admin'])
+    if (operation === 'retention.get') return json({ policy: await retentionPolicy(workspaceId) })
+    if (operation === 'retention.configure') return json({ policy: await configureRetention(workspaceId, input, user.id) })
+    if (operation === 'retention.preview') return json(await previewRetention(workspaceId))
+    if (operation === 'retention.hold') return json(await retentionHold(workspaceId, request.getParam('id'), input, user.id))
+    if (operation === 'retention.run') return json(await applyRetention(workspaceId, user.id))
     if (operation === 'status') return json({ license: inspectLicense(String((await workspace(workspaceId)).public_id)), provider: await one('SELECT public_id, protocol, issuer, client_id, enabled FROM support_enterprise_providers WHERE workspace_id = ?', [workspaceId]), samlAvailable: true })
     if (operation === 'configure') return json({ provider: await configureProvider(workspaceId, input, user.id) }, 201)
     if (operation === 'token.issue') return json(await issueScimToken(workspaceId, user.id), 201)

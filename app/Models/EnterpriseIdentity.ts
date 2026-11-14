@@ -11,6 +11,7 @@ export default defineModel({
     { name: 'support_enterprise_subject', columns: ['provider_id', 'subject'], unique: true },
   ],
   attributes: {
+    deletedAt: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
     workspaceId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     providerId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     membershipId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
