@@ -5,7 +5,7 @@
 interface Message { id: string, body: string, author_type: string }
 interface CsatOffer { question: string, revision: number }
 interface CsatAnswer { id: string, score: number, comment: string, question: string, revision: number, createdAt: string }
-interface CsatStatus { available?: boolean, reason?: string, survey?: CsatOffer, response?: CsatAnswer }
+type CsatStatus = { available?: boolean, reason?: string, survey?: CsatOffer, response?: CsatAnswer }
 interface CsatPayload { score: number, comment: string, revision: number }
 interface ComponentState {
   csat: CsatStatus
