@@ -141,6 +141,7 @@ export async function createOutboundCall(project: Row, input: Row, actorId: numb
     await workspaceTransaction(Number(row.workspace_id), async () => {
       await query("UPDATE support_phone_calls SET provider_state = ?, last_error = ? WHERE id = ? AND workspace_id = ? AND provider_state = 'pending'", [rejected ? 'rejected' : 'uncertain', rejected ? 'provider_rejected' : 'write_uncertain', row.id, row.workspace_id])
       if (rejected) {
+        await query("UPDATE support_phone_calls SET status = 'failed', ended_at = ?, updated_at = ? WHERE id = ? AND workspace_id = ? AND provider_state = 'rejected'", [Date.now(), new Date().toISOString(), row.id, row.workspace_id])
         await settleProviderWallet(Number(row.workspace_id), String(row.reservation_id), 0, `rejected:${row.public_id}`)
         await settleProviderWallet(Number(row.workspace_id), String(row.ai_reservation_id), 0, `rejected:${row.public_id}`)
       }

@@ -227,7 +227,8 @@ try {
   failure = 'rejected'
   const rejected = await request(path + '/calls', 'POST', { ...input, idempotencyKey: 'rejected-outbound', to: '+16135550102' }, owner)
   check(rejected.status === 503 && !JSON.stringify(rejected.data).includes('provider error body'), 'confirmed rejection remains safe and does not leak provider response')
-  const rejectedRow = await one("SELECT public_id FROM support_phone_calls WHERE workspace_id = ? AND operation_key = 'rejected-outbound'", [workspace.id])
+  const rejectedRow = await one("SELECT public_id, status, ended_at FROM support_phone_calls WHERE workspace_id = ? AND operation_key = 'rejected-outbound'", [workspace.id])
+  check(rejectedRow?.status === 'failed' && Number(rejectedRow.ended_at) > 0, 'confirmed rejection is terminal and does not appear as an active pending call')
   const rejectedReservations = await query('SELECT status, provider_cost_micros FROM support_wallet_reservations WHERE workspace_id = ? AND operation_key IN (?, ?)', [workspace.id, `phone:${rejectedRow!.public_id}`, `voice-ai:${rejectedRow!.public_id}`])
   check(rejectedReservations.length === 2 && rejectedReservations.every(row => row.status === 'released' && Number(row.provider_cost_micros) === 0), 'confirmed rejected call releases both prepaid holds with known zero cost')
   const handoffCreated = await request(path + '/calls', 'POST', { ...input, idempotencyKey: 'human-takeover', to: '+16135550103' }, owner)
