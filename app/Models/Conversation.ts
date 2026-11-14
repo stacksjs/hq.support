@@ -6,8 +6,11 @@ export default defineModel({
   table: 'support_conversations',
   traits: { useTimestamps: true },
   dashboard: { access: false },
-  indexes: [{ name: 'support_conversation_cursor', columns: ['project_id', 'id'] }, { name: 'support_conversation_capacity', columns: ['workspace_id', 'assignee_id', 'status'] }, { name: 'support_conversation_inbox', columns: ['project_id', 'inbox_id', 'status'] }],
+  indexes: [{ name: 'support_conversation_continuation', columns: ['workspace_id', 'project_id', 'continued_from_id'], unique: true }, { name: 'support_conversation_cursor', columns: ['project_id', 'id'] }, { name: 'support_conversation_capacity', columns: ['workspace_id', 'assignee_id', 'status'] }, { name: 'support_conversation_inbox', columns: ['project_id', 'inbox_id', 'status'] }],
   attributes: {
+    resolvedAt: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
+    continuedFromId: { foreignKey: false, type: 'bigint', fillable: true, nullable: true, validation: { rule: schema.number().integer() } },
+    continuationId: { foreignKey: false, type: 'bigint', fillable: true, nullable: true, validation: { rule: schema.number().integer() } },
     teamId: { foreignKey: false, type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
     inboxId: { foreignKey: false, type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
     routingReason: { fillable: true, required: true, default: '', validation: { rule: schema.string() } },
