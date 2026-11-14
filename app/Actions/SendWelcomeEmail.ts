@@ -51,18 +51,22 @@ export default new Action({
     // every new app, so a name written here is the name every app would send.
     const appName = config.app.name || 'our app'
 
-    await mail.send({
+    const result = await mail.send({
       to: user.to,
       subject: `Welcome to ${appName}!`,
       html,
       text,
     })
 
-    log.info(`[action] Welcome email sent to ${user.to}`)
+    if (!result.success) {
+      log.warn('[action] Welcome email was not accepted by the configured provider')
+      return { success: false, message: 'Welcome email was not accepted by the configured provider.' }
+    }
+    log.info('[action] Welcome email accepted by the configured provider')
 
     return {
       success: true,
-      message: `Welcome email sent to ${user.to}`,
+      message: 'Welcome email accepted by the configured provider.',
     }
   },
 })
