@@ -5,6 +5,11 @@
   "type": "module",
   "description": "Commercial identity and governance modules for HQ.support.",
   "license": "SEE LICENSE IN LICENSE.txt",
+  "dependencies": {
+    "@stacksjs/auth": "^0.75.579",
+    "@stacksjs/socials": "^0.75.579",
+    "@stacksjs/types": "^0.75.579"
+  },
   "files": [
     "*.ts",
     "LICENSE.txt",
