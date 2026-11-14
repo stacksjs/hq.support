@@ -1,3 +1,4 @@
+import { deliveryChannelThread } from './channel-history'
 import type { Row } from './database'
 import { createHash } from 'node:crypto'
 import { limitsFor } from './limits'
@@ -55,7 +56,7 @@ export async function providerMediaResponse(deliveryId: string, attachmentId: un
   const payload = object(JSON.parse(String(delivery.payload)))
   if (!Array.isArray(payload.attachmentIds) || !payload.attachmentIds.map(String).includes(String(id))) fail(404, 'provider_media_unavailable', 'This media does not belong to the authorized operation.')
   const project = (await one('SELECT * FROM support_projects WHERE id = ? AND workspace_id = ?', [delivery.project_id, delivery.workspace_id]))!
-  const thread = await one('SELECT * FROM support_channel_threads WHERE id = ? AND project_id = ?', [delivery.thread_id, project.id])
+  const thread = await deliveryChannelThread(project, delivery)
   if (!thread) fail(404, 'provider_media_unavailable', 'The media conversation is unavailable.')
   await validateOutboundMedia(project, thread.conversation_id, String(payload.provider), payload)
   const row = await attachment(project, id), bytes = await storedBytes(row)

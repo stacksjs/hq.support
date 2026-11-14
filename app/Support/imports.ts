@@ -230,8 +230,17 @@ async function importConversation(project: Row, source: Row, format: IntercomBun
   if (previous && !row) fail(409, 'import_target_missing', 'Mapped source conversation was removed. Review before recreating it.')
   if (row && Number(row.contact_id) !== Number(targetContact.id)) fail(409, 'source_contact_changed', 'Source contact ownership changed. Existing native ownership was preserved.')
   const newConversation = !row
+  const statisticsClosed = object(source.statistics).last_close_at
+  if (source.closed_at != null && statisticsClosed != null && Number(source.closed_at) !== Number(statisticsClosed)) fail(422, 'invalid_source_timestamp', 'Export resolution timestamps disagree; original source requires review.')
+  const closed = source.closed_at ?? statisticsClosed
+  let resolvedAt = 0
+  if (state === 'closed' && closed != null) {
+    if (typeof closed !== 'number' && !(typeof closed === 'string' && /^\d+$/.test(closed))) fail(422, 'invalid_source_timestamp', 'closed_at must be a UTC Unix timestamp in seconds.')
+    resolvedAt = new Date(timestamp(closed, 'closed_at')).getTime()
+    if (resolvedAt < new Date(createdAt).getTime() || resolvedAt > new Date(updatedAt).getTime()) fail(422, 'invalid_source_timestamp', 'Resolution time must belong to the exported conversation history.')
+  }
   if (!row) {
-    row = await insert('support_conversations', { workspace_id: project.workspace_id, project_id: project.id, contact_id: targetContact.id, subject: text(source.title || initial.subject || `Imported conversation ${id}`, 'subject', 200), status: state, unread_count: 0, channel: 'intercom-import' })
+    row = await insert('support_conversations', { workspace_id: project.workspace_id, project_id: project.id, contact_id: targetContact.id, subject: text(source.title || initial.subject || `Imported conversation ${id}`, 'subject', 200), status: state, resolved_at: resolvedAt, unread_count: 0, channel: 'intercom-import' })
     await query('UPDATE support_conversations SET created_at = ?, updated_at = ? WHERE id = ?', [createdAt, updatedAt, row.id])
   }
   let appended = await importMessage(project, row, `${id}:source:${initial.id == null ? 'root' : external(initial.id)}`, initial, format, source.created_at, 'public') ? 1 : 0

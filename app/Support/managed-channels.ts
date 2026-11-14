@@ -1,3 +1,4 @@
+import { bindChannelConversation, conversationChannelThread, deliveryChannelThread } from './channel-history'
 import { storeJob } from '@stacksjs/queue/utils'
 import type { ChannelDependencies, ChannelSendOutcome } from './channel-providers'
 import type { Row } from './database'
@@ -8,7 +9,7 @@ import { ingestProviderMedia, outboundMediaUrls, providerMediaSources, validateO
 import { managedCostFromMicros, reserveWallet, settleProviderWallet, settleWallet } from './billing'
 import { insert, one, query, workspaceTransaction } from './database'
 import { fail, identifier, text } from './errors'
-import { contact, conversation, createConversation, digest, idempotent, member, object, reply, secret } from './service'
+import { contact, conversation, createConversation, digest, idempotent, member, messageView, object, reply, secret } from './service'
 import { processInbound, receiveInbound } from './delivery'
 
 export function deliveryView(row: Row) {
@@ -39,18 +40,22 @@ function cleanPayload(provider: string, input: Row): Row {
 /** The normal inbox reply path calls this for a channel-backed conversation. */
 export async function createChannelReply(project: Row, conversationId: unknown, input: Row, userId: number, dependencies: ChannelDependencies = {}) {
   await member(userId, Number(project.workspace_id))
-  const thread = await one('SELECT * FROM support_channel_threads WHERE project_id = ? AND conversation_id = ?', [project.id, identifier(conversationId)])
+  const thread = await conversationChannelThread(project, conversationId)
   if (!thread || input.visibility === 'internal') return await reply(project, conversationId, input, { userId })
   if (input.visibility && input.visibility !== 'public') fail(422, 'invalid_visibility', 'Channel replies must be public.')
   const channel = await requireReadyChannel(project, thread.channel_id), config = await channelConfig(channel), provider = textProvider(String(channel.provider))
   const key = text(input.idempotencyKey, 'idempotencyKey', 200), payload = cleanPayload(String(channel.provider), input)
-  const fingerprint = digest(JSON.stringify({ channel: channel.id, thread: thread.id, payload })), configurationHash = digest(String(channel.configuration))
-  const previous = await one('SELECT * FROM support_channel_deliveries WHERE project_id = ? AND operation_key = ?', [project.id, key])
-  if (previous) {
-    if (previous.request_hash !== fingerprint) fail(409, 'idempotency_conflict', 'Channel operation input changed.')
-    const message = await one('SELECT * FROM support_messages WHERE id = ? AND project_id = ?', [previous.message_id, project.id])
-    return { message: { id: String(message!.id), conversation_id: String(conversationId), body: message!.body, visibility: 'public', delivery_status: message!.delivery_status }, delivery: deliveryView(previous) }
+  const selectedConversation = String(identifier(conversationId))
+  const legacyFingerprint = digest(JSON.stringify({ channel: channel.id, thread: thread.id, payload }))
+  const fingerprint = digest(JSON.stringify({ channel: channel.id, thread: thread.id, conversation: selectedConversation, payload })), configurationHash = digest(String(channel.configuration))
+  async function replayDelivery(delivery: Row) {
+    const message = await one('SELECT * FROM support_messages WHERE id = ? AND project_id = ? AND workspace_id = ?', [delivery.message_id, project.id, project.workspace_id])
+    // Legacy hashes omitted the selected request. Its immutable message must still match.
+    if (!message || String(message.conversation_id) !== selectedConversation || ![fingerprint, legacyFingerprint].includes(String(delivery.request_hash))) fail(409, 'idempotency_conflict', 'Channel operation input or conversation changed.')
+    return { message: messageView(message), delivery: deliveryView(delivery) }
   }
+  const previous = await one('SELECT * FROM support_channel_deliveries WHERE project_id = ? AND operation_key = ?', [project.id, key])
+  if (previous) return await replayDelivery(previous)
   await validateOutboundMedia(project, conversationId, String(channel.provider), payload)
   await provider.validate?.(channel, config, thread, payload, dependencies)
   const providerCeiling = provider.estimate(config, payload), maximumCents = managedCostFromMicros(providerCeiling)
@@ -59,10 +64,7 @@ export async function createChannelReply(project: Row, conversationId: unknown, 
     const current = await requireReadyChannel(project, channel.id)
     if (digest(String(current.configuration)) !== configurationHash) fail(409, 'channel_changed', 'Connection changed while preparing the reply.')
     const existing = await one('SELECT * FROM support_channel_deliveries WHERE project_id = ? AND operation_key = ?', [project.id, key])
-    if (existing) {
-      if (existing.request_hash !== fingerprint) fail(409, 'idempotency_conflict', 'Channel operation input changed.')
-      return { delivery: deliveryView(existing), message: { id: String(existing.message_id), conversation_id: String(conversationId), body: payload.body, visibility: 'public' } }
-    }
+    if (existing) return await replayDelivery(existing)
     const publicId = crypto.randomUUID()
     const reservation = maximumCents ? await reserveWallet(Number(project.workspace_id), `channel:${publicId}`, maximumCents, String(channel.provider)) : undefined
     const result = await reply(project, conversationId, { body: payload.body, visibility: 'public', idempotencyKey: `channel:${publicId}` }, { userId, deferDelivery: true, mediaOnly: Boolean(Array.isArray(payload.attachmentIds) && payload.attachmentIds.length) })
@@ -84,7 +86,7 @@ async function writeOutcome(row: Row, outcome: ChannelSendOutcome) {
     const knownAcceptance = outcome.outcome === 'accepted' && outcome.messageId
     if (knownAcceptance) {
       const project = (await one('SELECT * FROM support_projects WHERE id = ? AND workspace_id = ?', [row.project_id, row.workspace_id]))!
-      const thread = (await one('SELECT conversation_id FROM support_channel_threads WHERE id = ? AND project_id = ?', [row.thread_id, row.project_id]))!
+      const thread = await deliveryChannelThread(project, current)
       const payload = object(JSON.parse(String(current.payload)))
       await shareAttachments(project, thread.conversation_id, payload.attachmentIds)
       await (await import('./ticket-sla')).recordTicketFirstResponse(project, thread.conversation_id)
@@ -119,7 +121,7 @@ export async function dispatchChannelDelivery(id: number, dependencies: ChannelD
     channel = await requireReadyChannel(project, row.channel_id)
     if (digest(String(channel.configuration)) !== row.configuration_hash) fail(409, 'channel_changed', 'Channel credentials changed before dispatch.')
     config = await channelConfig(channel)
-    thread = (await one('SELECT * FROM support_channel_threads WHERE id = ? AND project_id = ? AND channel_id = ?', [row.thread_id, project.id, channel.id]))!
+    thread = await deliveryChannelThread(project, row)
     if (!thread) fail(404, 'channel_thread_not_found', 'Channel thread no longer exists.')
     payload = object(JSON.parse(String(row.payload)))
     await validateOutboundMedia(project, thread.conversation_id, String(channel.provider), payload)
@@ -154,7 +156,7 @@ export async function reconcileChannelDelivery(project: Row, id: unknown, depend
   return await workspaceTransaction(Number(project.workspace_id), async () => {
     const current = await channelDelivery(project, id)
     if (['queued', 'sending', 'sent', 'delivered', 'read'].includes(receipt.status)) {
-      const thread = (await one('SELECT conversation_id FROM support_channel_threads WHERE id = ? AND project_id = ?', [current.thread_id, project.id]))!
+      const thread = await deliveryChannelThread(project, current)
       const payload = object(JSON.parse(String(current.payload)))
       await shareAttachments(project, thread.conversation_id, payload.attachmentIds)
       await (await import('./ticket-sla')).recordTicketFirstResponse(project, thread.conversation_id)
@@ -216,9 +218,16 @@ export async function applyChannelInbound(id: unknown, dependencies: ChannelDepe
       else {
         if (String(thread.contact_id) !== String(who.id)) fail(409, 'channel_thread_identity', 'Provider thread has a different customer identity; source event retained for review.')
         await conversation(project, thread.conversation_id, who)
-        messageId = (await reply(project, thread.conversation_id, input, { customer: who, mediaOnly })).message.id
-        await query('UPDATE support_channel_threads SET last_inbound_at = ?, updated_at = ? WHERE id = ?', [Math.max(Number(thread.last_inbound_at), Number(normalized.timestamp)), new Date().toISOString(), thread.id])
+        await bindChannelConversation(project, thread, thread.conversation_id)
+        const acceptedAt = record.created_at == null ? undefined : record.created_at instanceof Date ? record.created_at.getTime() : new Date(String(record.created_at)).getTime()
+        const response = await reply(project, thread.conversation_id, input, { customer: who, mediaOnly, acceptedAt })
+        messageId = response.message.id
+        const destination = response.message.conversation_id
+        await bindChannelConversation(project, thread, destination)
+        await query('UPDATE support_channel_threads SET conversation_id = ?, last_inbound_at = ?, updated_at = ? WHERE id = ?', [destination, Math.max(Number(thread.last_inbound_at), Number(normalized.timestamp)), new Date().toISOString(), thread.id])
+        thread = { ...thread, conversation_id: destination }
       }
+      await bindChannelConversation(project, thread, thread.conversation_id)
       if (Array.isArray(normalized.media) && normalized.media.length) await query("UPDATE support_messages SET delivery_status = 'ingesting' WHERE id = ?", [messageId])
       return { conversationId: thread.conversation_id, messageId }
     })

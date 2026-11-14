@@ -42,7 +42,8 @@ async function eligibility(project: Row, userId: number, teamId: number, convers
   return null
 }
 async function writeRouting(project: Row, before: Row, values: { assigneeId: number, inboxId: number, teamId: number, status: string }, actor: RoutingActor, reason: string) {
-  await query('UPDATE support_conversations SET assignee_id = ?, team_id = ?, inbox_id = ?, status = ?, routing_reason = ?, updated_at = ? WHERE id = ? AND project_id = ? AND workspace_id = ?', [values.assigneeId, values.teamId, values.inboxId, values.status, reason, timestamp(), before.id, project.id, project.workspace_id])
+  const resolvedAt = values.status === 'closed' ? before.status === 'closed' ? Number(before.resolved_at || 0) : Date.now() : 0
+  await query('UPDATE support_conversations SET assignee_id = ?, team_id = ?, inbox_id = ?, status = ?, resolved_at = ?, routing_reason = ?, updated_at = ? WHERE id = ? AND project_id = ? AND workspace_id = ?', [values.assigneeId, values.teamId, values.inboxId, values.status, resolvedAt, reason, timestamp(), before.id, project.id, project.workspace_id])
   const after = await conversation(project, before.id)
   await audit(project, before, after, actor, reason)
   return after
