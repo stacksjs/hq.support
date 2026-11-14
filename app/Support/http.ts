@@ -93,7 +93,7 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
     else if (operation === 'events' || operation === 'widget.events') body = await support.track(project, { ...data, ...(person ? { externalId: person.external_id } : {}) })
     else if (operation === 'conversations.create' || operation === 'widget.create') { body = await support.createConversation(project, data, data, person); status = 201 }
     else if (operation === 'inbox' || operation === 'conversations.list' || operation === 'widget.conversations') body = await support.conversations(project, person, new URL(request.url).searchParams.get('cursor'), operation === 'inbox' ? account?.id : undefined)
-    else if (operation === 'conversation.detail' || operation === 'widget.detail') body = await support.detail(project, params.id, person)
+    else if (operation === 'conversation.detail' || operation === 'widget.detail') body = await support.detail(project, params.id, person, new URL(request.url).searchParams.get('beforeMessage'))
     else if (operation === 'messages.create' || operation === 'agent.reply' || operation === 'widget.reply') { body = await support.reply(project, params.id, data, { customer: person, userId: account?.id }); status = 201 }
     else if (operation === 'conversation.update') body = await support.updateConversation(project, params.id, data)
     else if (operation === 'keys.create') { await support.member(account!.id, Number(project.workspace_id), ['owner', 'admin']); body = await support.issueKeys(project); status = 201 }

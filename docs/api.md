@@ -35,3 +35,5 @@ Agent read state is separate from a customer's message count: `POST /api/support
 Workflow automation and worker operation are documented in `docs/workflows.md`. Workspace invitations require a matching native account with verified email before acceptance; knowing an invitation ID is insufficient.
 
 Free qualification endpoints and the exact well-known proof document are documented in `docs/free-verification.md`. A successful public deployment challenge is required in addition to Buddy confirmation; ordinary project keys cannot self-select a hosted plan.
+
+Private resumable Intercom bundle upload, progress and pause/resume APIs are documented in `docs/intercom-import.md`. Full supplied message histories are stored and paginated; the importer does not resend historical support traffic or infer native accounts from email addresses. Conversation detail includes `messagesNextCursor`; request `beforeMessage` for older messages.

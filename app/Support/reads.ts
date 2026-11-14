@@ -4,7 +4,7 @@ import { identifier, fail } from './errors'
 import { conversation } from './service'
 
 export async function unreadCount(project: Row, conversationId: unknown, userId: number) {
-  return Number((await one("SELECT COUNT(*) AS count FROM support_messages WHERE project_id = ? AND conversation_id = ? AND author_type = 'customer' AND visibility = 'public' AND id > COALESCE((SELECT last_message_id FROM support_conversation_reads WHERE conversation_id = ? AND user_id = ?), 0)", [project.id, identifier(conversationId), identifier(conversationId), userId]))?.count ?? 0)
+  return Number((await one("SELECT COUNT(*) AS count FROM support_messages WHERE project_id = ? AND conversation_id = ? AND author_type = 'customer' AND visibility = 'public' AND delivery_status <> 'imported' AND id > COALESCE((SELECT last_message_id FROM support_conversation_reads WHERE conversation_id = ? AND user_id = ?), 0)", [project.id, identifier(conversationId), identifier(conversationId), userId]))?.count ?? 0)
 }
 export async function markRead(project: Row, conversationId: unknown, userId: number, lastMessageId: unknown) {
   return await workspaceTransaction(Number(project.workspace_id), async () => {

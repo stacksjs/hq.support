@@ -17,7 +17,11 @@ export async function workspace(id: number): Promise<Row> {
   return row
 }
 export async function entitled(id: number): Promise<Row> {
-  const row = await workspace(id)
+  let row = await workspace(id)
+  if (['starter', 'growth', 'enterprise'].includes(String(row.plan))) {
+    const subscription = await one('SELECT * FROM support_subscriptions WHERE workspace_id = ? ORDER BY id DESC LIMIT 1', [id])
+    if (subscription && (subscription.status !== 'active' || Number(subscription.current_period_end) <= Date.now())) row = { ...row, plan: row.stacks_verified && row.deployment_verified && Number(row.free_qualified_at) ? 'free' : 'trial' }
+  }
   if (row.plan === 'trial' && Number(row.trial_ends_at) <= Date.now()) fail(402, 'trial_expired', 'Choose a plan to start new conversations.')
   if (row.plan === 'free' && (!row.stacks_verified || !row.deployment_verified)) fail(403, 'verification_required', 'Verify your Stacks application and deployment first.')
   return row
@@ -150,15 +154,17 @@ export async function conversation(projectRow: Row, id: unknown, person?: Row): 
 }
 export async function conversations(projectRow: Row, person?: Row, cursor?: string | null, agentId?: number) {
   const before = cursor ? identifier(cursor) : Number.MAX_SAFE_INTEGER
-  const readProjection = agentId ? `, (SELECT COUNT(*) FROM support_messages m WHERE m.conversation_id = support_conversations.id AND m.project_id = support_conversations.project_id AND m.author_type = 'customer' AND m.visibility = 'public' AND m.id > COALESCE((SELECT last_message_id FROM support_conversation_reads r WHERE r.conversation_id = support_conversations.id AND r.user_id = ?), 0)) AS agent_unread_count` : ''
+  const readProjection = agentId ? `, (SELECT COUNT(*) FROM support_messages m WHERE m.conversation_id = support_conversations.id AND m.project_id = support_conversations.project_id AND m.author_type = 'customer' AND m.visibility = 'public' AND m.delivery_status <> 'imported' AND m.id > COALESCE((SELECT last_message_id FROM support_conversation_reads r WHERE r.conversation_id = support_conversations.id AND r.user_id = ?), 0)) AS agent_unread_count` : ''
   const rows = await query(`SELECT support_conversations.*${readProjection} FROM support_conversations WHERE project_id = ? AND id < ?${person ? ' AND contact_id = ?' : ''} ORDER BY id DESC LIMIT 51`, [...(agentId ? [agentId] : []), projectRow.id, before, ...(person ? [person.id] : [])])
   return { conversations: rows.slice(0, 50).map(summary), nextCursor: rows.length > 50 ? String(rows[49]!.id) : null }
 }
-export async function detail(projectRow: Row, id: unknown, person?: Row) {
+export async function detail(projectRow: Row, id: unknown, person?: Row, beforeMessage?: string | null) {
   const row = await conversation(projectRow, id, person)
-  const messages = await query(`SELECT * FROM support_messages WHERE project_id = ? AND conversation_id = ?${person ? " AND visibility = 'public'" : ''} ORDER BY id ASC LIMIT 500`, [projectRow.id, row.id])
+  const before = beforeMessage ? identifier(beforeMessage) : Number.MAX_SAFE_INTEGER
+  const page = await query(`SELECT * FROM support_messages WHERE project_id = ? AND conversation_id = ? AND id < ?${person ? " AND visibility = 'public'" : ''} ORDER BY id DESC LIMIT 501`, [projectRow.id, row.id, before])
+  const messages = page.slice(0, 500).reverse(), messagesNextCursor = page.length > 500 ? String(messages[0]!.id) : null
   const personRow = await one('SELECT * FROM support_contacts WHERE id = ? AND project_id = ?', [row.contact_id, projectRow.id])
-  return { conversation: summary(row), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.map(messageView) }
+  return { conversation: summary(row), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.map(messageView), messagesNextCursor }
 }
 export async function createConversation(projectRow: Row, identity: Row, input: Row, person?: Row, automation?: { workflowRunId: number, automationDepth: number }) {
   return await idempotent(projectRow, `conversation:${person?.id ?? identity.externalId}`, input.idempotencyKey, input, async () => {
