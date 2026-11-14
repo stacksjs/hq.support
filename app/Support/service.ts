@@ -191,7 +191,7 @@ export async function detail(projectRow: Row, id: unknown, person?: Row, beforeM
   return { attachments: attachments.map(file => ({ id: String(file.id), fileName: file.file_name, mimeType: file.mime_type, bytes: Number(file.bytes), status: file.status, visibility: file.visibility })), conversation: summary(row, !person), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.map(messageView), messagesNextCursor }
 }
 export async function createConversation(projectRow: Row, identity: Row, input: Row, person?: Row, automation?: { workflowRunId: number, automationDepth: number }, options?: { mediaOnly?: boolean, continuedFrom?: Row }) {
-  return await idempotent(projectRow, options?.continuedFrom ? `conversation:continuation:${options.continuedFrom.id}` : `conversation:${person?.id ?? identity.externalId}`, input.idempotencyKey, input, async () => {
+  return await idempotent(projectRow, options?.continuedFrom ? `conversation-continuation:${options.continuedFrom.id}` : `conversation:${person?.id ?? identity.externalId}`, input.idempotencyKey, input, async () => {
     const owner = await entitled(number(projectRow, 'workspace_id'))
     const who = person ?? await contact(projectRow, identity)
     await consume(number(projectRow, 'workspace_id'), 'conversations', limitsFor(owner.plan as Plan).conversationCeiling)

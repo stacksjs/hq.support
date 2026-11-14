@@ -152,6 +152,13 @@ export async function processEmailReceipt(id: unknown, dependencies: EmailDepend
       const current = await one('SELECT * FROM support_email_receipts WHERE id = ?', [row.id])
       if (!current || current.lease_token !== row.lease_token || Number(current.lease_until) <= Date.now()) fail(409, 'email_lease_changed', 'Email archive processing ownership changed.')
       const inbound = await retainChannelInbound(project, channel, String(row.ses_message_id), normalized, { receiptId: String(row.public_id), sourceHash: row.source_hash })
+      // Preserve the first verified server receipt time before the normalized row first commits.
+      // MIME/header/provider timestamps cannot backdate a customer admission.
+      if (!inbound.duplicate && current.created_at != null) {
+        const acceptedAt = current.created_at instanceof Date ? current.created_at.getTime() : new Date(String(current.created_at)).getTime()
+        if (!Number.isSafeInteger(acceptedAt) || acceptedAt < 0 || acceptedAt > Date.now()) fail(422, 'invalid_acceptance_time', 'The original server email acceptance time requires review.')
+        await query('UPDATE support_inbound SET created_at = ? WHERE id = ? AND workspace_id = ? AND project_id = ?', [new Date(acceptedAt).toISOString(), inbound.id, project.workspace_id, project.id])
+      }
       await query("UPDATE support_email_receipts SET status = 'processed', inbound_id = ?, lease_until = 0, last_error = '' WHERE id = ? AND lease_token = ?", [inbound.id, row.id, row.lease_token])
     })
     return { processed: true }

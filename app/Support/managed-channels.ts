@@ -9,7 +9,7 @@ import { ingestProviderMedia, outboundMediaUrls, providerMediaSources, validateO
 import { managedCostFromMicros, reserveWallet, settleProviderWallet, settleWallet } from './billing'
 import { insert, one, query, workspaceTransaction } from './database'
 import { fail, identifier, text } from './errors'
-import { contact, conversation, createConversation, digest, idempotent, member, object, reply, secret } from './service'
+import { contact, conversation, createConversation, digest, idempotent, member, messageView, object, reply, secret } from './service'
 import { processInbound, receiveInbound } from './delivery'
 
 export function deliveryView(row: Row) {
@@ -45,13 +45,17 @@ export async function createChannelReply(project: Row, conversationId: unknown, 
   if (input.visibility && input.visibility !== 'public') fail(422, 'invalid_visibility', 'Channel replies must be public.')
   const channel = await requireReadyChannel(project, thread.channel_id), config = await channelConfig(channel), provider = textProvider(String(channel.provider))
   const key = text(input.idempotencyKey, 'idempotencyKey', 200), payload = cleanPayload(String(channel.provider), input)
-  const fingerprint = digest(JSON.stringify({ channel: channel.id, thread: thread.id, payload })), configurationHash = digest(String(channel.configuration))
-  const previous = await one('SELECT * FROM support_channel_deliveries WHERE project_id = ? AND operation_key = ?', [project.id, key])
-  if (previous) {
-    if (previous.request_hash !== fingerprint) fail(409, 'idempotency_conflict', 'Channel operation input changed.')
-    const message = await one('SELECT * FROM support_messages WHERE id = ? AND project_id = ?', [previous.message_id, project.id])
-    return { message: { id: String(message!.id), conversation_id: String(conversationId), body: message!.body, visibility: 'public', delivery_status: message!.delivery_status }, delivery: deliveryView(previous) }
+  const selectedConversation = String(identifier(conversationId))
+  const legacyFingerprint = digest(JSON.stringify({ channel: channel.id, thread: thread.id, payload }))
+  const fingerprint = digest(JSON.stringify({ channel: channel.id, thread: thread.id, conversation: selectedConversation, payload })), configurationHash = digest(String(channel.configuration))
+  async function replayDelivery(delivery: Row) {
+    const message = await one('SELECT * FROM support_messages WHERE id = ? AND project_id = ? AND workspace_id = ?', [delivery.message_id, project.id, project.workspace_id])
+    // Legacy hashes omitted the selected request. Its immutable message must still match.
+    if (!message || String(message.conversation_id) !== selectedConversation || ![fingerprint, legacyFingerprint].includes(String(delivery.request_hash))) fail(409, 'idempotency_conflict', 'Channel operation input or conversation changed.')
+    return { message: messageView(message), delivery: deliveryView(delivery) }
   }
+  const previous = await one('SELECT * FROM support_channel_deliveries WHERE project_id = ? AND operation_key = ?', [project.id, key])
+  if (previous) return await replayDelivery(previous)
   await validateOutboundMedia(project, conversationId, String(channel.provider), payload)
   await provider.validate?.(channel, config, thread, payload, dependencies)
   const providerCeiling = provider.estimate(config, payload), maximumCents = managedCostFromMicros(providerCeiling)
@@ -60,10 +64,7 @@ export async function createChannelReply(project: Row, conversationId: unknown, 
     const current = await requireReadyChannel(project, channel.id)
     if (digest(String(current.configuration)) !== configurationHash) fail(409, 'channel_changed', 'Connection changed while preparing the reply.')
     const existing = await one('SELECT * FROM support_channel_deliveries WHERE project_id = ? AND operation_key = ?', [project.id, key])
-    if (existing) {
-      if (existing.request_hash !== fingerprint) fail(409, 'idempotency_conflict', 'Channel operation input changed.')
-      return { delivery: deliveryView(existing), message: { id: String(existing.message_id), conversation_id: String(conversationId), body: payload.body, visibility: 'public' } }
-    }
+    if (existing) return await replayDelivery(existing)
     const publicId = crypto.randomUUID()
     const reservation = maximumCents ? await reserveWallet(Number(project.workspace_id), `channel:${publicId}`, maximumCents, String(channel.provider)) : undefined
     const result = await reply(project, conversationId, { body: payload.body, visibility: 'public', idempotencyKey: `channel:${publicId}` }, { userId, deferDelivery: true, mediaOnly: Boolean(Array.isArray(payload.attachmentIds) && payload.attachmentIds.length) })

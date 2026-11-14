@@ -50,11 +50,11 @@ function redact(value: unknown): unknown {
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, ['body', 'answer', 'subject', 'description', 'title'].includes(key) && typeof item === 'string' ? retentionMarker : redact(item)]))
 }
 /** Reply URLs may name a predecessor. Only top-level committed receipt destinations own content. */
-async function redactReceipts(workspaceId: number, projectId: unknown, conversationId: unknown) {
+async function redactReceipts(workspaceId: number, projectId: unknown, conversationId: unknown, apply = true) {
   const highWater = Number((await one('SELECT MAX(id) AS id FROM support_idempotency WHERE workspace_id = ? AND project_id = ?', [workspaceId, projectId]))?.id || 0)
   let cursor = 0
   while (cursor < highWater) {
-    const page = await query('SELECT id, operation, response FROM support_idempotency WHERE workspace_id = ? AND project_id = ? AND id > ? AND id <= ? AND (operation LIKE ? OR operation LIKE ?) ORDER BY id ASC LIMIT 100', [workspaceId, projectId, cursor, highWater, 'reply:%', 'conversation:%'])
+    const page = await query('SELECT id, operation, response FROM support_idempotency WHERE workspace_id = ? AND project_id = ? AND id > ? AND id <= ? AND (operation LIKE ? OR operation LIKE ? OR operation LIKE ?) ORDER BY id ASC LIMIT 100', [workspaceId, projectId, cursor, highWater, 'reply:%', 'conversation:%', 'conversation-continuation:%'])
     if (!page.length) break
     for (const record of page) {
       let parsed: unknown
@@ -72,7 +72,7 @@ async function redactReceipts(workspaceId: number, projectId: unknown, conversat
         matches = destination === Number(conversationId)
       }
       else matches = String(record.operation).startsWith(`reply:${conversationId}:`)
-      if (matches) await query('UPDATE support_idempotency SET response = ? WHERE id = ? AND workspace_id = ? AND project_id = ?', [JSON.stringify(redact(parsed)), record.id, workspaceId, projectId])
+      if (apply && matches) await query('UPDATE support_idempotency SET response = ? WHERE id = ? AND workspace_id = ? AND project_id = ?', [JSON.stringify(redact(parsed)), record.id, workspaceId, projectId])
       cursor = Number(record.id)
     }
   }
@@ -85,6 +85,9 @@ export async function applyRetention(workspaceId: number, actorId: number | null
     if (!policy?.enabled) return { processed: 0, skipped: 0 }
     requireEnterprise(await workspace(workspaceId), 'retention')
     const rows = await candidates(workspaceId, Number(policy.days), 25, now)
+    // Validate every eligible project's bounded receipt pages before any physical file deletion.
+    // The workspace lock keeps these receipts unchanged until the SQL transaction finishes.
+    for (const projectId of new Set(rows.map(row => row.project_id))) await redactReceipts(workspaceId, projectId, 0, false)
     let processed = 0, skipped = 0
     for (const row of rows) {
       // Lock the thread against a concurrent reopen while its content is removed.
@@ -95,12 +98,12 @@ export async function applyRetention(workspaceId: number, actorId: number | null
       if (files.some(file => !['stored', 'deleting'].includes(String(file.status)) || Number(file.lease_until) > now)) { skipped++; continue }
       const project = await one('SELECT * FROM support_projects WHERE id = ? AND workspace_id = ?', [row.project_id, workspaceId])
       if (!project) fail(503, 'retention_inconsistent', 'Retention project ownership could not be verified.')
+      await redactReceipts(workspaceId, row.project_id, row.id)
       // Native removal verifies storage deletion and releases the exact byte charge.
       for (const file of files) await removeAttachment(project, file.id)
       await query('UPDATE support_messages SET body = ? WHERE workspace_id = ? AND conversation_id = ?', [retentionMarker, workspaceId, row.id])
       await query('UPDATE support_tickets SET title = ?, description = ? WHERE workspace_id = ? AND conversation_id = ?', [retentionMarker, retentionMarker, workspaceId, row.id])
       await query('UPDATE support_conversations SET subject = ? WHERE workspace_id = ? AND id = ?', [retentionMarker, workspaceId, row.id])
-      await redactReceipts(workspaceId, row.project_id, row.id)
       const ai = await query("SELECT id, response FROM support_ai_runs WHERE workspace_id = ? AND conversation_id = ? AND status != 'pending'", [workspaceId, row.id])
       for (const record of ai) if (record.response) await query('UPDATE support_ai_runs SET response = ? WHERE id = ? AND workspace_id = ?', [JSON.stringify(redact(JSON.parse(String(record.response)))), record.id, workspaceId])
       const calls = await query('SELECT id FROM support_phone_calls WHERE workspace_id = ? AND conversation_id = ?', [workspaceId, row.id])

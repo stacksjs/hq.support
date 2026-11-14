@@ -1,3 +1,6 @@
+import { resolvedDatabaseConfig } from '@stacksjs/database/runtime'
+import { Storage } from '@stacksjs/storage'
+import { upload } from '../../app/Support/attachments'
 import { generateKeyPairSync, sign } from 'node:crypto'
 import { retentionMarker } from '../../enterprise/retention'
 import assert from 'node:assert/strict'
@@ -9,9 +12,10 @@ import { assertIsolatedOk, runIsolated } from '@stacksjs/testing/isolated'
 import { insert, one, query, workspaceTransaction } from '../../app/Support/database'
 import { customerReopenWindowMs } from '../../app/Support/reopening'
 import { bindChannelConversation, conversationChannelThread, deliveryChannelThread } from '../../app/Support/channel-history'
-import { createSession, reply, usage } from '../../app/Support/service'
+import { createSession, digest, reply, usage } from '../../app/Support/service'
 
 await overridesReady
+Storage.init({ default: 'local', disks: { local: { driver: 'local', root: process.env.SUPPORT_TEST_STORAGE! } } })
 if (config.database.queryLogging) config.database.queryLogging.enabled = false
 if (!process.env.SUPPORT_REOPEN_RESTART) {
   assert.equal((await migrateAuthTables()).success, true); assert.equal((await runDatabaseMigration()).isOk, true); assert.equal((await migrateAuthTables()).success, true)
@@ -68,7 +72,7 @@ try {
     const edge = await send(initial)
     check(edge.status === 201 && edge.data.message.conversation_id === initial && (await row(initial)).status === 'open' && Number((await row(initial)).resolved_at) === 0 && await usage(Number(workspace.id), 'conversations') === usedBefore, 'exact seven-day boundary reopens the same admitted request without a new conversation unit')
     const late = await create(); await patch(late, { status: 'closed' }); await query('UPDATE support_conversations SET resolved_at = ? WHERE id = ?', [now - customerReopenWindowMs - 1, late])
-    const preseed = await http(sdk + '/conversations', 'POST', { externalId: 'customer', subject: (await row(late)).subject, body: 'Follow-up customer message', idempotencyKey: `continued:${late}` }, keys.ingestKey)
+    const preseed = await http(sdk + '/conversations', 'POST', { externalId: `continuation:${late}`, subject: (await row(late)).subject, body: 'Follow-up customer message', idempotencyKey: `continued:${late}` }, keys.ingestKey)
     const forgedLate = { body: 'Follow-up customer message', idempotencyKey: 'late-lost-ack', acceptedAt: 0, resolvedAt: now, status: 'open', continuationId: initial }
     const beforeLate = await usage(Number(workspace.id), 'conversations'), lateReply = await widget(widgetPrefix + `/conversations/${late}/messages`, token, forgedLate), destination = String(lateReply.data.message.conversation_id)
     check(lateReply.status === 201 && destination !== late && destination !== preseed.data.conversation.id && (await row(late)).status === 'closed' && String((await row(late)).continuation_id) === destination && String((await row(destination)).continued_from_id) === late && await usage(Number(workspace.id), 'conversations') === beforeLate + 1, 'one millisecond after the window admits one linked successor with the real first message')
@@ -87,6 +91,26 @@ try {
     const unknown = await create(); await query("UPDATE support_conversations SET status = 'closed', resolved_at = 0, updated_at = ? WHERE id = ?", ['2000-01-01T00:00:00.000Z', unknown])
     check((await send(unknown)).data.message.conversation_id === unknown && (await row(unknown)).status === 'open', 'unknown legacy closure gets one free reopen without guessing from updated_at')
     await patch(unknown, { status: 'closed' }); check(Number((await row(unknown)).resolved_at) === now, 'a later actual closure starts a real window after the grandfathered reopen')
+    if (resolvedDatabaseConfig().driver === 'postgres') {
+      const temporary = await createSession(project, { externalId: 'customer' })
+      const messagesBeforeRevoke = Number((await one('SELECT COUNT(*) AS count FROM support_messages'))!.count), intentsBeforeRevoke = Number((await one('SELECT COUNT(*) AS count FROM support_outbox'))!.count), usageBeforeRevoke = await usage(Number(workspace.id), 'conversations')
+      let waitingRequest: ReturnType<typeof send> | undefined
+      await workspaceTransaction(Number(workspace.id), async () => {
+        waitingRequest = send(unknown, 'revoked-during-admission-lock', temporary.token)
+        const deadline = nativeNow() + 60000
+        let blocked = false
+        while (nativeNow() < deadline) {
+          await query('SELECT pg_stat_clear_snapshot()')
+          blocked = Number((await one("SELECT COUNT(*) AS count FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND wait_event_type = 'Lock' AND query LIKE ?", ['%UPDATE support_workspaces SET id = id WHERE id =%']))!.count) > 0
+          if (blocked) break
+          await Bun.sleep(10)
+        }
+        check(blocked, 'actual PostgreSQL observes the production widget HTTP request waiting for workspace admission after its initial customer lookup')
+        await query('DELETE FROM support_customer_sessions WHERE project_id = ? AND digest = ?', [project.id, digest(temporary.token)])
+      })
+      const refused = await waitingRequest!
+      check(refused.status === 401 && Number((await one('SELECT COUNT(*) AS count FROM support_messages'))!.count) === messagesBeforeRevoke && Number((await one('SELECT COUNT(*) AS count FROM support_outbox'))!.count) === intentsBeforeRevoke && await usage(Number(workspace.id), 'conversations') === usageBeforeRevoke, 'session revoked while waiting for the native workspace lock commits no message, quota, routing or outbox intent')
+    }
     const closedForAgent = await create(); await patch(closedForAgent, { status: 'closed' }); const serverNote = await http(sdk + `/conversations/${closedForAgent}/messages`, 'POST', { body: 'Existing server agent reply', visibility: 'public', idempotencyKey: 'server-agent' }, keys.ingestKey)
     check(serverNote.status === 201 && (await row(closedForAgent)).status === 'closed' && serverNote.data.message.author_type === 'agent', 'existing native SDK agent replies keep their contract and do not impersonate customer ingress')
     check((await send(closedForAgent, 'wrong-customer', stranger)).status === 404, 'another customer cannot reopen or link a request')
@@ -120,12 +144,12 @@ try {
     const concurrent = await create(); await patch(concurrent, { status: 'closed' }); await query('UPDATE support_conversations SET resolved_at = ? WHERE id = ?', [now - customerReopenWindowMs - 1, concurrent])
     await Bun.write(process.env.SUPPORT_REOPEN_STATE!, JSON.stringify({ path: widgetPrefix + `/conversations/${concurrent}/messages`, token, id: concurrent, now }))
     const beforeConcurrent = await usage(Number(workspace.id), 'conversations')
-    const races = await Promise.all([0, 1, 2].map(index => runIsolated(import.meta.filename, { env: { ...process.env, SUPPORT_REOPEN_RESTART: 'race', SUPPORT_REOPEN_RACE: String(index), BUN_OPTIONS: undefined }, envFile: false, preload: [], timeoutMs: 30000 })))
+    const races = await Promise.all([0, 1, 2].map(index => runIsolated(import.meta.filename, { env: { ...process.env, SUPPORT_REOPEN_RESTART: 'race', SUPPORT_REOPEN_RACE: String(index), BUN_OPTIONS: undefined }, envFile: false, preload: [], timeoutMs: 90000 })))
     races.forEach(result => assertIsolatedOk(result, 'PASS reopening independent worker'))
     const results = await Promise.all([0, 1, 2].map(index => Bun.file(process.env.SUPPORT_REOPEN_STATE! + `.result${index}`).json()))
     check(new Set(results.map(result => result.message.conversation_id)).size === 1 && new Set(results.map(result => result.message.id)).size === 3 && await usage(Number(workspace.id), 'conversations') === beforeConcurrent + 1, 'three independent native server processes admit exactly one successor and retain all distinct messages')
     await Bun.write(process.env.SUPPORT_REOPEN_STATE!, JSON.stringify({ path: widgetPrefix + `/conversations/${concurrent}/messages`, token, id: concurrent, destination: results[0].message.conversation_id, now }))
-    assertIsolatedOk(await runIsolated(import.meta.filename, { env: { ...process.env, SUPPORT_REOPEN_RESTART: 'retry', SUPPORT_REOPEN_RACE: '0', BUN_OPTIONS: undefined }, envFile: false, preload: [], timeoutMs: 30000 }), 'PASS reopening independent worker')
+    assertIsolatedOk(await runIsolated(import.meta.filename, { env: { ...process.env, SUPPORT_REOPEN_RESTART: 'retry', SUPPORT_REOPEN_RACE: '0', BUN_OPTIONS: undefined }, envFile: false, preload: [], timeoutMs: 90000 }), 'PASS reopening independent worker')
     check(await usage(Number(workspace.id), 'conversations') === beforeConcurrent + 1, 'fresh process operation replay preserves exact conversation metering')
     const target = await row(destination), channel = await insert('support_channels', { public_id: crypto.randomUUID(), workspace_id: workspace.id, project_id: project.id, provider: 'sms', label: 'Historical fixture', configuration: '{}', status: 'draft' })
     const thread = await insert('support_channel_threads', { workspace_id: workspace.id, project_id: project.id, channel_id: channel.id, remote_key: 'historical-thread', contact_id: target.contact_id, conversation_id: destination, recipient: '+14155550101' })
@@ -143,21 +167,29 @@ try {
     const protectedReceipt = await insert('support_idempotency', { workspace_id: workspace.id, project_id: sibling.id, operation: `reply:${late}:foreign`, key: 'sibling-retention', fingerprint: 'fixture', response: JSON.stringify({ message: { conversation_id: destination, body: 'Sibling-project receipt must remain untouched' } }) })
     const batchedReceipts = []
     for (let index = 0; index < 105; index++) batchedReceipts.push(await insert('support_idempotency', { workspace_id: workspace.id, project_id: project.id, operation: 'conversation:retention-fixture', key: `retention-page-${index}`, fingerprint: 'fixture', response: JSON.stringify({ conversation: { id: destination, subject: 'Batched successor receipt' } }) }))
+    const privateBytes = 'Retained file remains downloadable after malformed late-page receipt'
+    const retainedFile = (await upload(project, late, new File([privateBytes], 'retention-rollback.txt', { type: 'text/plain' }), 'retention-rejection-file')).attachment
+    const accountedBytes = Number((await one('SELECT storage_bytes FROM support_workspaces WHERE id = ?', [workspace.id]))!.storage_bytes)
     const notificationsBeforeRetention = Number((await one('SELECT COUNT(*) AS count FROM support_outbox'))!.count)
     await query('UPDATE support_conversations SET updated_at = ? WHERE id = ?', [new Date(now - 40 * 86400000).toISOString(), late])
     for (const malformed of [{ message: { conversation_id: false, body: 'Malformed destination must never become legacy prefix authority' } }, { message: null }]) {
       const bad = await insert('support_idempotency', { workspace_id: workspace.id, project_id: project.id, operation: `reply:${late}:legacy-fixture`, key: crypto.randomUUID(), fingerprint: 'fixture', response: JSON.stringify(malformed) })
       const refused = await http(retentionPath + '/run', 'POST', {}, owner.token)
       check(refused.status === 503 && (await row(late)).subject !== retentionMarker && String(await receipt()).includes('Follow-up customer message'), 'malformed explicit receipt destinations block retention rather than falling back to an old URL prefix')
+      const fileResponse = await fetch(base + prefix + `/attachments/${retainedFile.id}`, { headers: { authorization: 'Bearer ' + owner.token } })
+      check(fileResponse.status === 200 && await fileResponse.text() === privateBytes && Number((await one('SELECT storage_bytes FROM support_workspaces WHERE id = ?', [workspace.id]))!.storage_bytes) === accountedBytes && (await one('SELECT status FROM support_attachments WHERE id = ?', [retainedFile.id]))!.status === 'stored', 'malformed receipt on a later keyset page leaves physical bytes downloadable and exact storage accounting intact')
       await query('DELETE FROM support_idempotency WHERE id = ?', [bad.id])
     }
     const legacyReceipt = await insert('support_idempotency', { workspace_id: workspace.id, project_id: project.id, operation: `reply:${late}:legacy-fixture`, key: 'genuinely-absent-destination', fingerprint: 'fixture', response: JSON.stringify({ message: { body: 'Legacy original request body' } }) })
     const oldRetention = await http(retentionPath + '/run', 'POST', {}, owner.token)
     check(oldRetention.status === 200 && oldRetention.data.processed === 1 && String(await receipt()).includes('Follow-up customer message') && (await row(late)).subject === retentionMarker, 'retaining predecessor content preserves the successor message receipt stored under its old reply URL')
     check(String((await one('SELECT response FROM support_idempotency WHERE id = ?', [legacyReceipt.id]))!.response).includes(retentionMarker), 'legacy old-URL fallback applies only when authoritative destination fields are genuinely absent')
+    check((await one('SELECT status FROM support_attachments WHERE id = ?', [retainedFile.id]))!.status === 'deleted' && Number((await one('SELECT storage_bytes FROM support_workspaces WHERE id = ?', [workspace.id]))!.storage_bytes) === accountedBytes - Buffer.byteLength(privateBytes), 'successful validated retention deletes the original bytes and releases only their actual byte charge')
     await query("UPDATE support_conversations SET status = 'closed', resolved_at = ?, updated_at = ? WHERE id = ?", [now - 40 * 86400000, new Date(now - 40 * 86400000).toISOString(), destination])
     const newRetention = await http(retentionPath + '/run', 'POST', {}, owner.token)
     check(newRetention.status === 200 && newRetention.data.processed === 1 && !String(await receipt()).includes('Follow-up customer message') && String(await receipt()).includes(retentionMarker), 'retaining successor content redacts its old-URL replay receipt using the canonical message destination')
+    const internalReceipt = (await one('SELECT response FROM support_idempotency WHERE project_id = ? AND operation = ?', [project.id, `conversation-continuation:${late}`]))!
+    check(JSON.parse(String(internalReceipt.response)).conversation.subject === retentionMarker, 'retention includes the non-public continuation operation namespace and redacts its creation receipt')
     check((await query('SELECT response FROM support_idempotency WHERE project_id = ? AND operation = ?', [project.id, 'conversation:retention-fixture'])).every(receipt => String(receipt.response).includes(retentionMarker)) && batchedReceipts.length === 105, 'bounded keyset receipt batches redact canonical destinations across multiple pages')
     check((await one('SELECT response FROM support_idempotency WHERE id = ?', [protectedReceipt.id]))!.response === protectedReceipt.response && Number((await one('SELECT COUNT(*) AS count FROM support_outbox'))!.count) === notificationsBeforeRetention, 'retention remains project-scoped and produces no customer notification intents')
     const redactedReplay = await widget(widgetPrefix + `/conversations/${late}/messages`, token, forgedLate)

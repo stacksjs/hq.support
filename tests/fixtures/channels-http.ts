@@ -249,6 +249,11 @@ try {
   check((await applyChannelInbound(overflow.id)).processed, 'retained overflow resumes when allowance becomes available')
   const historical = (await one('SELECT * FROM support_channel_threads WHERE channel_id = ? AND recipient = ?', [sms.id, '+14155550103']))!
   const historicalImage = (await upload(project, historical.conversation_id, new File([image], 'historical.png', { type: 'image/png' }), 'historical-before-rollover')).attachment
+  const ticketScope = `/support/projects/${project.public_id}`
+  const receiptPolicy = (await http(ticketScope + '/ticket-sla-policies', 'POST', { name: 'Provider receipt timing', firstResponseMinutes: 60, resolutionMinutes: 120 }, token)).data.policy
+  const receiptType = (await http(ticketScope + '/ticket-types', 'POST', { name: 'Provider receipt ticket', kind: 'customer', slaPolicyId: receiptPolicy.id, fields: [], states: [] }, token)).data.type
+  const originalTicket = (await http(ticketScope + '/tickets', 'POST', { typeId: receiptType.id, contactId: historical.contact_id, conversationId: historical.conversation_id, title: 'Original request awaiting provider response' }, token)).data.ticket
+  check(originalTicket.sla.firstResponseAt === 0, 'original request has a real policy-backed ticket SLA clock awaiting provider acceptance')
   const delayedReply = await createChannelReply(project, historical.conversation_id, { body: 'Queued before customer continuation', attachmentIds: [historicalImage.id], idempotencyKey: 'historical-delivery-before-rollover' }, Number(owner.id), dependencies)
   await query("UPDATE support_conversations SET status = 'closed', resolved_at = ? WHERE id = ?", [Date.now() - 7 * 86400000 - 1000, historical.conversation_id])
   const continuedSms = `SM${'6'.repeat(32)}`
@@ -257,9 +262,16 @@ try {
   const advanced = (await one('SELECT * FROM support_channel_threads WHERE id = ?', [historical.id]))!
   check(String(advanced.conversation_id) !== String(historical.conversation_id) && String((await one('SELECT continued_from_id FROM support_conversations WHERE id = ?', [advanced.conversation_id]))!.continued_from_id) === String(historical.conversation_id), 'SMS provider thread advances to its scoped successor and preserves request lineage')
   check(Number((await one("SELECT COUNT(*) AS count FROM support_attachments WHERE conversation_id = ? AND status = 'stored' AND contact_id = ?", [advanced.conversation_id, advanced.contact_id]))!.count) === 1, 'late inbound private media belongs to the new request and its exact customer')
+  const successorTicket = (await http(ticketScope + '/tickets', 'POST', { typeId: receiptType.id, contactId: advanced.contact_id, conversationId: advanced.conversation_id, title: 'Successor request still awaiting its own response' }, token)).data.ticket
   const delayed = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [delayedReply.delivery!.id]))!, getsBeforeDelayed = providerMediaGets
   check((await dispatchChannelDelivery(Number(delayed.id), dependencies)).outcome === 'accepted' && providerMediaGets === getsBeforeDelayed + 2, 'queued historical send and provider image capability still target the original message after inbound rollover')
   check(Number((await one("SELECT COUNT(*) AS count FROM support_channel_conversations WHERE thread_id = ?", [historical.id]))!.count) === 2, 'historical provider bindings retain both original and current request')
+  const originalClock = (await one('SELECT * FROM support_ticket_sla_clocks WHERE ticket_id = ?', [originalTicket.id]))!
+  const oldDelivery = (await one('SELECT * FROM support_channel_deliveries WHERE id = ?', [delayed.id]))!
+  messages.get(String(oldDelivery.provider_message_id))!.price = '-0.007900'; messages.get(String(oldDelivery.provider_message_id))!.status = 'delivered'
+  const historicalReceipt = await http(`${scope}/channel-deliveries/${delayed.public_id}/reconcile`, 'POST', {}, token)
+  check(historicalReceipt.status === 200 && Number(originalClock.first_response_at) > 0 && Number((await one('SELECT first_response_at FROM support_ticket_sla_clocks WHERE ticket_id = ?', [originalTicket.id]))!.first_response_at) === Number(originalClock.first_response_at) && Number((await one('SELECT first_response_at FROM support_ticket_sla_clocks WHERE ticket_id = ?', [successorTicket.id]))!.first_response_at) === 0, 'delayed original provider acceptance/receipt satisfies only the original ticket SLA and never the successor clock')
+
   const lateReplay = (await one('SELECT id FROM support_inbound WHERE provider_event_id = ?', [continuedSms]))!
   await query("UPDATE support_inbound SET status = 'pending', available_at = 0, lease_until = 0 WHERE id = ?", [lateReplay.id])
   const meterBeforeReplay = Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [workspace.id]))!.used)
