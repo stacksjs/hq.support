@@ -1,4 +1,4 @@
-import { ensureDatabaseConfigLoaded, resolvedDatabaseConfig } from '@stacksjs/database/runtime'
+import { ensureDatabaseConfigLoaded, parseSqlDateTime, resolvedDatabaseConfig } from '@stacksjs/database/runtime'
 import type { Row } from './database'
 import { one } from './database'
 import { fail, identifier } from './errors'
@@ -15,10 +15,8 @@ export async function customerSummarySelect() {
 }
 
 export function normalizedTime(value: unknown): string {
-  // SQLite's timezone-less SQL datetime is UTC, as are generated/imported timestamps.
-  const raw = value instanceof Date || typeof value === 'number' ? value : String(value)
-  const time = raw instanceof Date ? raw : typeof raw === 'number' ? new Date(raw) : new Date(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(raw) ? raw.replace(' ', 'T') + 'Z' : raw)
-  if (!Number.isFinite(time.getTime())) fail(503, 'projection_unavailable', 'Conversation history is temporarily unavailable.')
+  const time = parseSqlDateTime(value)
+  if (!time || !Number.isFinite(time.getTime())) fail(503, 'projection_unavailable', 'Conversation history is temporarily unavailable.')
   return time.toISOString()
 }
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { resolvedDatabaseConfig } from '@stacksjs/database/runtime'
+import { resolvedDatabaseConfig, sqlDateTime } from '@stacksjs/database/runtime'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { insert, one, query } from '../../app/Support/database'
 import { digest } from '../../app/Support/service'
@@ -68,9 +68,6 @@ try {
   const created = await request(prefix + '/conversations', 'POST', payload, keys.ingestKey)
   check(created.status === 201, `conversation persisted ${JSON.stringify(created.data)}`)
   const conversation = created.data.conversation
-  // Fixed historical values prove that neither wall clock nor imported private updated_at is public activity.
-  await query('UPDATE support_conversations SET created_at = ?, updated_at = ? WHERE id = ?', ['2020-01-01 00:00:00', '2035-01-01T00:00:00.000Z', conversation.id])
-  await query('UPDATE support_messages SET created_at = ? WHERE conversation_id = ?', ['2020-01-02T01:00:00.000Z', conversation.id])
   const publicRead = async () => {
     const list = await request(widget + '/conversations?limit=1', 'GET', undefined, session.data.token, 'https://customer.example')
     const detail = await request(widget + '/conversations/' + conversation.id, 'GET', undefined, session.data.token, 'https://customer.example')
@@ -78,6 +75,38 @@ try {
     check(detail.headers.get('cache-control') === 'no-store' && !detail.headers.has('etag') && !detail.headers.has('last-modified'), 'customer history has no private cache metadata')
     return { list: list.data, detail: detail.data }
   }
+  // A future imported public message stays later than the real reply clock, giving all responses a fixed expected instant.
+  const nativeCreated = sqlDateTime(new Date('2090-01-01T00:00:00.000Z'))
+  check(nativeCreated === '2090-01-01T00:00:00.000', 'native SQL fixture uses canonical zone-less ISO T timestamps')
+  const timestampIs = async (expected: string, label: string) => {
+    const result = await publicRead()
+    assert.equal(result.list.conversations[0].updated_at, expected, label + ' list'); checks++
+    assert.equal(result.detail.conversation.updated_at, expected, label + ' detail'); checks++
+  }
+  await query('UPDATE support_conversations SET created_at = ? WHERE id = ?', [nativeCreated, conversation.id])
+  await query('UPDATE support_messages SET created_at = ? WHERE conversation_id = ?', [sqlDateTime(new Date('2090-01-01T01:00:00.000Z')), conversation.id])
+  await timestampIs('2090-01-01T01:00:00.000Z', 'later public message beats native UTC creation in every server timezone')
+  await query("UPDATE support_messages SET visibility = 'internal' WHERE conversation_id = ?", [conversation.id])
+  await timestampIs('2090-01-01T00:00:00.000Z', 'without public messages the UTC creation floor is exact')
+  await query("UPDATE support_messages SET visibility = 'public', created_at = ? WHERE conversation_id = ?", [sqlDateTime(new Date('2089-12-31T23:00:00.000Z')), conversation.id])
+  await timestampIs('2090-01-01T00:00:00.000Z', 'creation later than public history retains the UTC floor')
+  await query('UPDATE support_messages SET created_at = ? WHERE conversation_id = ?', [sqlDateTime(new Date('2090-01-01T01:00:00.000Z')), conversation.id])
+  const replyInput = { body: 'Customer timezone regression', idempotencyKey: 'projection-timezone-reply' }
+  const customerReply = await request(`${widget}/conversations/${conversation.id}/messages`, 'POST', replyInput, session.data.token, 'https://customer.example')
+  check(customerReply.status === 201 && customerReply.data.conversation.updated_at === '2090-01-01T01:00:00.000Z', 'customer mutation summary uses the same UTC public maximum')
+  const replyRetry = await request(`${widget}/conversations/${conversation.id}/messages`, 'POST', replyInput, session.data.token, 'https://customer.example')
+  assert.deepEqual(replyRetry.data, customerReply.data, 'lost acknowledgement retains the exact UTC mutation summary'); checks++
+  await timestampIs('2090-01-01T01:00:00.000Z', 'customer reply and retry preserve the public maximum on reads')
+  if (resolvedDatabaseConfig().driver === 'sqlite') {
+    await query('UPDATE support_conversations SET created_at = ? WHERE id = ?', ['invalid-import-date', conversation.id])
+    for (const path of [`${widget}/conversations`, `${widget}/conversations/${conversation.id}`]) {
+      const invalid = await request(path, 'GET', undefined, session.data.token, 'https://customer.example')
+      check(invalid.status === 503 && invalid.data.error.code === 'projection_unavailable' && Buffer.byteLength(JSON.stringify(invalid.data), 'utf8') < 1024 && !('nextCursor' in invalid.data) && !('messagesNextCursor' in invalid.data), 'invalid imported creation fails with a bounded generic response and no cursor')
+    }
+  }
+  // Fixed historical values prove that neither wall clock nor imported private updated_at is public activity.
+  await query('UPDATE support_conversations SET created_at = ?, updated_at = ? WHERE id = ?', ['2020-01-01 00:00:00', '2035-01-01T00:00:00.000Z', conversation.id])
+  await query('UPDATE support_messages SET created_at = ? WHERE conversation_id = ?', ['2020-01-02T01:00:00.000Z', conversation.id])
   const baseline = await publicRead()
   check(baseline.list.conversations[0].updated_at === '2020-01-02T01:00:00.000Z' && baseline.detail.conversation.updated_at === '2020-01-02T01:00:00.000Z', 'customer timestamp derives only from public messages and creation')
   const unchanged = async (label: string) => { assert.deepEqual(await publicRead(), baseline, label); checks++ }
