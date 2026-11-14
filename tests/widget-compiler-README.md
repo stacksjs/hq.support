@@ -6,7 +6,7 @@ The four data-bearing HQ widgets now declare precise `ComponentState` shapes, ty
 
 The shared head partial intentionally inherits `pageTitle`, `pageDescription` and `canonicalPath` through the renderer's copied context, rather than `props`. Its type-only `InheritedContext` declares those three optional strings. The owner checker follows actual static page → layout → include paths and checks the leaf caller's server values, layout overrides and explicit include data. A wrong numeric title or missing required field fails at the authored include/layout callsite. Dynamic paths and unresolved/cyclic/deep graphs report an explicit proof gap. No global declaration whitelist replaces these checks.
 
-Source qualification on 2026-11-14 UTC, with installed native Stacks 0.75.581 and the owning stx checker source: `resources/**/*.stx` checked 26 files, 38 script blocks and 1,099 expressions with zero diagnostics. This includes all five custom elements, layouts and the head partial. The installed app is still pinned to stx 0.2.872 until the owner patch is published and consumed; source qualification alone is not the published-package gate.
+Source qualification on 2026-11-14 UTC, with installed native Stacks 0.75.581 and the owning stx checker source: `resources/**/*.stx` checked 27 files, 40 script blocks and 1,278 expressions with zero diagnostics. This includes all five custom elements, layouts and the head partial. The installed app is still pinned to stx 0.2.872 until the owner patch is published and consumed; source qualification alone is not the published-package gate.
 
 The owner tests cover property/method errors, metadata defaults, private-state refinement, generic methods across client blocks, lexical nested/object loops, page/server isolation and authored positions. Existing native WebView tests also passed against Chrome for Testing 157.0.8103.50. A standalone Node + TypeScript 5.9.3 language-service fixture loaded the actual bundled editor plugin without Bun and reported only the two intended property/method errors at line 4. The editor uses its supplied TypeScript parser and its actual referenced declaration inventory, without adding duplicate browser globals.
 
@@ -26,3 +26,5 @@ Settings qualifier used the owning SSG source with the installed native backend,
 real SQLite/auth/HTTP, eight credential browser checks, 95 delayed-response
 boundary checks and 54 credential HTTP checks, with no browser runtime errors.
 These source checks do not replace the published-package rerun.
+
+The final consumer corpus also includes the team settings view and responsive inbox ARIA/inert bindings. The corrective owner patch adds strict-CSP external classic/ESM nonce qualification; the prior tag is held by its exact formatting gate and is not an install target.
