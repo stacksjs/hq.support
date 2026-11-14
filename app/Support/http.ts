@@ -10,7 +10,7 @@ import { createWorkflow, listWorkflows } from './workflows'
 import { createArticle, searchArticles, updateArticle } from './knowledge'
 import { confirmationCode } from '@stacksjs/hq/service'
 
-export type Operation = 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.create' | 'widget.tickets.detail' | 'widget.ticket-types' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
+export type Operation = 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.session.revoke' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.create' | 'widget.tickets.detail' | 'widget.ticket-types' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
 
 const response = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } })
 function bearer(request: RequestInstance): string { return /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') || '')?.[1] ?? '' }
@@ -86,6 +86,7 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
         if (!project.anonymous_enabled) fail(403, 'identity_required', 'This project requires a server-issued customer session.')
         return response(await support.createSession(project, { externalId: `anonymous:${crypto.randomUUID()}`, name: 'Visitor' }), 201)
       }
+      if (operation === 'widget.session.revoke') return response(await (await import('./credentials')).revokeOwnCustomerSession(project, bearer(request)))
       person = await support.customer(project, bearer(request))
     }
     let body: unknown, status = 200
@@ -104,7 +105,7 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
     else if (operation === 'conversation.detail' || operation === 'widget.detail') body = await support.detail(project, params.id, person, new URL(request.url).searchParams.get('beforeMessage'))
     else if (operation === 'messages.create' || operation === 'agent.reply' || operation === 'widget.reply') { body = operation === 'agent.reply' ? await (await import('./managed-channels')).createChannelReply(project, params.id, data, Number(account?.id)) : await support.reply(project, params.id, data, { customer: person, userId: account?.id }); status = 201 }
     else if (operation === 'conversation.update') body = await support.updateConversation(project, params.id, data, account!.id)
-    else if (operation === 'keys.create') { await support.member(account!.id, Number(project.workspace_id), ['owner', 'admin']); body = await support.issueKeys(project); status = 201 }
+    else if (operation === 'keys.create') { await support.member(account!.id, Number(project.workspace_id), ['owner', 'admin']); body = await (await import('./credentials')).createProjectKeys(project, account!.id, data.idempotencyKey); status = 201 }
     else if (operation === 'projects.settings') {
       await support.member(account!.id, Number(project.workspace_id), ['owner', 'admin'])
       if (!Array.isArray(data.allowedOrigins) || data.allowedOrigins.length > 20) fail(422, 'invalid_input', 'allowedOrigins must contain up to 20 explicit origins.')

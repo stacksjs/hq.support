@@ -4,6 +4,7 @@ import defaults from '@stacksjs/defaults/app/Routes.ts'
 export default {
   ...defaults,
   supportRouting: { path: 'support-routing', prefix: '/api' },
+  supportCredentials: { path: 'support-credentials', prefix: '/api' },
   supportAssets: { path: 'support-assets', prefix: '/api' },
   supportKnowledge: { path: 'support-knowledge', prefix: '/api' },
   supportBilling: { path: 'support-billing', prefix: '/api' },

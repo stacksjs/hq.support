@@ -105,7 +105,7 @@ try {
   check(listing.status === 200 && listing.data.conversations[0].customer_id === session.data.contact.id && listing.data.nextCursor === null, 'HQ summary wire contract')
   const summaryJson = JSON.stringify(listing.data)
   check(!summaryJson.includes('Private account investigation') && !summaryJson.includes('ada@example.test'), 'HQ summary omits body and customer PII')
-  check(Number((await one('SELECT COUNT(*) AS n FROM support_outbox WHERE project_id = ?', [project.id]))?.n) === 2, 'conversation and note atomically enqueue delivery work')
+  check(Number((await one("SELECT COUNT(*) AS n FROM support_outbox WHERE project_id = ? AND kind IN ('conversation.created', 'note.created')", [project.id]))?.n) === 2, 'conversation and note atomically enqueue delivery work')
   async function uploadAttachment(name: string, content: Uint8Array, key: string) {
     const form = new FormData()
     form.set('file', new File([content.buffer as ArrayBuffer], name, { type: 'text/plain' }))
@@ -123,12 +123,12 @@ try {
   check(!(await request(`${widget}/conversations/${conversation.id}`, 'GET', undefined, session.data.token, 'https://customer.example')).data.attachments.some((file: any) => file.id === uploaded.data.attachment.id), 'customer metadata does not disclose private agent files')
   check((await request(`${widget}/attachments/${uploaded.data.attachment.id}`, 'GET', undefined, sessionTwo.data.token, 'https://customer.example')).status === 404, 'another customer cannot read attachment')
   const unconfigured = await drainOutbox(async () => ({ status: 'unconfigured', reason: 'No provider configured' }))
-  check(unconfigured.delivered === 0 && unconfigured.unconfigured === 2 && !await one("SELECT id FROM support_outbox WHERE status = 'delivered'"), 'unconfigured provider never reports successful delivery')
+  check(unconfigured.delivered === 0 && unconfigured.unconfigured === 3 && !await one("SELECT id FROM support_outbox WHERE status = 'delivered'"), 'unconfigured provider never reports successful delivery')
   await query('UPDATE support_outbox SET available_at = 0 WHERE project_id = ?', [project.id])
   const deliveredIds: string[] = []
   const delivery = async (event: { id: string }) => { deliveredIds.push(event.id); await Promise.resolve(); return { status: 'delivered' as const, receipt: `test-provider:${event.id}` } }
   const drained = await Promise.all([drainOutbox(delivery), drainOutbox(delivery)])
-  check(drained.reduce((n, item) => n + item.delivered, 0) === 2 && new Set(deliveredIds).size === 2 && deliveredIds.length === 2, 'concurrent outbox workers claim each active lease once')
+  check(drained.reduce((n, item) => n + item.delivered, 0) === 3 && new Set(deliveredIds).size === 3 && deliveredIds.length === 3, 'concurrent outbox workers claim each active lease once')
   await request(`${agent}/conversations/${conversation.id}/messages`, 'POST', { body: 'Internal file context', visibility: 'internal', attachmentIds: [uploaded.data.attachment.id], idempotencyKey: 'internal-file' }, token)
   check((await fetch(base + `${widget}/attachments/${uploaded.data.attachment.id}`, { headers: { authorization: `Bearer ${session.data.token}`, origin: 'https://customer.example' } })).status === 404, 'internal notes never publish attached agent files')
   const shared = await request(`${agent}/conversations/${conversation.id}/messages`, 'POST', { body: 'Here is your file', attachmentIds: [uploaded.data.attachment.id], idempotencyKey: 'public-file' }, token)

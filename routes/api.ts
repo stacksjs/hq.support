@@ -40,6 +40,7 @@ route.post('/v1/projects/{project}/events', supportAction('events', 'POST')).ski
 route.get('/v1/projects/{project}/conversations', supportAction('conversations.list', 'GET')).rateLimit(120, 'minute')
 route.post('/v1/projects/{project}/conversations', supportAction('conversations.create', 'POST')).skipCsrf().rateLimit(120, 'minute')
 route.post('/v1/projects/{project}/conversations/{id}/messages', supportAction('messages.create', 'POST')).skipCsrf().rateLimit(120, 'minute')
+route.post('/widget/projects/{project}/session/revoke', supportAction('widget.session.revoke', 'POST')).skipCsrf().rateLimit(30, 'minute')
 route.post('/widget/projects/{project}/session', supportAction('widget.session', 'POST')).skipCsrf().rateLimit(30, 'minute')
 route.post('/widget/projects/{project}/events', supportAction('widget.events', 'POST')).skipCsrf().rateLimit(120, 'minute')
 route.get('/widget/projects/{project}/conversations', supportAction('widget.conversations', 'GET')).rateLimit(120, 'minute')
