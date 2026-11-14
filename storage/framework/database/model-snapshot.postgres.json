@@ -948,6 +948,31 @@
             "isNullable": false,
             "hasDefault": true,
             "defaultValue": ""
+          },
+          {
+            "name": "resolved_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
+          },
+          {
+            "name": "continued_from_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": true,
+            "hasDefault": false
+          },
+          {
+            "name": "continuation_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": true,
+            "hasDefault": false
           }
         ],
         "indexes": [
@@ -976,6 +1001,15 @@
               "status"
             ],
             "type": "index"
+          },
+          {
+            "name": "support_conversation_continuation",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "continued_from_id"
+            ],
+            "type": "unique"
           }
         ]
       },
@@ -9040,10 +9074,101 @@
             "type": "unique"
           }
         ]
+      },
+      {
+        "table": "support_channel_conversations",
+        "columns": [
+          {
+            "name": "id",
+            "type": "bigint",
+            "isPrimaryKey": true,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "workspace_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "project_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "channel_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "thread_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "conversation_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "created_at",
+            "type": "datetime",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": "UTC_TIMESTAMP"
+          },
+          {
+            "name": "updated_at",
+            "type": "datetime",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": true,
+            "hasDefault": false
+          }
+        ],
+        "indexes": [
+          {
+            "name": "support_channel_conversation_identity",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "channel_id",
+              "conversation_id"
+            ],
+            "type": "unique"
+          },
+          {
+            "name": "support_channel_conversation_thread",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "thread_id"
+            ],
+            "type": "index"
+          }
+        ]
       }
     ]
   },
-  "hash": "6fb4cc316682a9bd4e970c61b2004c9c974a5dc03c1ab2ed9b756394930783b8",
+  "hash": "8f1a304e303941f3a9f0b0f45c3d6ae7c0459e7439b55bfef2e893ce886a6bb7",
   "dialect": "postgres",
-  "updatedAt": "2026-11-14T05:27:00.674Z"
+  "updatedAt": "2026-11-14T06:26:25.534Z"
 }

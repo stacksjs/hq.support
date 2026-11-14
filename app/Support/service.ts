@@ -155,7 +155,7 @@ export async function enqueue(projectRow: Row, kind: string, payload: Row) {
 }
 const isoTime = (value: unknown) => value instanceof Date ? value.toISOString() : String(value)
 export function summary(row: Row, routing = false) {
-  return { ...(routing ? { assignee_id: String(row.assignee_id), team_id: String(row.team_id), inbox_id: String(row.inbox_id), routing_reason: String(row.routing_reason) } : {}), id: String(row.id), subject: String(row.subject), status: String(row.status), customer_id: String(row.contact_id), updated_at: isoTime(row.updated_at), unread_count: Number(row.agent_unread_count ?? row.unread_count) }
+  return { ...(routing ? { assignee_id: String(row.assignee_id), team_id: String(row.team_id), inbox_id: String(row.inbox_id), routing_reason: String(row.routing_reason) } : {}), id: String(row.id), subject: String(row.subject), status: String(row.status), resolved_at: Number(row.resolved_at || 0), continued_from_id: row.continued_from_id ? String(row.continued_from_id) : null, continuation_id: row.continuation_id ? String(row.continuation_id) : null, customer_id: String(row.contact_id), updated_at: isoTime(row.updated_at), unread_count: Number(row.agent_unread_count ?? row.unread_count) }
 }
 export function messageView(row: Row) {
   return { id: String(row.id), conversation_id: String(row.conversation_id), body: String(row.body), visibility: String(row.visibility), author_type: String(row.author_type), created_at: isoTime(row.created_at), delivery_status: String(row.delivery_status) }
@@ -190,24 +190,30 @@ export async function detail(projectRow: Row, id: unknown, person?: Row, beforeM
   const attachments = await query(`SELECT id, file_name, mime_type, bytes, status, visibility FROM support_attachments WHERE project_id = ? AND conversation_id = ? AND status = 'stored'${person ? " AND (visibility = 'public' OR contact_id = ?)" : ''} ORDER BY id ASC`, [projectRow.id, row.id, ...(person ? [person.id] : [])])
   return { attachments: attachments.map(file => ({ id: String(file.id), fileName: file.file_name, mimeType: file.mime_type, bytes: Number(file.bytes), status: file.status, visibility: file.visibility })), conversation: summary(row, !person), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.map(messageView), messagesNextCursor }
 }
-export async function createConversation(projectRow: Row, identity: Row, input: Row, person?: Row, automation?: { workflowRunId: number, automationDepth: number }, options?: { mediaOnly?: boolean }) {
-  return await idempotent(projectRow, `conversation:${person?.id ?? identity.externalId}`, input.idempotencyKey, input, async () => {
+export async function createConversation(projectRow: Row, identity: Row, input: Row, person?: Row, automation?: { workflowRunId: number, automationDepth: number }, options?: { mediaOnly?: boolean, continuedFrom?: Row }) {
+  return await idempotent(projectRow, options?.continuedFrom ? `conversation-continuation:${options.continuedFrom.id}` : `conversation:${person?.id ?? identity.externalId}`, input.idempotencyKey, input, async () => {
     const owner = await entitled(number(projectRow, 'workspace_id'))
     const who = person ?? await contact(projectRow, identity)
     await consume(number(projectRow, 'workspace_id'), 'conversations', limitsFor(owner.plan as Plan).conversationCeiling)
-    const row = await insert('support_conversations', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, contact_id: who.id, subject: text(input.subject, 'subject', 200), status: 'open', unread_count: 1 })
+    const row = await insert('support_conversations', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, contact_id: who.id, subject: text(input.subject, 'subject', 200), status: 'open', unread_count: 1, ...(options?.continuedFrom ? { continued_from_id: options.continuedFrom.id, channel: options.continuedFrom.channel } : {}) })
     const message = await insert('support_messages', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, conversation_id: row.id, contact_id: who.id, body: options?.mediaOnly && input.body === '' ? '' : text(input.body, 'body', 20000), visibility: 'public', author_type: 'customer' })
     await (await import('./routing')).routeNewConversation(projectRow, row.id)
     await enqueue(projectRow, 'conversation.created', { conversationId: row.id, messageId: message.id, ...(automation || {}) })
     return { conversation: summary(row) }
   })
 }
-export async function reply(projectRow: Row, id: unknown, input: Row, actor: { customer?: Row, userId?: number, deferDelivery?: boolean, mediaOnly?: boolean }) {
+export async function reply(projectRow: Row, id: unknown, input: Row, actor: { customer?: Row, userId?: number, deferDelivery?: boolean, mediaOnly?: boolean, acceptedAt?: number }) {
   const visibility = actor.customer ? 'public' : input.visibility ?? 'public'
   if (actor.customer && input.visibility && input.visibility !== 'public') fail(403, 'forbidden', 'Customer messages must be public.')
   if (!['public', 'internal'].includes(String(visibility))) fail(422, 'invalid_input', 'Visibility must be public or internal.')
   return await idempotent(projectRow, `reply:${id}:${actor.customer?.id ?? actor.userId ?? 'server'}`, input.idempotencyKey, input, async () => {
-    const row = await conversation(projectRow, id, actor.customer)
+    let row = await conversation(projectRow, id, actor.customer)
+    let previousConversationId: string | undefined
+    if (actor.customer) {
+      const admission = await (await import('./reopening')).admitCustomerReply(projectRow, row, actor.customer, input, actor.mediaOnly, actor.acceptedAt)
+      row = admission.row; previousConversationId = admission.previousConversationId
+      if (admission.first) return { message: messageView(admission.first), conversation: summary(row), continuedFromId: previousConversationId }
+    }
     const message = await insert('support_messages', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, conversation_id: row.id, contact_id: row.contact_id, body: actor.mediaOnly && input.body === '' ? '' : text(input.body, 'body', 20000), visibility, author_type: actor.customer ? 'customer' : 'agent', author_id: actor.userId ?? 0 })
     await query('UPDATE support_conversations SET updated_at = ?, unread_count = unread_count + ? WHERE id = ? AND project_id = ?', [new Date().toISOString(), actor.customer ? 1 : 0, row.id, projectRow.id])
     await enqueue(projectRow, visibility === 'internal' ? 'note.created' : 'message.created', { conversationId: row.id, messageId: message.id })
@@ -216,7 +222,7 @@ export async function reply(projectRow: Row, id: unknown, input: Row, actor: { c
       const { recordTicketFirstResponse } = await import('./ticket-sla')
       await recordTicketFirstResponse(projectRow, row.id)
     }
-    return { message: messageView(message) }
+    return { message: messageView(message), ...(actor.customer ? { conversation: summary(await conversation(projectRow, row.id, actor.customer)), ...(previousConversationId ? { continuedFromId: previousConversationId } : {}) } : {}) }
   })
 }
 export async function track(projectRow: Row, input: Row) {

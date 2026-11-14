@@ -1,3 +1,4 @@
+import { digest } from '../../app/Support/service'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createSign } from 'node:crypto'
@@ -203,6 +204,43 @@ try {
   const badKey = received('mail-arbitrary-key', config.inboundAddress)
   badKey.receipt.action.objectKey = 'incoming/different-message'
   check((await http(inboundPath, 'POST', signed(badKey))).status === 422, 'signed source key must be exact prefix plus SES message identity')
+  const beforeEmailContinuation = Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [project.workspace_id]))!.used)
+  await query("UPDATE support_conversations SET status = 'closed', resolved_at = ? WHERE id = ?", [Date.now() - 7 * 86400000 - 1000, firstThread.conversation_id])
+  source('mail-late-reply', 'customer@example.test', 'Private attachment on continued email request', true)
+  await http(inboundPath, 'POST', signed(received('mail-late-reply', replyAddress))); await applyLatest(channel)
+  const advancedEmail = (await one('SELECT * FROM support_channel_threads WHERE id = ?', [firstThread.id]))!
+  check(String(advancedEmail.conversation_id) !== String(firstThread.conversation_id) && Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [project.workspace_id]))!.used) === beforeEmailContinuation + 1, 'signed original email reply capability admits exactly one late successor without merging another same-email thread')
+  check(String((await one('SELECT continued_from_id FROM support_conversations WHERE id = ?', [advancedEmail.conversation_id]))!.continued_from_id) === String(firstThread.conversation_id) && Number((await one('SELECT COUNT(*) AS count FROM support_channel_conversations WHERE thread_id = ?', [firstThread.id]))!.count) === 2, 'email preserves original request binding and exact continuation lineage')
+  check(Number((await one("SELECT COUNT(*) AS count FROM support_attachments WHERE conversation_id = ? AND contact_id = ? AND status = 'stored'", [advancedEmail.conversation_id, advancedEmail.contact_id]))!.count) === 1, 'signed late email attachment ingestion uses the successor and its exact private customer binding')
+  const historicalEmail = await http(path + `/conversations/${firstThread.conversation_id}/reply`, 'POST', { body: 'Historical email operation after rollover', idempotencyKey: 'email-historical-after-rollover' }, owner)
+  check(historicalEmail.status === 201 && String(historicalEmail.data.message.conversation_id) === String(firstThread.conversation_id), 'agent historical email reply remains bound to the original request rather than the current inbound pointer')
+  const historicalPayload = { body: 'Historical email operation after rollover', idempotencyKey: 'email-historical-after-rollover' }
+  const oldMessagePath = `/support/projects/${project.public_id}/conversations/${firstThread.conversation_id}/messages`, newMessagePath = `/support/projects/${project.public_id}/conversations/${advancedEmail.conversation_id}/messages`
+  const wrongTarget = await http(newMessagePath, 'POST', historicalPayload, owner)
+  check(wrongTarget.status === 409 && wrongTarget.data.error.code === 'idempotency_conflict', 'production agent HTTP rejects same key/body for another request sharing the provider thread')
+  const historicalDelivery = (await one('SELECT * FROM support_channel_deliveries WHERE project_id = ? AND operation_key = ?', [project.id, historicalPayload.idempotencyKey]))!
+  const legacyPayload = JSON.parse(String(historicalDelivery.payload)); delete legacyPayload._configuration
+  await query('UPDATE support_channel_deliveries SET request_hash = ? WHERE id = ?', [digest(JSON.stringify({ channel: rawChannel.id, thread: firstThread.id, payload: legacyPayload })), historicalDelivery.id])
+  const legacyReplay = await http(oldMessagePath, 'POST', historicalPayload, owner)
+  check(legacyReplay.status === 201 && legacyReplay.data.message.id === historicalEmail.data.message.id && String(legacyReplay.data.message.conversation_id) === String(firstThread.conversation_id), 'legacy operation fingerprint replays only its immutable original stored message target')
+  check((await http(newMessagePath, 'POST', historicalPayload, owner)).status === 409, 'legacy fingerprint cannot relabel an old message as a successor message')
+  const racingPayload = { body: 'Concurrent identical provider operation on different requests', idempotencyKey: 'email-shared-thread-request-race' }
+  const racing = await Promise.all([http(oldMessagePath, 'POST', racingPayload, owner), http(newMessagePath, 'POST', racingPayload, owner)])
+  check(racing.map(result => result.status).sort().join(',') === '201,409', 'concurrent old/new requests commit one provider operation and refuse the other selected target')
+  const winning = racing.find(result => result.status === 201)!, immutable = (await one('SELECT conversation_id FROM support_messages WHERE id = ?', [winning.data.message.id]))!
+  check(String(winning.data.message.conversation_id) === String(immutable.conversation_id) && Number((await one('SELECT COUNT(*) AS count FROM support_channel_deliveries WHERE project_id = ? AND operation_key = ?', [project.id, racingPayload.idempotencyKey]))!.count) === 1, 'concurrent replay response target and durable delivery remain exactly the stored message destination')
+
+  await query("UPDATE support_conversations SET status = 'closed', resolved_at = ? WHERE id = ?", [Date.now() - 8 * 86400000, advancedEmail.conversation_id])
+  const acceptedEmailMeter = Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [project.workspace_id]))!.used)
+  source('mail-within-window-delayed')
+  await http(inboundPath, 'POST', signed(received('mail-within-window-delayed', replyAddress)))
+  const acceptedEmail = (await one('SELECT id FROM support_email_receipts WHERE ses_message_id = ?', ['mail-within-window-delayed']))!
+  const firstAcceptedAt = Date.now() - 2 * 86400000
+  await query('UPDATE support_email_receipts SET created_at = ? WHERE id = ?', [new Date(firstAcceptedAt).toISOString(), acceptedEmail.id])
+  await applyLatest(channel)
+  const normalizedEmail = (await one('SELECT created_at FROM support_inbound WHERE id = (SELECT inbound_id FROM support_email_receipts WHERE id = ?)', [acceptedEmail.id]))!
+  const normalizedAcceptedAt = normalizedEmail.created_at instanceof Date ? normalizedEmail.created_at.getTime() : new Date(String(normalizedEmail.created_at)).getTime()
+  check(normalizedAcceptedAt === firstAcceptedAt && String((await one('SELECT conversation_id FROM support_channel_threads WHERE id = ?', [firstThread.id]))!.conversation_id) === String(advancedEmail.conversation_id) && Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [project.workspace_id]))!.used) === acceptedEmailMeter, 'delayed MIME processing preserves the first verified server email receipt time for quota-free reopening')
   console.log(`PASS email HTTP and MIME (${checks} checks)`)
 }
 finally { server.stop(true) }
