@@ -3004,6 +3004,106 @@
         }
       }
     },
+    "/api/support/projects/{project}/csat-report": {
+      "get": {
+        "summary": "/api/support/projects/{project}/csat-report",
+        "operationId": "get__api_support_projects__project__csat_report",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/api/support/projects/{project}/csat-settings": {
+      "get": {
+        "summary": "/api/support/projects/{project}/csat-settings",
+        "operationId": "get__api_support_projects__project__csat_settings",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      },
+      "patch": {
+        "summary": "/api/support/projects/{project}/csat-settings",
+        "operationId": "patch__api_support_projects__project__csat_settings",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
     "/api/support/projects/{project}/customers/{contact}/sessions/revoke": {
       "post": {
         "summary": "/api/support/projects/{project}/customers/{contact}/sessions/revoke",
@@ -6544,6 +6644,88 @@
       "post": {
         "summary": "/api/widget/projects/{project}/conversations/{id}/attachments",
         "operationId": "post__api_widget_projects__project__conversations__id__attachments",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/api/widget/projects/{project}/conversations/{id}/csat": {
+      "get": {
+        "summary": "/api/widget/projects/{project}/conversations/{id}/csat",
+        "operationId": "get__api_widget_projects__project__conversations__id__csat",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      },
+      "post": {
+        "summary": "/api/widget/projects/{project}/conversations/{id}/csat",
+        "operationId": "post__api_widget_projects__project__conversations__id__csat",
         "parameters": [
           {
             "name": "project",

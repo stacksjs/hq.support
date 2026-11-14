@@ -1747,6 +1747,65 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/support/projects/{project}/csat-report": {
+    get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: { "project": string }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      "200": { content: { "application/json": Record<string, unknown> } }
+      "422": { content: never }
+      "500": { content: never }
+    }
+  }
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/support/projects/{project}/csat-settings": {
+    get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: { "project": string }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      "200": { content: { "application/json": Record<string, unknown> } }
+      "422": { content: never }
+      "500": { content: never }
+    }
+  }
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch: {
+    parameters: {
+      query?: never
+      header?: never
+      path: { "project": string }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      "200": { content: { "application/json": Record<string, unknown> } }
+      "422": { content: never }
+      "500": { content: never }
+    }
+  }
+    trace?: never
+  }
   "/api/support/projects/{project}/customers/{contact}/sessions/revoke": {
     get?: never
     put?: never
@@ -3820,6 +3879,42 @@ export interface paths {
   }
   "/api/widget/projects/{project}/conversations/{id}/attachments": {
     get?: never
+    put?: never
+    post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: { "project": string; "id": string }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      "200": { content: { "application/json": Record<string, unknown> } }
+      "422": { content: never }
+      "500": { content: never }
+    }
+  }
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/widget/projects/{project}/conversations/{id}/csat": {
+    get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: { "project": string; "id": string }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      "200": { content: { "application/json": Record<string, unknown> } }
+      "422": { content: never }
+      "500": { content: never }
+    }
+  }
     put?: never
     post: {
     parameters: {

@@ -75,6 +75,8 @@ declare global {
   const Contact: typeof import('../../../app/Models/Contact')['default']
   const Conversation: typeof import('../../../app/Models/Conversation')['default']
   const ConversationRead: typeof import('../../../app/Models/ConversationRead')['default']
+  const CsatResponse: typeof import('../../../app/Models/CsatResponse')['default']
+  const CsatSetting: typeof import('../../../app/Models/CsatSetting')['default']
   const CustomerSession: typeof import('../../../app/Models/CustomerSession')['default']
   const EmailReceipt: typeof import('../../../app/Models/EmailReceipt')['default']
   const EmailSuppression: typeof import('../../../app/Models/EmailSuppression')['default']

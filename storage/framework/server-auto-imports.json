@@ -47,6 +47,8 @@
     "Coupon": true,
     "Courier": true,
     "CourierPing": true,
+    "CsatResponse": true,
+    "CsatSetting": true,
     "Customer": true,
     "CustomerSession": true,
     "DeliveryRoute": true,

@@ -746,6 +746,27 @@ export function createClient(config: ClientConfig) {
   },
 
   /**
+   * GET /api/support/projects/{project}/csat-report
+   */
+  getSupportProjectsProjectCsatReport(input: { "project": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "GET", "/api/support/projects/{project}/csat-report", input ?? {}, [{"name":"project","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * GET /api/support/projects/{project}/csat-settings
+   */
+  getSupportProjectsProjectCsatSettings(input: { "project": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "GET", "/api/support/projects/{project}/csat-settings", input ?? {}, [{"name":"project","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * PATCH /api/support/projects/{project}/csat-settings
+   */
+  patchSupportProjectsProjectCsatSettings(input: { "project": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "PATCH", "/api/support/projects/{project}/csat-settings", input ?? {}, [{"name":"project","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
    * POST /api/support/projects/{project}/customers/{contact}/sessions/revoke
    */
   postSupportProjectsProjectCustomersContactSessionsRevoke(input: { "project": string; "contact": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
@@ -1429,6 +1450,20 @@ export function createClient(config: ClientConfig) {
    */
   postWidgetProjectsProjectConversationsIdAttachments(input: { "project": string; "id": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
     return request(config, "POST", "/api/widget/projects/{project}/conversations/{id}/attachments", input ?? {}, [{"name":"project","in":"path","required":true},{"name":"id","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * GET /api/widget/projects/{project}/conversations/{id}/csat
+   */
+  getWidgetProjectsProjectConversationsIdCsat(input: { "project": string; "id": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "GET", "/api/widget/projects/{project}/conversations/{id}/csat", input ?? {}, [{"name":"project","in":"path","required":true},{"name":"id","in":"path","required":true}], null, "application/json", [], options)
+  },
+
+  /**
+   * POST /api/widget/projects/{project}/conversations/{id}/csat
+   */
+  postWidgetProjectsProjectConversationsIdCsat(input: { "project": string; "id": string }, options?: RequestOptions): Promise<ApiResult<Record<string, unknown>>> {
+    return request(config, "POST", "/api/widget/projects/{project}/conversations/{id}/csat", input ?? {}, [{"name":"project","in":"path","required":true},{"name":"id","in":"path","required":true}], null, "application/json", [], options)
   },
 
   /**

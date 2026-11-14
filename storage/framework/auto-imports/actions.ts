@@ -11,6 +11,7 @@ export const actions = {
   'Actions/Support/BillingAction': '../../../app/Actions/Support/BillingAction.ts',
   'Actions/Support/ChannelAction': '../../../app/Actions/Support/ChannelAction.ts',
   'Actions/Support/CredentialAction': '../../../app/Actions/Support/CredentialAction.ts',
+  'Actions/Support/CsatAction': '../../../app/Actions/Support/CsatAction.ts',
   'Actions/Support/DocumentationAction': '../../../app/Actions/Support/DocumentationAction.ts',
   'Actions/Support/EmailAction': '../../../app/Actions/Support/EmailAction.ts',
   'Actions/Support/EnterpriseAction': '../../../app/Actions/Support/EnterpriseAction.ts',
