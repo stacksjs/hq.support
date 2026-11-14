@@ -252,7 +252,9 @@ try {
   const ticketScope = `/support/projects/${project.public_id}`
   const receiptPolicy = (await http(ticketScope + '/ticket-sla-policies', 'POST', { name: 'Provider receipt timing', firstResponseMinutes: 60, resolutionMinutes: 120 }, token)).data.policy
   const receiptType = (await http(ticketScope + '/ticket-types', 'POST', { name: 'Provider receipt ticket', kind: 'customer', slaPolicyId: receiptPolicy.id, fields: [], states: [] }, token)).data.type
-  const originalTicket = (await http(ticketScope + '/tickets', 'POST', { typeId: receiptType.id, contactId: historical.contact_id, conversationId: historical.conversation_id, title: 'Original request awaiting provider response' }, token)).data.ticket
+  const originalTicketResponse = await http(ticketScope + '/tickets', 'POST', { typeId: receiptType.id, contactId: historical.contact_id, conversationId: historical.conversation_id, title: 'Original request awaiting provider response', idempotencyKey: 'historical-provider-receipt-ticket' }, token)
+  assert.equal(originalTicketResponse.status, 201, JSON.stringify(originalTicketResponse.data))
+  const originalTicket = originalTicketResponse.data.ticket
   check(originalTicket.sla.firstResponseAt === 0, 'original request has a real policy-backed ticket SLA clock awaiting provider acceptance')
   const delayedReply = await createChannelReply(project, historical.conversation_id, { body: 'Queued before customer continuation', attachmentIds: [historicalImage.id], idempotencyKey: 'historical-delivery-before-rollover' }, Number(owner.id), dependencies)
   await query("UPDATE support_conversations SET status = 'closed', resolved_at = ? WHERE id = ?", [Date.now() - 7 * 86400000 - 1000, historical.conversation_id])
@@ -262,7 +264,9 @@ try {
   const advanced = (await one('SELECT * FROM support_channel_threads WHERE id = ?', [historical.id]))!
   check(String(advanced.conversation_id) !== String(historical.conversation_id) && String((await one('SELECT continued_from_id FROM support_conversations WHERE id = ?', [advanced.conversation_id]))!.continued_from_id) === String(historical.conversation_id), 'SMS provider thread advances to its scoped successor and preserves request lineage')
   check(Number((await one("SELECT COUNT(*) AS count FROM support_attachments WHERE conversation_id = ? AND status = 'stored' AND contact_id = ?", [advanced.conversation_id, advanced.contact_id]))!.count) === 1, 'late inbound private media belongs to the new request and its exact customer')
-  const successorTicket = (await http(ticketScope + '/tickets', 'POST', { typeId: receiptType.id, contactId: advanced.contact_id, conversationId: advanced.conversation_id, title: 'Successor request still awaiting its own response' }, token)).data.ticket
+  const successorTicketResponse = await http(ticketScope + '/tickets', 'POST', { typeId: receiptType.id, contactId: advanced.contact_id, conversationId: advanced.conversation_id, title: 'Successor request still awaiting its own response', idempotencyKey: 'successor-provider-receipt-ticket' }, token)
+  assert.equal(successorTicketResponse.status, 201, JSON.stringify(successorTicketResponse.data))
+  const successorTicket = successorTicketResponse.data.ticket
   const delayed = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [delayedReply.delivery!.id]))!, getsBeforeDelayed = providerMediaGets
   check((await dispatchChannelDelivery(Number(delayed.id), dependencies)).outcome === 'accepted' && providerMediaGets === getsBeforeDelayed + 2, 'queued historical send and provider image capability still target the original message after inbound rollover')
   check(Number((await one("SELECT COUNT(*) AS count FROM support_channel_conversations WHERE thread_id = ?", [historical.id]))!.count) === 2, 'historical provider bindings retain both original and current request')
