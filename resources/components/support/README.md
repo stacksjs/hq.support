@@ -4,6 +4,36 @@ The five standalone custom elements are authored in stx and compiled with the
 native `buddy build:web-components` pipeline. Their internal styles live in
 isolated open shadow roots. The application pages use ts-css utilities.
 
+## npm distribution
+
+The first release candidate is `@stacksjs/support-elements@0.1.0-alpha.0`.
+Publication remains gated on successful CI for the exact source commit and a
+clean installed consumer; this candidate is not a general-availability claim.
+The package contains the five elements, their declarations, custom-elements
+metadata, per-element CSS and the native SSR entry. The hosted controller below
+is a separate artifact built from the same native bundle.
+
+After publication, a browser bundler can load one element explicitly:
+
+```ts
+import '@stacksjs/support-elements/hq-support-messenger.js'
+import type { Messenger } from '@stacksjs/support-elements'
+
+const messenger = document.createElement('hq-support-messenger') as Messenger
+document.body.append(messenger)
+await messenger.boot({
+  url: 'https://api.hq.support',
+  project: 'PUBLIC_PROJECT_ID',
+  token: customerSessionToken,
+})
+messenger.open()
+```
+
+Importing the root module registers all five elements. Each element includes its
+shadow styles; consumers do not need a global stylesheet. Use the explicit
+`/ssr` entry for server rendering. The package contains no enterprise modules,
+server integration keys or account-provisioning behavior.
+
 Run `bun scripts/build-support-elements.ts` before serving or deploying the app.
 It emits a content-addressed version under `public/widgets/<app-version>-<hash>/`,
 plus the stable ESM entry `public/support.js` and a publication manifest at
