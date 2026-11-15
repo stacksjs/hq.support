@@ -11,6 +11,7 @@ import type { Row, WorkspaceTransaction } from './database'
 import { one, query, replayOperatorTransaction, workspaceTransaction } from './database'
 import { boundedEnvelope, boundedPage, customerProjectionLimits } from './customer-projection'
 import { fail, identifier, SupportError } from './errors'
+import { customerOrigin, customerResponse, exactOrigin } from './customer-http'
 import { agentReplayChannel, customerReplayChannel, supportReplayInvalidations, supportReplayStore } from './replay'
 import { conversations, detail, digest, member, project } from './service'
 
@@ -21,11 +22,6 @@ const json = (body: unknown, status = 200) => Response.json(boundedEnvelope(body
 const snapshotRequired = (status = 409, body: Row = {}) => json({ ...body, cursor: null, snapshotRequired: true }, status)
 interface Principal { project: Row, person?: Row, agentId?: number, channel: string, origin: string }
 
-function exactOrigin(value: unknown): value is string {
-  if (typeof value !== 'string' || !value || value === 'null') return false
-  try { const url = new URL(value); return url.origin === value && ['https:', 'http:'].includes(url.protocol) }
-  catch { return false }
-}
 function cookie(request: RequestInstance, name: string) {
   const pairs = (request.headers.get('cookie') || '').split(';').map(pair => pair.trim()).filter(pair => pair.startsWith(name + '='))
   if (pairs.length !== 1) return ''
@@ -41,10 +37,7 @@ async function authority(request: RequestInstance, widget: boolean, original?: P
   if (!exactOrigin(origin)) fail(403, 'origin_denied', 'An exact allowed origin is required.')
   let principal: Principal
   if (widget) {
-    let allowed: unknown
-    try { allowed = JSON.parse(String(selected.allowed_origins || '[]')) }
-    catch { fail(403, 'origin_denied', 'Origin is not allowed.') }
-    if (!Array.isArray(allowed) || !allowed.some(value => exactOrigin(value) && value === origin)) fail(403, 'origin_denied', 'Origin is not allowed.')
+    customerOrigin(request, selected)
     const token = /^Bearer ([^\s]{1,512})$/i.exec(request.headers.get('authorization') || '')?.[1]
     if (!token) fail(401, 'invalid_session', 'A customer session is required.')
     const person = await one('SELECT c.* FROM support_customer_sessions s JOIN support_contacts c ON c.id = s.contact_id AND c.workspace_id = s.workspace_id AND c.project_id = s.project_id WHERE s.digest = ? AND s.workspace_id = ? AND s.project_id = ? AND s.expires_at > ?', [digest(token), selected.workspace_id, selected.id, Date.now()])
@@ -208,9 +201,9 @@ export async function handleRealtime(request: RequestInstance, widget: boolean, 
     principal = await authority(request, widget)
     const data = await input(request, operation)
     const result = operation === 'snapshot' ? await snapshot(request, widget, principal, data) : operation === 'replay' ? await replay(request, widget, principal, checkpoint(data.checkpoint)) : await stream(request, widget, principal, checkpoint(data.checkpoint))
+    if (widget) await customerResponse(request, result)
     try { await authority(request, widget, principal) }
     catch (error) { await result.body?.cancel(); throw error }
-    if (widget) { result.headers.set('Access-Control-Allow-Origin', principal.origin); result.headers.set('Vary', 'Origin') }
     return result
   }
   catch (caught) {
@@ -222,12 +215,6 @@ export async function handleRealtime(request: RequestInstance, widget: boolean, 
     }
     const status = error instanceof SupportError ? error.status : error instanceof RequestBodyError ? error.status : typeof error === 'object' && error && 'statusCode' in error && error.statusCode === 403 ? 403 : 503
     const result = error instanceof SupportError && error.status === 409 && error.code === 'snapshot_required' ? snapshotRequired() : json({ error: { code: error instanceof SupportError ? error.code : error instanceof RequestBodyError ? 'invalid_input' : 'realtime_unavailable', message: 'Realtime request could not be completed.' } }, status)
-    // A stale allowlist must never be reused on an authorization failure.
-    if (widget && principal) {
-      try { const current = await authority(request, true, principal); result.headers.set('Access-Control-Allow-Origin', current.origin) }
-      catch { /* Current authorization, including allowlist, refused. */ }
-      result.headers.set('Vary', 'Origin')
-    }
-    return result
+    return widget ? await customerResponse(request, result) : result
   }
 }

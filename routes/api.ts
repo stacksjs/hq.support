@@ -1,6 +1,7 @@
 import { route } from '@stacksjs/router'
 import { createCsrfCookie, csrfCookieToken, generateCsrfToken } from '@stacksjs/defaults/app/Middleware/Csrf.ts'
 import { supportAction } from '../app/Actions/Support/SupportAction'
+import { customerOrigin } from '../app/Support/customer-http'
 
 // Keep the native auth actions reachable behind the application's /api proxy.
 route.get('/csrf-token', (request) => {
@@ -52,10 +53,9 @@ route.post('/widget/projects/{project}/tickets', supportAction('widget.tickets.c
 route.get('/widget/projects/{project}/tickets/{id}', supportAction('widget.tickets.detail', 'GET')).rateLimit(120, 'minute')
 route.options('/widget/projects/{project}/*', async (request) => {
   const { project } = await import('../app/Support/service')
-  const origin = request.headers.get('origin')
-  const selected = await project(request.getParam('project') || '')
-  const allowed: unknown = JSON.parse(String(selected.allowed_origins))
-  if (!origin || !Array.isArray(allowed) || !allowed.includes(origin)) return new Response(null, { status: 403 })
+  let origin: string
+  try { origin = customerOrigin(request, await project(request.getParam('project') || '')) }
+  catch { return new Response(null, { status: 403, headers: { Vary: 'Origin' } }) }
   return new Response(null, { status: 204, headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Max-Age': '600', 'Vary': 'Origin' } })
 }).skipCsrf()
 
