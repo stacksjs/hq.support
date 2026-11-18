@@ -48,5 +48,5 @@ export async function hq() { return createHqService(await adapter()) }
 export async function approve(code: string, typed: string, user: HqUser) {
   // Native route throttle limits guesses by the signed-in identity before this call.
   if (!await confirmationMatches(code, typed)) fail(422, 'confirmation_mismatch', 'Enter the confirmation code printed by Buddy.')
-  return await (await hq()).approveConnect(code, user)
+  return await (await hq()).approveConnect(code, user, typed)
 }
