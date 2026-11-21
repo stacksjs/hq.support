@@ -35,7 +35,7 @@
         "@stacksjs/stx": "0.2.924",
         "@stacksjs/support": "^0.75.647",
         "@stacksjs/telephony": "^0.75.647",
-        "@stacksjs/ts-cloud": "0.16.151",
+        "@stacksjs/ts-cloud": "0.16.152",
         "@stacksjs/validation": "^0.75.647",
         "@twilio/voice-sdk": "^2.19.0",
         "libphonenumber-js": "^1.13.16",
@@ -298,7 +298,7 @@
 
     "@stacksjs/ts-cache": ["@stacksjs/ts-cache@0.1.9", "", { "dependencies": { "@stacksjs/clapp": "^0.2.5", "bunfig": "^0.15.11", "clone": "^2.1.2" }, "bin": { "cache": "./dist/bin/cli.js" } }, "sha512-9SpMAbe+rjfbl50xPHTa0kRrHLex6pA8btNhBHkhBwx7FSizRHc13xZk87GPAPyEoCC0FfJ8czFDu3SZboUc9g=="],
 
-    "@stacksjs/ts-cloud": ["@stacksjs/ts-cloud@0.16.151", "", { "dependencies": { "@stacksjs/ts-xml": "^0.1.2", "@ts-cloud/aws-types": "0.16.151", "@ts-cloud/core": "0.16.151", "hash-wasm": "^4.12.0" }, "bin": { "cloud": "./dist/bin/cli.js" } }, "sha512-UZ0fQlaNqcDrJcDiXAf4wA1/voG8Pf/5kNG4JGPDK6lvNvFnw1iCuLkH2ZbJcwaNtv9wX050Fdlf0+r4GMHrPg=="],
+    "@stacksjs/ts-cloud": ["@stacksjs/ts-cloud@0.16.152", "", { "dependencies": { "@stacksjs/ts-xml": "^0.1.2", "@ts-cloud/aws-types": "0.16.152", "@ts-cloud/core": "0.16.152", "hash-wasm": "^4.12.0" }, "bin": { "cloud": "./dist/bin/cli.js" } }, "sha512-IH14aa0y6Akm7EjAiK9Yo8UhFtrir78dSUIKgWQfNNu1Dh7Gj/dCHph/XMhD0Y7V0xE694ti02KJFw+/ItMOKw=="],
 
     "@stacksjs/ts-css": ["@stacksjs/ts-css@0.3.27", "", { "dependencies": { "@stacksjs/clapp": "^0.2.0", "bunfig": "^0.15.17" }, "bin": { "cssx": "./dist/bin/cssx.js", "ts-css": "./dist/bin/cli.js" } }, "sha512-JM/yQ+fVWgTnGPvwvrlQV1iXQZ9a9ssW/vjiNpvKvlleEEMBIp94PLF7sWb9vEFqAHzM5yeSzkQW0oWQ/ScYBg=="],
 
@@ -370,9 +370,9 @@
 
     "@ts-charts/time-format": ["@ts-charts/time-format@0.2.7", "", { "dependencies": { "@ts-charts/time": "0.2.7" } }, "sha512-iYipyprcy3V9P7lz6SwYt5zXCGI2VoGE2fXuCmVQ22g5sS7jPP+9odiOQQKhQYS44mX2+mIuPeSWfR5mGg160Q=="],
 
-    "@ts-cloud/aws-types": ["@ts-cloud/aws-types@0.16.151", "", {}, "sha512-uvLZr92PWgEzJGZkCPkNC1SRnBvjmYyCigdFprq0QD6zrr8RuRDuh30V5wtyqyHJozvXnpoBeHbmQTkqeSLrLQ=="],
+    "@ts-cloud/aws-types": ["@ts-cloud/aws-types@0.16.152", "", {}, "sha512-SVicJZL4oyiAWc7sFmcTCfmNXMjtKAjqqg5gmNUfNjf1t7jJEZiVDkqoWMX4e98Z+/cLJvAbxfOgyPjCRGSqag=="],
 
-    "@ts-cloud/core": ["@ts-cloud/core@0.16.151", "", { "dependencies": { "@ts-cloud/aws-types": "0.16.151" } }, "sha512-TYMk3aOeROxP7dxxlep5JJPSw1Ty2WFkbasYae7OAwHpF2m8yEnbw/LGiWhwto4dJ/96jHnlwKljZnbgcQdyTQ=="],
+    "@ts-cloud/core": ["@ts-cloud/core@0.16.152", "", { "dependencies": { "@ts-cloud/aws-types": "0.16.152" } }, "sha512-WjM0rbYIfSO6eAX5On8HrODxwZL4P9N5S/JYuGgh4o7AqYjtM7RJBc1C1Nb13SlEWk4T6cToUtwB/ujFg1Pmvw=="],
 
     "@ts-videos/mp4": ["@ts-videos/mp4@0.1.2", "", { "peerDependencies": { "ts-videos": "0.1.2" } }, "sha512-pZoSg84mEKPS2006/5vb45z6xQDAsLo2fnTEDwNdBwwzfsmj+y4M7+8mY057KFpxk6WlqIekgcEKslWeb/W/xQ=="],
 
