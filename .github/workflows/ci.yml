@@ -95,7 +95,6 @@ jobs:
           ./buddy generate:migrations --dialect all
           git diff --exit-code -- database/migrations storage/framework/database
           test -z "$(git ls-files --others --exclude-standard database/migrations)"
-      - run: ./buddy test
       - run: ./buddy build:views
         env:
           APP_ENV: production
@@ -141,3 +140,4 @@ jobs:
             storage/framework/runtime/site-messenger-browser
           if-no-files-found: warn
           retention-days: 7
+      - run: ./buddy test
