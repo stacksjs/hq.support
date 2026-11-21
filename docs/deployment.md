@@ -13,14 +13,11 @@ determines these values; changing `APP_ENV` in a browser request cannot select a
 deployment. `tests/deployment-config.test.ts` checks the three blueprints in
 separate processes, matching actual Buddy invocations.
 
-The shared owner currently has no staging server. Native `attachTo: 'stacks'`
-requires a server labelled for that exact owner and environment; it does not fall
-back to the production host. Provision and qualify the isolated staging target
-before a real staging deploy. PostgreSQL must have pgvector available, and an
-operator must enable it in the app-owned database before the app role runs the
-generated migrations. The observed shared production PostgreSQL does not yet
-have that extension available. A local pgvector test server does not qualify
-the production host.
+Staging owns its Hetzner host so load and rollback rehearsals are isolated from
+the production tenant. Provision the host before publishing staging DNS. Check
+that pgvector is available on the running PostgreSQL installation and enable it
+only in the app database before starting the generated migrations. On the shared
+production host, recheck pgvector whenever the Pantry PostgreSQL version changes.
 
 The read-only GitHub Deploy preview runs Buddy without SSH or provider credentials.
 A real production deploy requires successful CI for the exact main commit and a

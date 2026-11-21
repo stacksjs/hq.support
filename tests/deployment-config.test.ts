@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { assertIsolatedOk, runIsolated } from '@stacksjs/testing'
 
 interface DeploymentProjection {
-  project: { slug: string }, stateDir: string,
+  project: { slug: string }, stateDir: string, cloud: { provider: string, attachTo?: string },
   main: { domain: string, port: number, env: Record<string, string> },
   api: { domain: string, port: number, env: Record<string, string> },
   www: { redirect: string }, dns: { domain: string },
@@ -19,6 +19,8 @@ test('deployment targets isolate domains, ports, database ownership and release 
     const config = JSON.parse(result.stdout.trim()) as DeploymentProjection
     configurations.push(config)
     const main = config.main, api = config.api
+    expect(config.cloud.provider).toBe('hetzner')
+    expect(config.cloud.attachTo).toBe(target === 'staging' ? undefined : 'stacks')
     expect(main.domain).toBe(target === 'production' ? config.dns.domain : `${target === 'staging' ? 'staging' : 'dev'}.${config.dns.domain}`)
     expect(api.domain).toBe(`api.${main.domain}`)
     expect(main.env.HOST).toBe('127.0.0.1')

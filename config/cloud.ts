@@ -32,11 +32,12 @@ const siteMessengerProject = target === 'production' ? process.env.SUPPORT_SITE_
 if (siteMessengerProject && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(siteMessengerProject))
   throw new Error('SUPPORT_SITE_MESSENGER_PROJECT_ID must be a public project UUID.')
 
-/** Shared HQ host, isolated database, Redis namespaces and loopback processes. */
+/** The production tenant shares Stacks compute. Staging owns its rehearsal host. */
 export const tsCloud: TsCloudConfig = {
   project: { name: namespace, slug: namespace, region: 'us-east-1' },
   stateDir: target === 'production' ? 'storage/cloud' : `storage/cloud/${target}`,
-  cloud: { provider: 'hetzner', attachTo: 'stacks' },
+  cloud: { provider: 'hetzner', ...(target !== 'staging' ? { attachTo: 'stacks' } : {}) },
+  ...(target === 'staging' ? { hetzner: { location: 'nbg1' } } : {}),
   mode: 'server',
   environments: {
     production: {

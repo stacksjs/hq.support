@@ -4,7 +4,7 @@ const module = resolve(import.meta.dir, '../../config/cloud.ts') + '?env=' + pro
 const { tsCloud: config } = await import(module)
 // Exclude credentials from the child process output.
 console.info(JSON.stringify({
-  project: config.project, stateDir: config.stateDir,
+  project: config.project, stateDir: config.stateDir, cloud: config.cloud,
   main: config.sites.main, api: config.sites.api, www: config.sites.www,
   dns: config.infrastructure.dns,
   database: { name: config.infrastructure.appDatabase.name, username: config.infrastructure.appDatabase.username },
