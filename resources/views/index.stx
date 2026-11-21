@@ -1,30 +1,105 @@
 <script server>
-const pageTitle = 'Customer support, close to home'
-const pageDescription = 'An open source customer support workspace built on Stacks. Conversations, a customer messenger, and room to grow.'
-const snippet = `import { createSupportClient } from '@stacksjs/support/server'
+const pageTitle = 'HQ.support | Customer support you can run yourself'
+const pageDescription = 'Bring customer conversations, tickets, and help content together with HQ.support, an open-source helpdesk built on Stacks.'
+</script>
+<script client>
+import { connectSiteMessenger } from '../functions/support/site-messenger'
 
-const support = createSupportClient({
-  url: 'https://hq.support',
-  key: process.env.SUPPORTHQ_KEY,
-  project: process.env.SUPPORTHQ_PROJECT_ID,
+const connecting = state(false)
+const chatUnavailable = state(false)
+const chatOpen = state(false)
+const unread = state(0)
+const connection = new AbortController()
+let messenger: Awaited<ReturnType<typeof connectSiteMessenger>> | undefined
+
+async function openChat(event: Event): Promise<void> {
+  if (connecting()) return
+  const trigger = event.target instanceof Element ? event.target.closest('button') ?? undefined : undefined
+  if (!trigger) return
+  if (messenger) {
+    if (chatOpen()) messenger.close()
+    else messenger.open(trigger)
+    return
+  }
+  chatUnavailable.set(false)
+  connecting.set(true)
+  try {
+    messenger = await connectSiteMessenger(connection.signal, trigger)
+    messenger.on('opened', () => chatOpen.set(true))
+    messenger.on('closed', () => chatOpen.set(false))
+    messenger.on('unread', event => unread.set(Number((event as CustomEvent).detail?.count || 0)))
+    messenger.open(trigger)
+  }
+  catch {
+    if (!connection.signal.aborted) chatUnavailable.set(true)
+  }
+  finally {
+    connecting.set(false)
+  }
+}
+
+onDestroy(() => {
+  connection.abort()
+  messenger?.shutdown()
 })
-
-// Keep identity on your server.
-const session = await support.createSession({
-  externalId: String(user.id),
-  email: user.email,
-  name: user.name,
-})`
-const snippetLines = snippet.split('\n').map(line => ({ text: line.trimStart(), indented: line.startsWith(' ') }))
 </script>
 @extends('default')
 @section('content')
 <div class="mx-auto px-6 max-w-7xl">
-  <section class="grid gap-12 grid-cols-1 items-start lg:grid-cols-2 hero">
-    <div><h1>Good support.<br>Closer to home.</h1><p class="intro">Your conversations, your customers, your code. A support workspace built to belong in your stack.</p><div class="flex flex-wrap gap-3 items-center"><a href="/app" class="button button-teal">Open your workspace <i class="i-hugeicons-arrow-right-02" aria-hidden="true"></i></a><a href="/help/getting-started" class="button button-outline">Read the setup guide</a></div></div>
-    <div class="hero-code"><div class="code-header"><span>YOUR APP / SERVER</span><span>TypeScript</span></div><pre><code>@foreach(snippetLines as line)<span class="code-line {{ line.indented ? 'code-indent' : '' }}">{{ line.text }}</span>@endforeach</code></pre><div class="code-note">A public project ID in the browser. Your secret key stays on the server.</div></div>
+  <section class="grid gap-8 grid-cols-1 items-center lg:grid-cols-2 hero marketing-hero">
+    <div>
+      <h1>Meet your customers where they need you.</h1>
+      <p class="intro">Bring conversations, tickets, and your help center into one workspace. Embed the Messenger in any site, or run the entire helpdesk on your own infrastructure.</p>
+      <div class="flex flex-wrap gap-3 items-center">
+        <a href="/app" class="button button-teal">Open your workspace <i class="i-hugeicons-arrow-right-02" aria-hidden="true"></i></a>
+        <a href="/help/getting-started" class="button button-outline">Installation guide</a>
+      </div>
+    </div>
+
+    <div class="marketing-preview">
+      <div class="flex items-center justify-between marketing-preview-bar">
+        <span class="flex gap-2 items-center"><i class="i-hugeicons-inbox" aria-hidden="true"></i> Shared inbox</span>
+        <span>Example conversation</span>
+      </div>
+      <div class="marketing-preview-thread">
+        <h2>Keeping my support history</h2>
+        <div class="marketing-preview-message">
+          <span class="marketing-avatar" aria-hidden="true">M</span>
+          <div><strong>Mika</strong><p>Can we bring our conversations over from Intercom?</p></div>
+        </div>
+        <div class="marketing-preview-message">
+          <span class="agent marketing-avatar" aria-hidden="true">H</span>
+          <div><strong>HQ.support</strong><p>Yes. The importer preserves full conversation histories and flags records that need review.</p></div>
+        </div>
+      </div>
+    </div>
   </section>
-  <section class="feature-intro section-line"><h2>A direct line to your customers.</h2><p>Start with a shared inbox and an embeddable messenger. Keep customer context beside the conversation, with internal notes for your team.</p><div class="grid gap-10 grid-cols-1 md:grid-cols-3 mt-10"><article class="principle"><i class="i-hugeicons-inbox" aria-hidden="true"></i><h3>A shared place to reply</h3><p>Read the conversation, leave a private note, and keep a clear view of what still needs attention.</p></article><article class="principle"><i class="i-hugeicons-message-01" aria-hidden="true"></i><h3>A messenger in your app</h3><p>Native web components fit into your existing frontend. Customer identity comes from your own server.</p></article><article class="principle"><i class="i-hugeicons-source-code" aria-hidden="true"></i><h3>A core you can own</h3><p>The MIT licensed core is built on Bun, TypeScript, and Stacks. Read the code, contribute, or run it yourself.</p></article></div></section>
-  <section class="flex flex-col gap-8 items-start justify-between md:flex-row open-source"><div><h2>Make yourself at home.</h2><p>Support should fit the way your team works. Follow the implementation, inspect the boundaries, and help shape what comes next.</p></div><a href="https://github.com/stacksjs/hq.support" class="button button-outline">Explore the source <i class="i-hugeicons-arrow-up-right-01" aria-hidden="true"></i></a></section>
+
+  <section class="feature-intro section-line" aria-labelledby="support-workspace">
+    <h2 id="support-workspace">A shared workspace for every request.</h2>
+    <div class="grid gap-8 grid-cols-1 md:grid-cols-2 mt-8">
+      <article class="principle"><i class="i-hugeicons-inbox" aria-hidden="true"></i><h3>Follow the conversation</h3><p>Search past messages, route requests to the right team, and keep private notes beside the customer conversation.</p></article>
+      <article class="principle"><i class="i-hugeicons-message-01" aria-hidden="true"></i><h3>Meet customers in your product</h3><p>Embed Messenger, help search, and ticket components in the frontend you already use. Issue customer identity from your server.</p></article>
+      <article class="principle"><i class="i-hugeicons-book-open-01" aria-hidden="true"></i><h3>Give customers a place to find answers</h3><p>Publish help articles, manage revisions, and connect your knowledge to answers with source citations.</p></article>
+      <article class="principle"><i class="i-hugeicons-source-code" aria-hidden="true"></i><h3>Keep control of your helpdesk</h3><p>Self-host the MIT-licensed core and import conversation history with a reviewable migration log.</p></article>
+    </div>
+  </section>
+
+  <section class="flex flex-col gap-8 items-start justify-between md:flex-row open-source">
+    <div><h2>Bring support into your stack.</h2><p>Run HQ.support on Bun, TypeScript, and Stacks. Start with the source or add the Messenger to an existing site.</p></div>
+    <div class="flex flex-wrap gap-3">
+      <a href="/help/messenger" class="button button-teal">Embed Messenger</a>
+      <a href="https://github.com/stacksjs/hq.support" class="button button-outline">Explore the source <i class="i-hugeicons-arrow-up-right-01" aria-hidden="true"></i></a>
+    </div>
+  </section>
+</div>
+<div class="site-chat-launcher">
+  <p :if="chatUnavailable()" class="site-chat-status" role="status">Chat is unavailable right now. <a href="/help">Visit the help center</a>.</p>
+  <button type="button" id="site-chat" class="site-chat-button" @click="openChat($event)"
+    :aria-label="connecting() ? 'Connecting to support chat' : chatOpen() ? 'Close support chat' : 'Open support chat'"
+    :aria-expanded="chatOpen() ? 'true' : 'false'" :aria-disabled="connecting()">
+    <i :class="chatOpen() ? 'i-hugeicons-cancel-01' : 'i-hugeicons-message-01'" aria-hidden="true"></i>
+    <span :if="unread() > 0" class="site-chat-unread" role="status">{{ unread() }}<span class="sr-only"> unread support messages</span></span>
+  </button>
 </div>
 @endsection

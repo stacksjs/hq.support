@@ -17,6 +17,25 @@ This is a development repository, not a launch qualification. Deployment remains
 | 10. Native integration | Partial | Shared native HQ service contract, persisted encrypted connect grants, confirmation challenge, one-use polling, read-key usage endpoint and bounded summaries exist. Native support SDK and Buddy integration are tracked by the parent framework work. The public HTTPS deployment challenge, native confirmed Buddy marker and one-Free-workspace owner ledger are implemented and tested. Consumer CLI publication flow is maintained by the parent framework work. |
 | 11. Migration and release | Partial | Private Intercom full-response bundle imports now have source hashes/provenance, native durable jobs, per-record checkpoints, pause/resume, external-ID mappings and reviewable failures. SQLite/Postgres restart tests include complete histories beyond 500 parts and reject ambiguous/incomplete exports. Remote attachments and unsupported source shapes remain explicit review work. Full accessibility/browser/provider/load/security qualification, production backup/restore and release acceptance remain. Production deployment remains gated until broad launch qualification passes. |
 
+## Homepage and operator dashboard
+
+The native stx homepage opens the hosted-format Messenger from one fixed chat
+bubble. The browser qualification uses compiled assets, native Stacks HTTP,
+and disposable SQLite for a first-party customer message, an authenticated
+agent reply, keyboard focus, and same-tab reload. It also checks help
+fallback, reduced motion, and narrow viewports. The reviewed
+`0.1.0-alpha.0` npm archive already passed
+[public readback](https://github.com/stacksjs/hq.support/actions/runs/43630101975).
+The changed elements are queued for `0.1.0-alpha.1`.
+
+The local operator dashboard discovers the failed-job model directly from
+`app/Models`. Its native model API omits payloads and exceptions and refuses
+generic access to tenant conversations, contacts, workspaces, customer
+sessions, and API keys. The workspace inbox remains the operator path for
+scoped support records. The
+[launch tracker](https://github.com/stacksjs/hq.support/issues/10) links the
+remaining qualification and deployment issues.
+
 ## Retained backend evidence
 
 `./buddy test tests/feature/support-http.test.ts` starts an isolated real HTTP server and real disposable SQLite or PostgreSQL database, applies the committed native model migrations and native auth tables, then verifies registration/login, cross-workspace refusals, write/read key scope, customer session hashing, allowed-origin CORS, customer isolation, internal note confidentiality, exact wire summaries, idempotency replay/conflict, atomic outbox creation, pending invitations within two seats, concurrent 120th/121st free conversation admission, existing-thread replies after the cap, exact tenth/eleventh AI admission, HQ usage and confirmed one-use connect grants. Tests mutate verification flags only inside their owned test database; there is no endpoint that accepts those flags from a customer.

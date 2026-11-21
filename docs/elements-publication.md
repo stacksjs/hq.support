@@ -2,7 +2,7 @@
 
 The minimal npm distribution is `@stacksjs/support-elements`: five native stx custom elements, per-element ESM/declarations/CSS, the self-registering bundle, SSR helpers and Custom Elements Manifest. The hosted `createSupport` lazy loader remains a separate public asset. The publication checks require its native bundle to match the npm bundle exactly. No new loader facade is invented inside this npm package.
 
-The initial published version is `0.1.0-alpha.0`, pinned on this package's entry in `config/library.ts`, independently of the application's `0.0.0` version. The package README explains browser module imports and the alpha qualification limits. The publication workflow is manually dispatched, defaults to verification/dry-run, and publishes only when its `publish` input is selected. This is release coordination within the existing authorized task, not an additional user approval requirement.
+The initial published version is `0.1.0-alpha.0`. The next candidate is `0.1.0-alpha.1`, pinned in `config/library.ts` independently of the application's `0.0.0` version. The package README explains browser module imports and the alpha qualification limits. The publication workflow is manually dispatched, defaults to verification/dry-run, and publishes when its `publish` input is selected.
 
 ## Native fixes and publisher choice
 
@@ -21,7 +21,7 @@ After the native element build and Chromium compiler proof, main CI runs:
 ```yaml
 - name: Prepare reviewed component publication artifact
   env:
-    SUPPORT_ELEMENTS_VERSION: 0.1.0-alpha.0
+    SUPPORT_ELEMENTS_VERSION: 0.1.0-alpha.1
   run: bun --no-env-file scripts/support-elements-release.ts prepare
 - uses: actions/upload-artifact@v7
   with:
@@ -77,4 +77,4 @@ The earlier source `6fb11394806ce659abec5c7c806b99e01f2864dd` was held after foc
 
 [Publication run 43625621495](https://github.com/stacksjs/hq.support/actions/runs/43625621495) uploaded `@stacksjs/support-elements@0.1.0-alpha.0` successfully after operator authentication at 2026-11-14 18:20:04 UTC. The native publisher warned that registry processing can take minutes. The immediate readback at 18:20:05 UTC received metadata 404, so the run failed its post-publication gate after upload acceptance. This is a transient read failure following a successful upload, not an unpublished package or permission to republish.
 
-Subsequent public metadata returned HTTP 200. An unchanged local verifier against the exact source-CI artifact confirmed public SHA-512 integrity, canonical archive SHA-256, every payload hash, the alpha tag, clean real-registry installation and strict consumer types. The local browser check could not run because Chrome was unavailable. The read-only hosted workflow must still establish the complete public package and hosted-loader browser result. Until that run passes, post-publication browser qualification remains incomplete. This early alpha makes no general availability, live-provider, telephony/audio or customer-delivery claim.
+Subsequent public metadata returned HTTP 200. [The hosted readback workflow](https://github.com/stacksjs/hq.support/actions/runs/43630101975) verified the original archive, public registry installation, strict consumer types, all five component imports and the hosted-loader Chromium journeys. The first-party Messenger changes are slated for the next alpha candidate.

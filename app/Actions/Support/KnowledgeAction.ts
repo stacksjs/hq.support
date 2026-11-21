@@ -5,6 +5,7 @@ import { answerQuestion } from '../../Support/ai'
 import { SupportError, fail } from '../../Support/errors'
 import { agentProject, customer, object, project as findProject } from '../../Support/service'
 import { agentArticle, articleRevisions, createArticle, publishedArticle, searchArticles, updateArticle } from '../../Support/knowledge'
+import { requireWidgetOrigin } from '../../Support/widget-origin'
 
 export type KnowledgeOperation = 'article' | 'search' | 'create' | 'update' | 'import' | 'revisions' | 'public.search' | 'public.article' | 'widget.search' | 'answer' | 'copilot'
 async function handle(request: RequestInstance, operation: KnowledgeOperation, provider?: AnswerProvider) {
@@ -14,11 +15,7 @@ async function handle(request: RequestInstance, operation: KnowledgeOperation, p
     const account = widget || publicRead ? undefined : await request.user()
     if (!widget && !publicRead && !account) fail(401, 'unauthorized', 'Sign in to continue.')
     const project = widget || publicRead ? await findProject(request.getParam('project')) : await agentProject(Number(account!.id), request.getParam('project'))
-    if (widget) {
-      const candidate = request.headers.get('origin'), allowed = JSON.parse(String(project.allowed_origins)) as string[]
-      if (!candidate || !allowed.includes(candidate)) fail(403, 'origin_denied', 'Messenger origin is not allowed.')
-      origin = candidate
-    }
+    if (widget) origin = requireWidgetOrigin(request, project.allowed_origins)
     const bearer = /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') || '')?.[1] ?? ''
     const person = widget ? await customer(project, bearer) : undefined
     const input = object(request.all())

@@ -55,7 +55,7 @@ async function configure(force = false) {
   this.loading = true
   this._typesAbort = new AbortController()
   try {
-    const response = await fetch(this.apiUrl.replace(/\/$/, '') + '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/ticket-types', { credentials: 'omit', signal: this._typesAbort.signal, headers: { Authorization: 'Bearer ' + this.sessionToken } })
+    const response = await fetch(this.apiUrl.replace(/\/$/, '') + '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/ticket-types', { credentials: 'omit', referrerPolicy: 'origin', signal: this._typesAbort.signal, headers: { Authorization: 'Bearer ' + this.sessionToken } })
     const data: FormsResponse = await response.json()
     if (!response.ok) throw new Error(data.error?.message || data.message || 'Ticket forms could not be loaded.')
     if (generation !== this._generation) return

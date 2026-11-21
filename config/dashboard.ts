@@ -18,7 +18,8 @@ import type { DashboardConfig } from '@stacksjs/types'
  *     `app/Models/` is auto-listed, and you always want to see those.
  */
 export default {
-  enabled: false,
+  enabled: process.env.SUPPORT_OPERATOR_DASHBOARD === '1',
+  env: ['local', 'development', 'test'],
 
   /**
    * Which roles may reach each of the framework's own dashboard route groups
@@ -44,21 +45,21 @@ export default {
    */
 
   sections: {
-    library: { enabled: true },
-    // content, commerce and marketing are deliberately absent: each follows
-    // its own feature, so a section is only in the sidebar when the pages
-    // under it can actually load. Set one here to override that either way.
-    analytics: { enabled: true },
+    library: { enabled: false },
+    content: { enabled: false },
+    commerce: { enabled: false },
+    marketing: { enabled: false },
+    analytics: { enabled: false },
     management: { enabled: true },
     utilities: { enabled: true },
     data: {
       // Basic built-in rows. Disable any you don't need; your userland
       // models in `app/Models/` always appear regardless of these flags.
-      dashboard: { enabled: true },
-      activity: { enabled: true },
-      users: { enabled: true },
-      teams: { enabled: true },
-      subscribers: { enabled: true },
+      dashboard: { enabled: false },
+      activity: { enabled: false },
+      users: { enabled: false },
+      teams: { enabled: false },
+      subscribers: { enabled: false },
       allModels: { enabled: true },
     },
   },

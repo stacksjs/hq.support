@@ -29,7 +29,7 @@ export function qualificationErrors(value: unknown, commit: string): string[] {
 if (import.meta.main) {
   try {
     const commit = process.env.GITHUB_SHA || (await Bun.$`git rev-parse HEAD`.text()).trim()
-    const report = JSON.parse(await readFile(resolve(import.meta.dir, '../deployment/qualification.json'), 'utf8'))
+    const report = JSON.parse(process.env.SUPPORT_LAUNCH_QUALIFICATION || await readFile(resolve(import.meta.dir, '../deployment/qualification.json'), 'utf8'))
     const errors = qualificationErrors(report, commit)
     if (errors.length) throw new Error(errors.join('\n'))
     console.info('The complete launch qualification matches this release.')

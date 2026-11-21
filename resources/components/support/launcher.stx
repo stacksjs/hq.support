@@ -7,7 +7,7 @@ function open() {
 }
 </script>
 <template>
-  <button type="button" @click="open" aria-label="{{ this.label }}">
+  <button id="support-launcher" type="button" @click="open" aria-label="{{ this.label }}">
     <span class="mark" aria-hidden="true">h</span>
     <span>{{ this.label }}</span>
     @if(this.unread > 0)

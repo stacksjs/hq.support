@@ -30,6 +30,7 @@ declare global {
   const createPhone: typeof autoImports.createPhone
   const createReports: typeof autoImports.createReports
   const createSupportSettings: typeof autoImports.createSupportSettings
+  const connectSiteMessenger: typeof autoImports.connectSiteMessenger
   const routingReasonLabel: typeof autoImports.routingReasonLabel
   const createTeamSettings: typeof autoImports.createTeamSettings
   const createTicketConfiguration: typeof autoImports.createTicketConfiguration

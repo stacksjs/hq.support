@@ -22,10 +22,13 @@ generated migrations. The observed shared production PostgreSQL does not yet
 have that extension available. A local pgvector test server does not qualify
 the production host.
 
-The application is under development. The production workflow requires successful
-CI for the exact main commit and, for a real deploy, a complete matching
-`deployment/qualification.json`. `scripts/check-launch.ts` names every required
-qualification. Do not replace failed or missing evidence with claimed completion.
+The read-only GitHub Deploy preview runs Buddy without SSH or provider credentials.
+A real production deploy requires successful CI for the exact main commit and a
+matching qualification report. Store the reviewed JSON in the production
+environment's `SUPPORT_LAUNCH_QUALIFICATION` secret after the commit has been
+qualified. Local verification also accepts `deployment/qualification.json`.
+`scripts/check-launch.ts` names every required qualification. The report is
+maintained outside the commit it names.
 
 ## Runtime namespace evidence
 
@@ -80,6 +83,21 @@ The verified Porkbun credentials can manage hq.support. Reuse them through encry
 configuration. Snapshot the full DNS zone before cutover. The existing apex ALIAS
 and wildcard CNAME require explicit reconciliation: additive DNS synchronization
 does not replace existing records. Preserve unrelated NS, MX and TXT records.
+
+## Homepage chat
+
+Use a dedicated first-party workspace project and assign the team monitoring the
+inbox. Enable anonymous Messenger sessions and allow the exact public origin
+`https://hq.support`. Set the project's public UUID as
+`SUPPORT_SITE_MESSENGER_PROJECT_ID` in the API runtime. The homepage bubble
+loads the versioned build served through `/support.js` when a visitor opens it.
+The site uses tab-scoped storage to resume the anonymous conversation. The
+inbox receives those messages through the standard customer API.
+
+The production deployment workflow verifies the HTTPS homepage, the loader's
+bytes and the Messenger project configuration. Complete the public send and
+reply journey after cutover using the dedicated project and a clearly marked
+test conversation.
 
 ## Qualification and cutover
 

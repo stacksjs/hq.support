@@ -12,7 +12,7 @@ async function refresh() {
   this._abort = new AbortController()
   this.pending = true
   try {
-    const response = await fetch(this.apiUrl.replace(/\/$/, '') + '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/tickets/' + encodeURIComponent(this.ticketId), { credentials: 'omit', signal: this._abort.signal, headers: { Authorization: 'Bearer ' + this.sessionToken } })
+    const response = await fetch(this.apiUrl.replace(/\/$/, '') + '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/tickets/' + encodeURIComponent(this.ticketId), { credentials: 'omit', referrerPolicy: 'origin', signal: this._abort.signal, headers: { Authorization: 'Bearer ' + this.sessionToken } })
     const data: TicketResponse = await response.json()
     if (!response.ok) throw new Error(data.error?.message || data.message || 'Ticket could not be loaded.')
     this.ticket = data.ticket || { id: data.id, title: data.title, status: data.status }

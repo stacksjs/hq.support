@@ -15,7 +15,7 @@ async function search(event: Event) {
   this.pending = true
   this.notice = ''
   try {
-    const response = await fetch(this.apiUrl.replace(/\/$/, '') + '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/articles?q=' + encodeURIComponent(query), { signal: this._abort.signal, credentials: 'omit', headers: { Authorization: 'Bearer ' + this.sessionToken } })
+    const response = await fetch(this.apiUrl.replace(/\/$/, '') + '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/articles?q=' + encodeURIComponent(query), { signal: this._abort.signal, credentials: 'omit', referrerPolicy: 'origin', headers: { Authorization: 'Bearer ' + this.sessionToken } })
     const data: SearchResponse = await response.json()
     if (!response.ok) throw new Error(data.error?.message || data.message || 'Help search is unavailable.')
     this.results = (data.articles || []).map(article => ({ title: article.title, excerpt: article.excerpt || article.body || '' }))

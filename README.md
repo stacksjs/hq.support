@@ -2,7 +2,7 @@
 
 Customer support built with Bun, TypeScript, Stacks, stx and ts-css. HQ.support is being built as a shared inbox, embeddable messenger, ticketing, knowledge, AI and managed communications platform.
 
-This repository is under development. The full launch matrix has not passed. See [implementation status](docs/implementation-status.md) for retained evidence and remaining work, and [deployment](docs/deployment.md) for the release gate. Production DNS and provider cutover wait for that gate.
+This repository is under development. The [launch tracker](https://github.com/stacksjs/hq.support/issues/10) links the implementation and qualification work. See [implementation status](docs/implementation-status.md) for retained evidence and [deployment](docs/deployment.md) for the release gate.
 
 ## Local development
 
@@ -21,6 +21,10 @@ Keep `.env` and `.env.keys` private. The example environment has no usable provi
 
 For uncapped core self-hosting, set the operator-only `SUPPORT_DEPLOYMENT_MODE=selfhost` before creating workspaces. Existing workspace plans remain explicit. [Self-hosting](docs/self-hosting.md) describes enterprise licensing and the current managed-wallet requirements for paid providers.
 
+The homepage's chat bubble uses the compiled Messenger. In workspace settings, create a dedicated project, enable anonymous sessions, and allow the exact frontend origin. Set `SUPPORT_SITE_MESSENGER_PROJECT_ID` to its public ID and restart the API. The site connects when the visitor opens chat and resumes the conversation in the same browser tab.
+
+The Stacks developer dashboard discovers operator models from `app/Models`. On a local development machine use `SUPPORT_OPERATOR_DASHBOARD=1 APP_URL=http://127.0.0.1 STACKS_DEV_LOCALHOST=1 ./buddy dev --dashboard`. Open the dashboard link printed by Buddy. The generic catalog exposes read-only failed-job metadata. Manage tenant records through the authenticated HQ.support workspace at `/app`.
+
 ## Verification
 
 Build the widget before running tests that verify its emitted artifacts:
@@ -31,6 +35,7 @@ bun scripts/build-support-elements.ts
 ./buddy typecheck
 ./buddy test
 ./buddy build:views
+bun --no-env-file scripts/qualify-site-messenger.ts
 ```
 
 The HTTP suites use native authentication, model-generated migrations, SQL transactions and disposable databases. External provider boundaries use deterministic fixtures. Set `STACKS_TEST_POSTGRES_URL` to a test administrator connection to run the PostgreSQL cases; the harness creates and removes its own random databases. Without it, PostgreSQL cases are explicitly skipped. The test server needs the pgvector extension available; CI uses the pinned pgvector/PostgreSQL 17 image. Never point tests at a production database.

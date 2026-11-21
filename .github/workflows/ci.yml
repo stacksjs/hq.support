@@ -73,7 +73,7 @@ jobs:
           retention-days: 7
       - name: Prepare reviewed component publication artifact
         env:
-          SUPPORT_ELEMENTS_VERSION: 0.1.0-alpha.0
+          SUPPORT_ELEMENTS_VERSION: 0.1.0-alpha.1
           CHROME_PATH: /usr/bin/google-chrome
         run: bun --no-env-file scripts/support-elements-release.ts prepare
       - name: Retain same-commit component publication candidate
@@ -102,6 +102,12 @@ jobs:
           NODE_ENV: production
           APP_URL: https://hq.support
           APP_DOMAIN: hq.support
+          SITE_URL: https://hq.support
+      - name: Qualify homepage Messenger with native support HTTP
+        timeout-minutes: 4
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: bun --no-env-file scripts/qualify-site-messenger.ts
       - name: Qualify native agent team and search journeys
         timeout-minutes: 5
         env:
@@ -132,5 +138,6 @@ jobs:
             storage/framework/runtime/credential-browser
             storage/framework/runtime/csat-browser
             storage/framework/runtime/reopening-browser
+            storage/framework/runtime/site-messenger-browser
           if-no-files-found: warn
           retention-days: 7

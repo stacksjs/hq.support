@@ -2,6 +2,7 @@ import { Action } from '@stacksjs/actions/runtime'
 import { agentProject, customer, object, project as findProject } from '../../Support/service'
 import { configureCsat, csatReport, csatSettings, customerCsat, submitCsat } from '../../Support/csat'
 import { fail, SupportError } from '../../Support/errors'
+import { requireWidgetOrigin } from '../../Support/widget-origin'
 
 export function csatAction(operation: 'settings' | 'configure' | 'report' | 'widget.read' | 'widget.submit') {
   return new Action({ name: `Support CSAT ${operation}`, apiResponse: false, method: operation === 'configure' ? 'PATCH' : operation === 'widget.submit' ? 'POST' : 'GET', async handle(request) {
@@ -12,11 +13,7 @@ export function csatAction(operation: 'settings' | 'configure' | 'report' | 'wid
       if (!widget && !user) fail(401, 'unauthorized', 'Sign in to continue.')
       const project = widget ? await findProject(request.getParam('project')) : await agentProject(Number(user!.id), request.getParam('project'))
       const token = /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') || '')?.[1] ?? ''
-      if (widget) {
-        const candidate = request.headers.get('origin'), allowed = JSON.parse(String(project.allowed_origins || '[]')) as string[]
-        if (!candidate || !allowed.includes(candidate)) fail(403, 'origin_denied', 'Messenger origin is not allowed for this project.')
-        origin = candidate
-      }
+      if (widget) origin = requireWidgetOrigin(request, project.allowed_origins)
       const person = widget ? await customer(project, token) : undefined
       const input = { ...object(request.all()) }; delete input.project; delete input.id
       if (JSON.stringify(input).length > 10000) fail(413, 'csat_body_large', 'Survey input exceeds the request bound.')

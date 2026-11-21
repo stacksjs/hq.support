@@ -12,6 +12,12 @@ route.post('/register', 'Actions/Auth/RegisterAction').rateLimit(3, 'minute')
 route.post('/verify-two-factor-login', 'Actions/Auth/VerifyTwoFactorLoginAction').rateLimit(5, 'minute')
 route.post('/logout', 'Actions/Auth/LogoutAction').middleware('auth')
 
+route.get('/support/site-messenger', () => {
+  const project = process.env.SUPPORT_SITE_MESSENGER_PROJECT_ID?.trim()
+  const configured = project && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(project)
+  return Response.json({ project: configured ? project : null }, { headers: { 'Cache-Control': 'no-store' } })
+}).rateLimit(60, 'minute')
+
 route.get('/support/me', supportAction('me', 'GET')).middleware('auth')
 route.post('/support/workspaces', supportAction('workspaces.create', 'POST')).middleware('auth').rateLimit(5, 'hour')
 route.post('/support/workspaces/{workspace}/projects', supportAction('projects.create', 'POST')).middleware('auth')

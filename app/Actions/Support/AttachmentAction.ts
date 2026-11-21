@@ -3,17 +3,14 @@ import type { RequestInstance } from '@stacksjs/types'
 import { agentProject, customer, project as findProject } from '../../Support/service'
 import { SupportError, fail } from '../../Support/errors'
 import { download, remove, upload } from '../../Support/attachments'
+import { requireWidgetOrigin } from '../../Support/widget-origin'
 
 async function handle(request: RequestInstance, operation: 'upload' | 'download' | 'remove', widget: boolean) {
   let origin: string | null = null
   try {
     const reference = request.getParam('project')
     const project = widget ? await findProject(reference) : await agentProject(Number((await request.user())?.id), reference)
-    if (widget) {
-      origin = request.headers.get('origin')
-      const allowed = JSON.parse(String(project.allowed_origins)) as string[]
-      if (!origin || !allowed.includes(origin)) { origin = null; fail(403, 'origin_denied', 'Messenger origin is not allowed.') }
-    }
+    if (widget) origin = requireWidgetOrigin(request, project.allowed_origins)
     const bearer = /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') || '')?.[1] || ''
     const person = widget ? await customer(project, bearer) : undefined
     let result: Response

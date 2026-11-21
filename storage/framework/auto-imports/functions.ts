@@ -16,6 +16,7 @@ export type { SupportBootOptions, SupportUpdateOptions, SupportControllerOptions
 export { createPhone } from '../../../resources/functions/support/phone'
 export { createReports } from '../../../resources/functions/support/reports'
 export { createSupportSettings } from '../../../resources/functions/support/settings'
+export { connectSiteMessenger } from '../../../resources/functions/support/site-messenger'
 export { routingReasonLabel } from '../../../resources/functions/support/team-routing'
 export type { SupportTeam, SupportTeamMember, TeamInbox, RoutingAgent, AgentIdentity, Assignment } from '../../../resources/functions/support/team-routing'
 export { createTeamSettings } from '../../../resources/functions/support/team-settings'

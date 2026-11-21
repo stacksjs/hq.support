@@ -9,6 +9,7 @@ import { approve, hq } from './hq'
 import { createWorkflow, listWorkflows } from './workflows'
 import { createArticle, searchArticles, updateArticle } from './knowledge'
 import { confirmationCode } from '@stacksjs/hq/service'
+import { requireWidgetOrigin } from './widget-origin'
 
 export type Operation = 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.session.revoke' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.create' | 'widget.tickets.detail' | 'widget.ticket-types' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
 
@@ -26,12 +27,6 @@ function input(request: RequestInstance): Row {
 }
 function parameters(request: RequestInstance) {
   return { project: request.getParam('project'), id: request.getParam('id'), workspace: request.getParam('workspace'), code: request.getParam('code') }
-}
-function originAllowed(request: RequestInstance, project: Row) {
-  const origin = request.headers.get('origin')
-  const permitted = JSON.parse(String(project.allowed_origins || '[]')) as string[]
-  if (!origin || !permitted.includes(origin)) fail(403, 'origin_denied', 'Messenger origin is not allowed for this project.')
-  return origin
 }
 async function handleCore(request: RequestInstance, operation: Operation): Promise<Response> {
   const acceptedAt = Date.now()
@@ -77,7 +72,7 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
     let person: Row | undefined
     let cors: string | undefined
     if (widget) {
-      cors = originAllowed(request, project)
+      cors = requireWidgetOrigin(request, project.allowed_origins)
       if (operation === 'widget.session') {
         if (data.token) {
           const contact = await support.customer(project, text(data.token, 'token', 256))
@@ -167,12 +162,9 @@ export async function handle(request: RequestInstance, operation: Operation): Pr
   if (operation.startsWith('widget.')) {
     try {
       const selected = await support.project(request.getParam('project'))
-      const origin = request.headers.get('origin')
-      const allowed = JSON.parse(String(selected.allowed_origins)) as string[]
-      if (origin && allowed.includes(origin)) {
-        result.headers.set('Access-Control-Allow-Origin', origin)
-        result.headers.set('Vary', 'Origin')
-      }
+      const origin = requireWidgetOrigin(request, selected.allowed_origins)
+      result.headers.set('Access-Control-Allow-Origin', origin)
+      result.headers.set('Vary', 'Origin')
     }
     catch { /* A missing project never widens origin access. */ }
   }
