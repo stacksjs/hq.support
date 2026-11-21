@@ -3,8 +3,8 @@ import { assertIsolatedOk, runIsolated } from '@stacksjs/testing'
 
 interface DeploymentProjection {
   project: { slug: string }, stateDir: string, cloud: { provider: string, attachTo?: string },
-  main: { domain: string, port: number, env: Record<string, string> },
-  api: { domain: string, port: number, env: Record<string, string> },
+  main: { domain: string, port: number, preStart: string[], env: Record<string, string> },
+  api: { domain: string, port: number, preStart: string[], env: Record<string, string> },
   www: { redirect: string }, dns: { domain: string },
   database: { name: string, username: string }, sslDomains: string[],
 }
@@ -31,6 +31,8 @@ test('deployment targets isolate domains, ports, database ownership and release 
     expect(api.env.DB_USERNAME).toBe(config.database.username)
     expect(main.env.PORT_API).toBe(String(api.port))
     expect(main.env.API_URL).toBe(`http://127.0.0.1:${api.port}`)
+    expect(main.preStart[0]).toBe('bun install --frozen-lockfile')
+    expect(api.preStart).toEqual(['bun install --frozen-lockfile'])
     expect(main.env.SUPPORT_SITE_MESSENGER_PROJECT_ID).toBeUndefined()
     expect(api.env.SUPPORT_SITE_MESSENGER_PROJECT_ID).toBe(target === 'production' ? siteMessengerProject : undefined)
     expect(config.sslDomains).toContain(main.domain)

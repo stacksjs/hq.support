@@ -28,6 +28,7 @@ function variablesFor(environment: 'production' | 'staging' | 'development') {
   }
 }
 const variables = variablesFor(target)
+const installRuntimeDependencies = 'bun install --frozen-lockfile'
 const siteMessengerProject = target === 'production' ? process.env.SUPPORT_SITE_MESSENGER_PROJECT_ID?.trim() : undefined
 if (siteMessengerProject && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(siteMessengerProject))
   throw new Error('SUPPORT_SITE_MESSENGER_PROJECT_ID must be a public project UUID.')
@@ -70,7 +71,7 @@ export const tsCloud: TsCloudConfig = {
     main: {
       root: '.', path: '/', domain, framework: 'stacks', port: webPort,
       start: 'bun node_modules/@stacksjs/buddy/dist/serve-entry.js',
-      preStart: ['bun install --frozen-lockfile', 'bun node_modules/@stacksjs/buddy/dist/cli.js migrate', 'bun node_modules/@stacksjs/buddy/dist/cli.js queue:table'],
+      preStart: [installRuntimeDependencies, 'bun node_modules/@stacksjs/buddy/dist/cli.js migrate', 'bun node_modules/@stacksjs/buddy/dist/cli.js queue:table'],
       queues: [{ connection: 'database', queue: 'support-workflows,support-retention,support-imports,support-delivery,support-channels,support-sla,support-email,support-knowledge,default', processes: 2, timeout: 120, tries: 5, memory: 384, stopWaitSecs: 120 }],
       scheduler: true,
       memoryHigh: '768M', memoryMax: '1536M',
@@ -79,6 +80,7 @@ export const tsCloud: TsCloudConfig = {
     api: {
       root: '.', domain: `api.${domain}`, port: apiPort,
       start: 'bun node_modules/@stacksjs/actions/dist/serve/api.js',
+      preStart: [installRuntimeDependencies],
       memoryHigh: '768M', memoryMax: '1536M',
       env: { ...variables, ...(siteMessengerProject ? { SUPPORT_SITE_MESSENGER_PROJECT_ID: siteMessengerProject } : {}), HOST: '127.0.0.1', PORT_API: String(apiPort) },
     },
