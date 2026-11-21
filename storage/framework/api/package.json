@@ -12,7 +12,7 @@
     "@stacksjs/queue": "^0.75.628",
     "@stacksjs/router": "^0.75.628",
     "@stacksjs/storage": "^0.75.628",
-    "@stacksjs/utils": "^0.75.628"
+    "@stacksjs/utils": "^0.75.639"
   },
   "workspaces": [
     "../core/*"
