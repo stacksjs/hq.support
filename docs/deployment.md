@@ -123,3 +123,23 @@ routes alongside the corresponding runtime implementation.
 
 Backups must meet the 15-minute RPO and demonstrated four-hour RTO. A failed
 shared-host voice load rehearsal requires isolated compute before launch.
+
+### Production recovery
+
+The Stacks `stacks-project-recovery@hq_support.timer` snapshots PostgreSQL and
+the web and API `shared/storage/app` directories every five minutes. AWS and
+Hetzner use separate project repositories. Each recovery receipt records when
+capture started and when the remote database archive was verified. The
+`stacks-project-recovery-check@hq_support.timer` checks both receipts every
+minute and alerts if either recovery point is older than 15 minutes.
+
+On the production host, run `stacks-project-recovery check hq_support` to inspect
+freshness and `stacks-project-recovery drill hq_support` to restore into disposable
+PostgreSQL instances and verify both persistent file trees. The drill uses its
+own lock and status file, so the five-minute backup can continue during restore.
+The shared daily host backup uses separate snapshots and retention.
+
+Buddy rollback requires recorded service definitions for both releases when a
+site has background workers. Keep two successful deployments with the updated
+cloud driver before rehearsing rollback. Verify the web, API, each queue worker
+and the scheduler are running the intended release at each step of the rehearsal.
