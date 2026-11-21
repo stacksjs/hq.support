@@ -163,7 +163,14 @@ try {
   await createArticle(project, { slug: 'phone-public', title: 'Phone answer', body: 'Public phone information', status: 'published', visibility: 'public' }, Number(user!.id))
   await createArticle(project, { slug: 'phone-private', title: 'Phone secret', body: 'Private phone secret', status: 'published', visibility: 'internal' }, Number(user!.id))
   let realtime: ProviderRealtimeSocket | undefined
-  mediaServer = await startVoiceServer({ port: 0, hostname: '127.0.0.1', fetch: provider, realtimeSocket: () => { realtime = new ProviderRealtimeSocket(); return realtime } })
+  const streamCapacity = Number(process.env.SUPPORT_TEST_VOICE_STREAMS ?? 4)
+  assert.ok(Number.isSafeInteger(streamCapacity) && streamCapacity > 0 && streamCapacity <= 32)
+  const realtimePeers: ProviderRealtimeSocket[] = []
+  mediaServer = await startVoiceServer({ port: 0, hostname: '127.0.0.1', maxStreams: streamCapacity, fetch: provider, realtimeSocket: () => {
+    realtime = new ProviderRealtimeSocket()
+    realtimePeers.push(realtime)
+    return realtime
+  } })
   const mediaPath = `/phone/media/${callId}`, publicMedia = `https://voice.example.test${mediaPath}`
   const unauthenticatedUpgrade = await fetch(`http://127.0.0.1:${mediaServer.port}${mediaPath}`, { headers: { upgrade: 'websocket', connection: 'Upgrade', 'sec-websocket-key': Buffer.alloc(16, 1).toString('base64'), 'sec-websocket-version': '13' } })
   check(unauthenticatedUpgrade.status === 401, 'provider media upgrade requires the exact signed public URL')
@@ -261,6 +268,53 @@ try {
   const retained = await request(retention + '/run', 'POST', {}, owner)
   check(retained.status === 200 && retained.data.processed === 1 && (await one('SELECT transcript FROM support_phone_calls WHERE id = ?', [stored!.id]))?.transcript === '[Removed by retention policy]', `closed voice transcript follows native retention policy ${JSON.stringify(retained.data)}`)
   check(!String((await one("SELECT result FROM support_phone_tool_results WHERE call_id = ? AND tool_call_id = 'ticket-one'", [stored!.id]))?.result).includes('Voice ticket'), 'voice tool response copies obey the same retention policy')
+
+  const concurrentCalls = []
+  for (let index = 0; index <= streamCapacity; index++) {
+    const started = await request(path + '/calls', 'POST', { ...input, idempotencyKey: `media-load-${index}`, to: `+161355501${20 + index}` }, owner)
+    assert.equal(started.status, 201)
+    const id = String(started.data.call.id)
+    const row = (await one('SELECT provider_sid FROM support_phone_calls WHERE public_id = ?', [id]))!
+    const provider = calls.get(String(row.provider_sid))!
+    assert.equal((await callback(id, 'consent', provider, { Digits: '1' })).status, 200)
+    concurrentCalls.push({ id, sid: String(row.provider_sid), stream: `MZ${(index + 1).toString(16).padStart(32, '0')}` })
+  }
+  const mediaHeaders = (id: string) => ({ 'x-twilio-signature': signature(`https://voice.example.test/phone/media/${id}`, new URLSearchParams()) })
+  const upgrade = (id: string) => fetch(`http://127.0.0.1:${mediaServer!.port}/phone/media/${id}`, { headers: { ...mediaHeaders(id), upgrade: 'websocket', connection: 'Upgrade', 'sec-websocket-key': Buffer.alloc(16, 1).toString('base64'), 'sec-websocket-version': '13' } })
+  async function openMedia(id: string) {
+    const socket = new ClientSocket(`ws://127.0.0.1:${mediaServer!.port}/phone/media/${id}`, { headers: mediaHeaders(id) })
+    await new Promise<void>((resolve, reject) => {
+      socket.addEventListener('open', () => resolve(), { once: true })
+      socket.addEventListener('error', () => reject(new Error('Concurrent media connection failed')), { once: true })
+    })
+    return socket
+  }
+  const streams = await Promise.all(concurrentCalls.slice(0, streamCapacity).map(async call => ({ ...call, socket: await openMedia(call.id) })))
+  const overflow = concurrentCalls[streamCapacity]!
+  check((await upgrade(streams[0]!.id)).status === 409, 'a pending call admits exactly one signed media socket')
+  check((await upgrade(overflow.id)).status === 503, 'media listener rejects new sessions at its configured capacity')
+  const firstPeer = realtimePeers.length
+  const startedAt = performance.now()
+  for (const { id, sid, stream, socket } of streams) {
+    socket.send(JSON.stringify({ event: 'connected', protocol: 'Call', version: '1.0.0' }))
+    socket.send(JSON.stringify({ event: 'start', sequenceNumber: '1', streamSid: stream, start: { streamSid: stream, accountSid, callSid: sid, tracks: ['inbound'], mediaFormat: { encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1 }, customParameters: { call: id, proof: createHmac('sha256', authToken).update(`hq-support-stream:${id}`).digest('hex') } } }))
+  }
+  await until(() => realtimePeers.length === firstPeer + streams.length, 'all admitted streams initialize their independent native realtime sessions')
+  const framesPerStream = 50
+  const payload = Buffer.alloc(160, 255).toString('base64')
+  for (let frame = 0; frame < framesPerStream; frame++) {
+    for (const { stream, socket } of streams) socket.send(JSON.stringify({ event: 'media', sequenceNumber: String(frame + 2), streamSid: stream, media: { track: 'inbound', chunk: String(frame + 1), timestamp: String(frame * 20), payload } }))
+    await Bun.sleep(20)
+  }
+  const loadedPeers = realtimePeers.slice(firstPeer)
+  await until(() => loadedPeers.every(peer => peer.sent.filter(event => event.type === 'input_audio_buffer.append').length === framesPerStream), 'every frame reaches the correct realtime session under concurrent load')
+  for (const { sid, stream, socket } of streams) socket.send(JSON.stringify({ event: 'stop', sequenceNumber: String(framesPerStream + 2), streamSid: stream, stop: { accountSid, callSid: sid } }))
+  await until(() => loadedPeers.every(peer => peer.readyState === 3), 'all concurrent realtime sessions release resources after stop')
+  await until(() => streams.every(stream => calls.get(stream.sid)?.status === 'completed'), 'all closed media streams finish the test provider calls')
+  const next = await openMedia(overflow.id)
+  next.close()
+  check(next.readyState !== WebSocket.CONNECTING, 'a new signed media socket can use released capacity')
+  console.log(`PASS voice load (${streams.length} parallel streams, ${streams.length * framesPerStream} audio frames, ${Math.round(performance.now() - startedAt)} ms)`)
   console.log(`PASS phone HTTP and media (${checks} checks)`)
   if (process.env.SUPPORT_PHONE_BROWSER_FIXTURE === '1') {
     const statePath = process.env.SUPPORT_PHONE_FIXTURE_STATE

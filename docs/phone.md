@@ -74,6 +74,11 @@ must belong to that parent call and are aggregated before settlement.
   upgrade arbitrary provider WebSockets. Its `/health` checks the listener, not
   provider account readiness. Proxy WebSocket upgrade headers and the original
   signature, and use the pinned public HTTPS URL when validating signatures.
+- `SUPPORT_VOICE_MAX_STREAMS` bounds authenticated media sockets per listener
+  process and defaults to 32. Size the configured limit for the host. Each call
+  can use one media socket at a time. New calls receive HTTP 503 when capacity
+  is full and can connect when an existing session closes. Launch capacity
+  still needs a measured rehearsal on the intended voice host.
 - Server-only `OPENAI_API_KEY` for the native OpenAI Realtime adapter.
 - `SUPPORT_PHONE_PRICING`, a JSON object keyed by provider account SID. Every
   policy supplies positive integer `telephonyCeilingCentsPerMinute`,
