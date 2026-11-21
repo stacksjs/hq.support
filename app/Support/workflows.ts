@@ -10,6 +10,7 @@ export const workflowLimits = { nodes: 50, steps: 100, waitSeconds: 30 * 86400, 
 export type WorkflowNode = Row & { id: string, type: string, next?: string }
 export type WorkflowDefinition = { start: string, nodes: WorkflowNode[] }
 const nodeTypes = ['condition', 'wait', 'assign', 'tag', 'reply', 'note', 'ticket', 'status', 'tool', 'start_conversation', 'end']
+const triggerKinds = ['event.created', 'conversation.created', 'ticket.created']
 const safeKey = (key: string) => /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(key) && !['constructor', 'prototype', '__proto__'].includes(key)
 
 export function definition(value: unknown): WorkflowDefinition {
@@ -223,12 +224,12 @@ export async function executeWorkflowRun(id: unknown, options: { now?: number, l
 export async function workflowWorkerTick(options: { now?: number, deliver?: DeliveryHandler, limit?: number } = {}) {
   const now = options.now ?? Date.now(), limit = Math.min(200, Math.max(1, options.limit ?? 50))
   const delivery = await drainOutbox(async (event) => {
-    if (['event.created', 'conversation.created', 'ticket.created'].includes(event.kind)) {
+    if (triggerKinds.includes(event.kind)) {
       const dispatched = await dispatchWorkflowEvent(event, now)
       return { status: 'delivered', receipt: `internal-workflow-dispatch:${dispatched.dispatchId}` }
     }
     return options.deliver ? await options.deliver(event) : { status: 'unconfigured', reason: 'No channel adapter configured. Durable delivery remains pending.', retryAfterMs: 60000 }
-  }, { now: () => now, limit })
+  }, { now: () => now, limit, kinds: options.deliver ? undefined : triggerKinds })
   const due = await query("SELECT id FROM support_workflow_runs WHERE status IN ('pending', 'running', 'waiting', 'blocked') AND available_at <= ? AND lease_until <= ? ORDER BY id LIMIT ?", [now, now, limit])
   let advanced = 0
   for (const run of due) if ((await executeWorkflowRun(run.id, { now })).advanced) advanced++

@@ -58,10 +58,15 @@ try {
   check(invalid.status === 422, 'cycles rejected before publication')
   const unsafe = await http(`${prefix}/automations`, 'POST', { name: 'No arbitrary execution', event: 'billing.requested', definition: { nodes: [{ id: 'tool', type: 'tool', tool: 'shell.exec', key: 'cmd', value: 'echo unsafe' }] } }, token)
   check(unsafe.status === 422, 'arbitrary code and external tool side effects are unavailable')
+  for (const idempotencyKey of ['backlog-first', 'backlog-second']) {
+    const note = await http(`${prefix}/conversations/${conversation.id}/messages`, 'POST', { body: 'Undelivered private note', visibility: 'internal', idempotencyKey }, token)
+    check(note.status === 201, 'native reply stores older private notes in the durable outbox')
+  }
   const tracked = await http(`${sdk}/events`, 'POST', { externalId: 'vip-1', event: 'billing.requested', attributes: { conversationId: Number(conversation.id) }, idempotencyKey: 'trigger' }, keys.ingestKey)
   check(tracked.status === 200, 'workflow trigger accepted through public server SDK API')
-  const tick = await workflowWorkerTick()
-  check(tick.advanced >= 1, 'native outbox trigger dispatch starts due workflow')
+  const tick = await workflowWorkerTick({ limit: 2 })
+  check(tick.advanced === 1 && tick.delivery.delivered === 2, 'workflow triggers make progress despite an older unrelated outbox backlog')
+  check(Number((await one("SELECT COUNT(*) AS count FROM support_outbox WHERE project_id = ? AND kind = 'note.created' AND status = 'pending' AND attempts = 0", [project.id]))?.count) === 2, 'the workflow worker leaves delivery events available for an adapter')
   const run = await one('SELECT * FROM support_workflow_runs WHERE workflow_id = ?', [workflow.id])
   check(run && run.status === 'pending' && Number(run.cursor) === 1, 'branch checkpoint persisted')
   check(Number((await one("SELECT COUNT(*) AS count FROM jobs WHERE queue = 'support-workflows'"))?.count) >= 1, 'step continuation is durable in native job queue')

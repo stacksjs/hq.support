@@ -19,11 +19,14 @@ async function claimOutbox(id: number, now: number, leaseMs: number): Promise<Ro
 }
 
 /** At-least-once delivery: adapters must forward event.id as the provider's idempotency key. */
-export async function drainOutbox(deliver: DeliveryHandler, options: { limit?: number, leaseMs?: number, now?: () => number } = {}) {
+export async function drainOutbox(deliver: DeliveryHandler, options: { limit?: number, leaseMs?: number, now?: () => number, kinds?: readonly string[] } = {}) {
   const now = options.now || Date.now, limit = options.limit ?? 50, leaseMs = options.leaseMs ?? 60000
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500 || !Number.isSafeInteger(leaseMs) || leaseMs < 1000) throw new TypeError('Invalid delivery batch options')
-  const candidates = await query("SELECT id FROM support_outbox WHERE status IN ('pending', 'processing') AND available_at <= ? AND lease_until <= ? ORDER BY id ASC LIMIT ?", [now(), now(), limit])
   const result = { delivered: 0, retry: 0, unconfigured: 0, claimed: 0 }
+  const { kinds } = options
+  if (kinds?.length === 0) return result
+  const kindFilter = kinds ? ` AND kind IN (${kinds.map(() => '?').join(', ')})` : ''
+  const candidates = await query(`SELECT id FROM support_outbox WHERE status IN ('pending', 'processing') AND available_at <= ? AND lease_until <= ?${kindFilter} ORDER BY id ASC LIMIT ?`, [now(), now(), ...(kinds ?? []), limit])
   for (const candidate of candidates) {
     const claimed = await claimOutbox(Number(candidate.id), now(), leaseMs)
     if (!claimed) continue
