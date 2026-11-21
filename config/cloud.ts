@@ -28,6 +28,9 @@ function variablesFor(environment: 'production' | 'staging' | 'development') {
   }
 }
 const variables = variablesFor(target)
+const siteMessengerProject = target === 'production' ? process.env.SUPPORT_SITE_MESSENGER_PROJECT_ID?.trim() : undefined
+if (siteMessengerProject && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(siteMessengerProject))
+  throw new Error('SUPPORT_SITE_MESSENGER_PROJECT_ID must be a public project UUID.')
 
 /** Shared HQ host, isolated database, Redis namespaces and loopback processes. */
 export const tsCloud: TsCloudConfig = {
@@ -76,7 +79,7 @@ export const tsCloud: TsCloudConfig = {
       root: '.', domain: `api.${domain}`, port: apiPort,
       start: 'bun node_modules/@stacksjs/actions/dist/serve/api.js',
       memoryHigh: '768M', memoryMax: '1536M',
-      env: { ...variables, HOST: '127.0.0.1', PORT_API: String(apiPort) },
+      env: { ...variables, ...(siteMessengerProject ? { SUPPORT_SITE_MESSENGER_PROJECT_ID: siteMessengerProject } : {}), HOST: '127.0.0.1', PORT_API: String(apiPort) },
     },
     www: { domain: `www.${domain}`, redirect: `https://${domain}` },
   },

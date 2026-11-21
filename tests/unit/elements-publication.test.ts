@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { archivePayload, elements, inspectPayload, packageName, payloadHashes, sha256 } from '../../scripts/lib/support-elements-artifact'
+import { archivePayload, elements, inspectPayload, packageName, payloadHashes, sha256, siteWidgetPayload } from '../../scripts/lib/support-elements-artifact'
 import type { Payload } from '../../scripts/lib/support-elements-artifact'
 import { assertElementsCiRun } from '../../scripts/verify-elements-ci'
 import { createRegistryReader, readPublishedElements } from '../../scripts/lib/support-elements-registry'
@@ -50,6 +50,33 @@ describe('same-SHA successful main CI gate', () => {
     for (const change of [{ head_sha: 'b'.repeat(40) }, { head_branch: 'feature' }, { event: 'pull_request' }, { status: 'in_progress' }, { conclusion: 'failure' }, { path: '.github/workflows/other.yml' }, { head_repository: { full_name: 'other/fork' } }]) expect(() => assertElementsCiRun({ ...run, ...change }, repository, sha)).toThrow()
   })
 })
+test('production stages the qualified widget bytes and only their supported public paths', () => {
+  const version = '0.0.0-0123456789abcdef'
+  const prefix = `widgets/${version}`
+  const paths = ['support.js', `${prefix}/support.js`, `${prefix}/bundle.js`, `${prefix}/custom-elements.json`]
+  const bytes = (value: string) => new TextEncoder().encode(value)
+  const hosted: Payload = new Map(paths.map(path => [path, bytes(path)]))
+  const manifest = {
+    schemaVersion: 1,
+    version,
+    entrypoint: '/support.js',
+    immutableEntrypoint: `/${prefix}/support.js`,
+    files: paths.map(path => ({ path: `/${path}`, sha256: sha256(hosted.get(path)!) })),
+  }
+  hosted.set('widgets/manifest.json', bytes(JSON.stringify(manifest)))
+  hosted.set('unexpected.html', bytes('unexpected'))
+  const staged = siteWidgetPayload(hosted)
+  expect(staged.get('support.js')).toBe(hosted.get('support.js'))
+  expect(staged.get('widgets/bundle.js')).toBe(hosted.get(`${prefix}/bundle.js`))
+  expect(staged.get('widgets/custom-elements.json')).toBe(hosted.get(`${prefix}/custom-elements.json`))
+  expect(staged.get(`${prefix}/manifest.json`)).toBe(hosted.get('widgets/manifest.json'))
+  expect(staged.has('unexpected.html')).toBe(false)
+  hosted.set('support.js', bytes('changed'))
+  expect(() => siteWidgetPayload(hosted)).toThrow('Wrong widget asset digest')
+  hosted.set('widgets/manifest.json', bytes(JSON.stringify({ ...manifest, version: '..' })))
+  expect(() => siteWidgetPayload(hosted)).toThrow('Invalid widget version')
+})
+
 describe('public registry readback', () => {
   test('waits for an uploaded version to become readable', async () => {
     let requests = 0

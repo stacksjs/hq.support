@@ -30,6 +30,13 @@ qualified. Local verification also accepts `deployment/qualification.json`.
 `scripts/check-launch.ts` names every required qualification. The report is
 maintained outside the commit it names.
 
+The production environment supplies `HCLOUD_TOKEN` for the Hetzner project
+that owns the running `stacks` host, `DEPLOY_SSH_KEY` for SSH to that host,
+and `DOTENV_PRIVATE_KEY_PRODUCTION` for this repository's encrypted
+configuration. The production workflow downloads the reviewed widget assets
+from the successful same-commit CI run and verifies their hashes before
+building the views.
+
 ## Runtime namespace evidence
 
 Each selected blueprint injects `CACHE_DRIVER=redis` and `QUEUE_DRIVER=database`
@@ -89,7 +96,8 @@ does not replace existing records. Preserve unrelated NS, MX and TXT records.
 Use a dedicated first-party workspace project and assign the team monitoring the
 inbox. Enable anonymous Messenger sessions and allow the exact public origin
 `https://hq.support`. Set the project's public UUID as
-`SUPPORT_SITE_MESSENGER_PROJECT_ID` in the API runtime. The homepage bubble
+`SUPPORT_SITE_MESSENGER_PROJECT_ID` in the production environment's Actions
+variables or the deployment environment file. The homepage bubble
 loads the versioned build served through `/support.js` when a visitor opens it.
 The site uses tab-scoped storage to resume the anonymous conversation. The
 inbox receives those messages through the standard customer API.

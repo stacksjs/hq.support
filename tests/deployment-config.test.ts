@@ -10,10 +10,11 @@ interface DeploymentProjection {
 }
 
 test('deployment targets isolate domains, ports, database ownership and release state', async () => {
+  const siteMessengerProject = '9cdd1242-1272-4878-9c49-024aae67d541'
   const configurations: DeploymentProjection[] = []
   for (const target of ['production', 'staging', 'development']) {
     // Each Buddy invocation selects one environment in a fresh process.
-    const result = await runIsolated('tests/fixtures/deployment-config.ts', { inheritEnv: false, env: { SUPPORT_DEPLOYMENT_TEST: target, APP_DOMAIN: 'hq.support' }, envFile: false, preload: [] })
+    const result = await runIsolated('tests/fixtures/deployment-config.ts', { inheritEnv: false, env: { SUPPORT_DEPLOYMENT_TEST: target, APP_DOMAIN: 'hq.support', SUPPORT_SITE_MESSENGER_PROJECT_ID: siteMessengerProject }, envFile: false, preload: [] })
     assertIsolatedOk(result)
     const config = JSON.parse(result.stdout.trim()) as DeploymentProjection
     configurations.push(config)
@@ -28,6 +29,8 @@ test('deployment targets isolate domains, ports, database ownership and release 
     expect(api.env.DB_USERNAME).toBe(config.database.username)
     expect(main.env.PORT_API).toBe(String(api.port))
     expect(main.env.API_URL).toBe(`http://127.0.0.1:${api.port}`)
+    expect(main.env.SUPPORT_SITE_MESSENGER_PROJECT_ID).toBeUndefined()
+    expect(api.env.SUPPORT_SITE_MESSENGER_PROJECT_ID).toBe(target === 'production' ? siteMessengerProject : undefined)
     expect(config.sslDomains).toContain(main.domain)
     expect(config.www.redirect).toBe(`https://${main.domain}`)
   }

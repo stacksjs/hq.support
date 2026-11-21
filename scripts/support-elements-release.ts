@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, copyFile, lstat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { launch, navigate, waitFor } from '@stacksjs/testing/browser'
-import { archivePayload, assertRealInstall, directoryPayload, elements, inspectPayload, materialize, packageName, payloadHashes, sha256 } from './lib/support-elements-artifact'
+import { archivePayload, assertRealInstall, directoryPayload, elements, inspectPayload, materialize, packageName, payloadHashes, sha256, siteWidgetPayload } from './lib/support-elements-artifact'
 import type { Payload } from './lib/support-elements-artifact'
 import { readPublishedElements } from './lib/support-elements-registry'
 
@@ -46,7 +46,7 @@ async function readRelease(directory: string, version: string, expectedSha: stri
   const hosted = await directoryPayload(resolve(directory, 'hosted')); assert.deepEqual(payloadHashes(hosted), release.hosted)
   const manifest = JSON.parse(new TextDecoder().decode(hosted.get('widgets/manifest.json'))!)
   assert.ok(Buffer.from(hosted.get(`widgets/${manifest.version}/bundle.js`)!).equals(Buffer.from(payload.get('dist/bundle.js')!)), 'Hosted loader and npm package must contain the same native bundle')
-  return { release, payload }
+  return { release, payload, hosted }
 }
 export async function verifyElementsConsumer(files: Payload, archive: string, version: string, registry: boolean) {
   const directory = await mkdtemp(resolve(tmpdir(), 'hq-elements-consumer-'))
@@ -123,10 +123,16 @@ export async function releaseCommand(mode: string, artifact: string, version: st
     await Bun.write(resolve(artifact, 'consumer-report.json'), JSON.stringify(outcome, null, 2))
     return release
   }
-  const { release, payload } = await readRelease(artifact, version, expectedSha)
+  const { release, payload, hosted } = await readRelease(artifact, version, expectedSha)
   if (mode === 'restore') { await reviewedConfig(version); assert.equal(await sha(), expectedSha); await rm(generated, { recursive: true, force: true }); await materialize(payload, generated); return release }
   if (mode === 'verify') { await verifyElementsConsumer(payload, resolve(artifact, 'package.tgz'), version, false); return release }
-  assert.equal(mode, 'registry', 'Expected inspect, prepare, restore, verify or registry')
+  if (mode === 'stage-site') {
+    await reviewedConfig(version)
+    assert.equal(await sha(), expectedSha)
+    await materialize(siteWidgetPayload(hosted), resolve(root, 'public'))
+    return { version, sourceSha: release.sourceSha }
+  }
+  assert.equal(mode, 'registry', 'Expected inspect, prepare, restore, verify, stage-site or registry')
   const { published, tags } = await readPublishedElements(release)
   const outcome = await verifyElementsConsumer(published, '', version, true)
   await Bun.write(resolve(artifact, 'registry-report.json'), JSON.stringify({ version, sourceSha: expectedSha, verifierSha: await sha(), archiveSha256: release.archiveSha256, tags, ...outcome }, null, 2))

@@ -34,6 +34,32 @@ export async function archivePayload(bytes: Uint8Array): Promise<Payload> {
   return result
 }
 export function payloadHashes(files: Payload): Record<string, string> { return Object.fromEntries([...files].sort(([left], [right]) => left.localeCompare(right)).map(([name, bytes]) => [name, sha256(bytes)])) }
+
+export function siteWidgetPayload(hosted: Payload): Payload {
+  const manifestBytes = hosted.get('widgets/manifest.json')
+  assert.ok(manifestBytes, 'The qualified hosted widget manifest is required')
+  const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as { schemaVersion: number, version: string, entrypoint: string, immutableEntrypoint: string, files: { path: string, sha256: string }[] }
+  assert.equal(manifest.schemaVersion, 1)
+  assert.match(manifest.version, /^[a-zA-Z0-9.+-]+$/)
+  assert.ok(!['.', '..'].includes(manifest.version), 'Invalid widget version directory')
+  const prefix = `widgets/${manifest.version}`
+  const paths = ['support.js', `${prefix}/support.js`, `${prefix}/bundle.js`, `${prefix}/custom-elements.json`]
+  assert.equal(manifest.entrypoint, '/support.js')
+  assert.equal(manifest.immutableEntrypoint, `/${prefix}/support.js`)
+  assert.deepEqual(manifest.files.map(file => file.path).sort(), paths.map(path => `/${path}`).sort())
+
+  const files: Payload = new Map([['widgets/manifest.json', manifestBytes], [`${prefix}/manifest.json`, manifestBytes]])
+  for (const path of paths) {
+    const bytes = hosted.get(path)
+    assert.ok(bytes, `Missing qualified widget asset ${path}`)
+    assert.equal(sha256(bytes), manifest.files.find(file => file.path === `/${path}`)?.sha256, `Wrong widget asset digest for ${path}`)
+    files.set(path, bytes)
+  }
+  files.set('widgets/bundle.js', files.get(`${prefix}/bundle.js`)!)
+  files.set('widgets/custom-elements.json', files.get(`${prefix}/custom-elements.json`)!)
+  return files
+}
+
 export function inspectPayload(files: Payload, expectedVersion?: string): { version: string, classes: { name: string, tag: string }[] } {
   const text = (path: string) => { const value = files.get(path); assert.ok(value, `Missing package file: ${path}`); return new TextDecoder().decode(value) }
   const pkg = JSON.parse(text('package.json'))

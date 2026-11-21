@@ -40,11 +40,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
-      - name: Require successful CI for this exact main commit
+      - name: Find successful CI for this exact main commit
+        id: ci
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=success" --jq '.workflow_runs | any(.head_sha == env.GITHUB_SHA and .event == "push")' | grep -qx true
+          run_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=success&branch=main&event=push" --jq '.workflow_runs[0].id // empty')
+          test -n "$run_id"
+          printf 'run_id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
       - run: bun install --frozen-lockfile
       - name: Require complete launch qualification
         env:
@@ -52,14 +55,33 @@ jobs:
         run: |
           test -n "$SUPPORT_LAUNCH_QUALIFICATION"
           bun scripts/check-launch.ts
-      - name: Build verified source
+      - name: Verify ownership of the Messenger artifact
+        id: widget
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SUPPORT_ELEMENTS_CI_RUN: ${{ steps.ci.outputs.run_id }}
+          SUPPORT_ELEMENTS_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          version=$(bun --no-env-file -e 'import library from "./config/library"; console.log(library.packages.find(pkg => pkg.name === "@stacksjs/support-elements")?.version ?? "")')
+          SUPPORT_ELEMENTS_VERSION="$version" bun --no-env-file scripts/verify-elements-registry-source.ts
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.widget.outputs.artifact_id }}
+          path: storage/framework/runtime/support-elements-release
+          run-id: ${{ steps.ci.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Build views with the qualified Messenger
         env:
           APP_ENV: production
           NODE_ENV: production
           APP_URL: https://hq.support
           APP_DOMAIN: hq.support
           SITE_URL: https://hq.support
-        run: bun scripts/build-support-elements.ts && ./buddy build:views
+          SUPPORT_ELEMENTS_VERSION: ${{ steps.widget.outputs.version }}
+        run: |
+          bun --no-env-file scripts/support-elements-release.ts stage-site
+          ./buddy build:views
       - name: Load deployment key
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -72,12 +94,19 @@ jobs:
       - name: Deploy with Buddy
         env:
           DOTENV_PRIVATE_KEY_PRODUCTION: ${{ secrets.DOTENV_PRIVATE_KEY_PRODUCTION }}
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          SUPPORT_SITE_MESSENGER_PROJECT_ID: ${{ vars.SUPPORT_SITE_MESSENGER_PROJECT_ID }}
           GITHUB_TOKEN: ${{ github.token }}
-        run: ./buddy deploy --prod --yes
+        run: |
+          test -n "$HCLOUD_TOKEN" || { echo "::error::Set the production HCLOUD_TOKEN secret."; exit 1; }
+          ./buddy deploy --prod --yes
       - name: Verify production HTTPS and Messenger configuration
+        shell: bash
         run: |
           curl -fsS --retry 5 --max-time 15 https://hq.support/ -o "$RUNNER_TEMP/hq-home.html"
           grep -q 'id="site-chat"' "$RUNNER_TEMP/hq-home.html"
-          curl -fsS --retry 5 --max-time 15 https://hq.support/support.js -o "$RUNNER_TEMP/hq-support.js"
-          cmp public/support.js "$RUNNER_TEMP/hq-support.js"
-          curl -fsS --retry 5 --max-time 15 https://hq.support/api/support/site-messenger | jq -e '.project | type == "string" and test("^[a-fA-F0-9-]{36}$")'
+          jq -r '.files[].path' public/widgets/manifest.json | while IFS= read -r path; do
+            curl -fsS --retry 5 --max-time 15 "https://hq.support$path" -o "$RUNNER_TEMP/hq-widget-asset"
+            cmp "public$path" "$RUNNER_TEMP/hq-widget-asset"
+          done
+          curl -fsS --retry 5 --max-time 15 https://hq.support/api/support/site-messenger | jq -e '.project | type == "string" and test("^[a-fA-F0-9]{8}(-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$")'
