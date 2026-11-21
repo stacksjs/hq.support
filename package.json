@@ -85,7 +85,7 @@
     "@stacksjs/sms": "^0.75.628",
     "@stacksjs/socials": "^0.75.628",
     "@stacksjs/storage": "^0.75.628",
-    "@stacksjs/stx": "0.2.913",
+    "@stacksjs/stx": "0.2.924",
     "@stacksjs/support": "^0.75.628",
     "@stacksjs/telephony": "^0.75.628",
     "@stacksjs/ts-cloud": "0.16.149",
@@ -110,11 +110,11 @@
   },
   "devDependencies": {
     "@actions/expressions": "0.3.61",
-    "@stacksjs/components": "0.2.913",
+    "@stacksjs/components": "0.2.924",
     "@stacksjs/testing": "^0.75.628",
     "@stacksjs/types": "^0.75.628",
     "better-dx": "^0.2.39",
-    "bun-plugin-stx": "0.2.913",
+    "bun-plugin-stx": "0.2.924",
     "xml-crypto": "^6.4.0"
   },
   "overrides": {
