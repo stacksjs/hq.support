@@ -126,7 +126,7 @@ export function createSupport(controllerOptions: SupportControllerOptions = {}) 
     parent.append(mounted)
     // Customer identity goes straight to the method. It is never serialized into markup.
     const connection = { url: api.href.replace(/\/$/, ''), project: options.project }
-    const resume = options.resumeAnonymousSession && !options.sessionToken && api.origin === location.origin
+    const resume = options.resumeAnonymousSession && !options.sessionToken
     if (!resume) {
       await instance.boot({ ...connection, token: options.sessionToken })
       return

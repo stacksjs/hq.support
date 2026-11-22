@@ -63,6 +63,11 @@ browser. `endpoint` defaults to the hosted module origin; supply it for a separa
 origin. The loader imports the native bundle only when boot is called, mounts a
 launcher and messenger, and forwards native events through `on(name, listener)`
 (which returns an unsubscribe function) and `addEventListener`/`removeEventListener`.
+On a trusted site with anonymous messaging enabled, set `resumeAnonymousSession`
+to retain the conversation across reloads in the same tab. The anonymous token
+is stored in the embedding site's session storage under the endpoint and project.
+Explicit customer tokens remain in memory. Each embedded API request still
+requires the site's exact origin on the project's allowlist.
 It does not install globals. The current messenger supports English (`en`) only;
 other locale requests fail explicitly. Use `createSupport({ container: HTMLElement, inline?: boolean })` for independent
 instances owned by a component. A supplied container defaults to inline positioning.
