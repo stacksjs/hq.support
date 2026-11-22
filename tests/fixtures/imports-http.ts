@@ -106,7 +106,8 @@ try {
   Object.assign(firstPage.conversation_parts, { pages: { page: 1, next: { page: 2 } } }); Object.assign(lastPage.conversation_parts, { pages: { page: 2, next: null } })
   const paged = await upload({ version: 1, provider: 'intercom', format: 'plaintext', contacts: [], conversations: [{ pages: [{ page: 1, response: firstPage }, { page: 2, response: lastPage }] }] })
   await resumeInNewProcess(paged.data.run.id, 'worker')
-  check((await http(`${prefix}/imports/${paged.data.run.id}`, 'GET', undefined, token)).data.run.status === 'completed', 'complete official numbered response pages import more than 500 parts without truncation')
+  const pagedStatus = (await http(`${prefix}/imports/${paged.data.run.id}`, 'GET', undefined, token)).data
+  check(pagedStatus.run.status === 'completed' && pagedStatus.records[0].external_id === 'paged', 'complete numbered response pages import without truncation and retain the source conversation ID')
   const pagedMap = await one("SELECT * FROM support_import_mappings WHERE project_id = ? AND entity_type = 'conversation' AND external_id = 'paged'", [project.id])
   check(Number((await one('SELECT COUNT(*) AS count FROM support_messages WHERE conversation_id = ?', [pagedMap!.target_id]))?.count) === 502, 'all 501 paginated parts and original source message persist')
   const recent = await http(`${prefix}/conversations/${pagedMap!.target_id}`, 'GET', undefined, token)
@@ -121,6 +122,45 @@ try {
   const attachments = await upload({ version: 1, provider: 'intercom', contacts: [], conversations: [attachmentSource] })
   await resumeInNewProcess(attachments.data.run.id, 'worker')
   check((await http(`${prefix}/imports/${attachments.data.run.id}`, 'GET', undefined, token)).data.records[0].error_code === 'source_attachments_pending', 'untransferred source attachments are explicit review work, never fake stored files')
+  const documentedAttachment = (name: string, contents: string) => {
+    const url = `https://attachments.example/${name}`
+    return {
+      metadata: { type: 'upload', name, url, content_type: 'text/plain', filesize: Buffer.byteLength(contents) },
+      supplied: { url, data: Buffer.from(contents).toString('base64'), sha256: createHash('sha256').update(contents).digest('hex') },
+    }
+  }
+  const publicFile = documentedAttachment('original.txt', 'Original attachment bytes')
+  const privateFile = documentedAttachment('note.txt', 'Internal attachment bytes')
+  const withFiles = conversation('supplied-files', 'c1', [{ ...part('file-note', 'note'), attachments: [privateFile.metadata] }])
+  const fileBundle = { version: 1, provider: 'intercom', format: 'plaintext', contacts: [], conversations: [{ ...withFiles, source: { ...withFiles.source, attachments: [publicFile.metadata] } }], attachmentFiles: [publicFile.supplied, privateFile.supplied] }
+  const attachmentRowsBeforePreview = (await query('SELECT id FROM support_attachments ORDER BY id')).length
+  const diskBeforePreview = await one('SELECT storage_bytes FROM support_workspaces WHERE id = ?', [workspace.id])
+  const filePreview = await upload(fileBundle, { integration: true, key: keys.ingestKey, dryRun: true })
+  check(filePreview.status === 200 && filePreview.data.compatibleRecords === 1, 'documented attachments with verified offline bytes pass the real dry run')
+  check((await query('SELECT id FROM support_attachments ORDER BY id')).length === attachmentRowsBeforePreview && Number((await one('SELECT storage_bytes FROM support_workspaces WHERE id = ?', [workspace.id]))?.storage_bytes) === Number(diskBeforePreview?.storage_bytes), 'attachment dry run rolls back metadata and quota')
+  const fileRun = await upload(fileBundle)
+  check(fileRun.status === 202, 'private archive with supplied attachments is accepted')
+  await resumeInNewProcess(fileRun.data.run.id, 'worker')
+  const fileStatus = (await http(`${prefix}/imports/${fileRun.data.run.id}`, 'GET', undefined, token)).data
+  check(fileStatus.run.status === 'completed', 'attachment transfer is part of the durable conversation checkpoint')
+  const files = await query('SELECT id, file_name, visibility, sha256 FROM support_attachments WHERE conversation_id = ? ORDER BY id', [fileStatus.records[0].target_id])
+  check(files.length === 2 && files[0]?.visibility === 'public' && files[1]?.visibility === 'private' && files[0]?.sha256 === publicFile.supplied.sha256 && files[1]?.sha256 === privateFile.supplied.sha256, 'the message visibility and SHA-256 values survive import')
+  const widgetOrigin = 'https://customer.example'
+  check((await http(prefix, 'PATCH', { allowedOrigins: [widgetOrigin] }, token)).status === 200, 'test project allows the exact Messenger origin')
+  const widgetFile = (id: unknown) => fetch(base + `/widget/projects/${project.public_id}/attachments/${id}`, { headers: { authorization: 'Bearer ' + existing.token, origin: widgetOrigin } })
+  const downloaded = await widgetFile(files[0]!.id)
+  check(downloaded.status === 200 && createHash('sha256').update(Buffer.from(await downloaded.arrayBuffer())).digest('hex') === publicFile.supplied.sha256, `native customer download returns the exact public file bytes (HTTP ${downloaded.status})`)
+  check((await widgetFile(files[1]!.id)).status === 404, 'the same customer cannot open an internal note attachment')
+  const agentFile = await fetch(base + `${prefix}/attachments/${files[1]!.id}`, { headers: { authorization: 'Bearer ' + token } })
+  check(agentFile.status === 200 && createHash('sha256').update(Buffer.from(await agentFile.arrayBuffer())).digest('hex') === privateFile.supplied.sha256, 'native agent download returns the exact internal file bytes')
+  const replayedFiles = await upload({ ...fileBundle, attachmentFiles: [...fileBundle.attachmentFiles].reverse() })
+  await resumeInNewProcess(replayedFiles.data.run.id, 'worker')
+  const replayedFileStatus = (await http(`${prefix}/imports/${replayedFiles.data.run.id}`, 'GET', undefined, token)).data
+  check(replayedFileStatus.run.skipped === 1 && (await query('SELECT id FROM support_attachments WHERE conversation_id = ?', [fileStatus.records[0].target_id])).length === 2, 'cross-archive replay does not duplicate conversation attachments')
+  const badChecksum = await upload({ ...fileBundle, attachmentFiles: [{ ...publicFile.supplied, sha256: '0'.repeat(64) }] })
+  check(badChecksum.status === 422 && badChecksum.data.error.code === 'attachment_checksum_mismatch', 'corrupted sidecar bytes are rejected before queueing')
+  const incompleteFiles = await upload({ ...fileBundle, attachmentFiles: [publicFile.supplied] }, { integration: true, key: keys.ingestKey, dryRun: true })
+  check(incompleteFiles.data.reasons.some((reason: any) => reason.code === 'source_attachments_pending'), 'missing sidecar bytes keep their conversation in review')
   const altered = structuredClone(source); altered.conversations[0]!.conversation_parts.conversation_parts[0]!.body = 'Edited legacy message'
   const conflict = await upload(altered); await resumeInNewProcess(conflict.data.run.id, 'worker')
   check((await http(`${prefix}/imports/${conflict.data.run.id}`, 'GET', undefined, token)).data.records.some((row: any) => row.error_code === 'source_message_changed') && (await one('SELECT body FROM support_messages WHERE body = ?', ['Reply reply-1']))?.body === 'Reply reply-1', 'changed source history creates a review conflict and preserves native messages')

@@ -8,9 +8,11 @@ import { contact, member, object, secret } from './service'
 import { knowledgeText, localeOf } from './knowledge'
 import type { KnowledgeAuthor } from './knowledge'
 import { importIntercomArticle, importIntercomCollection } from './import-articles'
+import type { ImportArchive, ImportAttachment } from './import-attachments'
+import { checkImportedAttachments, importAttachmentLimit, parseImportAttachmentFiles, sourceAttachments, storeImportedAttachments } from './import-attachments'
 
-export const importLimits = { bytes: 10_000_000, records: 5000, batch: 25, leaseMs: 60000, maximumConversationParts: 500, maximumPaginatedParts: 5000 } as const
-export type IntercomBundle = { version: 1, provider: 'intercom', format: 'html' | 'plaintext', contacts: Row[], conversations: Row[], articles: Row[], collections: Row[], articleLocale?: string }
+export const importLimits = { bytes: 10_000_000, records: 5000, attachmentFiles: importAttachmentLimit, batch: 25, leaseMs: 60000, maximumConversationParts: 500, maximumPaginatedParts: 5000 } as const
+export type IntercomBundle = { version: 1, provider: 'intercom', format: 'html' | 'plaintext', contacts: Row[], conversations: Row[], articles: Row[], collections: Row[], articleLocale?: string, attachmentFiles: ReturnType<typeof parseImportAttachmentFiles> }
 export type ImportPrincipal = number | { kind: 'integration', keyDigest: string }
 async function authorizeImport(project: Row, principal: ImportPrincipal) {
   if (typeof principal === 'number') await member(principal, Number(project.workspace_id), ['owner', 'admin'])
@@ -49,7 +51,7 @@ export function parseIntercomBundle(bytes: Uint8Array): IntercomBundle {
     if (++entries > 100000 || item.depth > 32) fail(422, 'import_structure_limit', 'Source JSON exceeds the bounded nesting/object budget.')
     if (item.value && typeof item.value === 'object') for (const value of Object.values(item.value)) pending.push({ value, depth: item.depth + 1 })
   }
-  return { version: 1, provider: 'intercom', format: (parsed.format ?? 'html') as 'html' | 'plaintext', contacts: parsed.contacts.map(object), conversations: parsed.conversations.map(object), articles: Array.isArray(parsed.articles) ? parsed.articles.map(object) : [], collections: Array.isArray(parsed.collections) ? parsed.collections.map(object) : [], ...(parsed.articleLocale === undefined ? {} : { articleLocale: localeOf(parsed.articleLocale) }) }
+  return { version: 1, provider: 'intercom', format: (parsed.format ?? 'html') as 'html' | 'plaintext', contacts: parsed.contacts.map(object), conversations: parsed.conversations.map(object), articles: Array.isArray(parsed.articles) ? parsed.articles.map(object) : [], collections: Array.isArray(parsed.collections) ? parsed.collections.map(object) : [], attachmentFiles: parseImportAttachmentFiles(parsed.attachmentFiles), ...(parsed.articleLocale === undefined ? {} : { articleLocale: localeOf(parsed.articleLocale) }) }
 }
 function runView(row: Row) {
   return { id: String(row.id), provider: String(row.provider), sourceName: String(row.source_name), sourceHash: String(row.source_hash), sourceBytes: Number(row.source_bytes), totalRecords: Number(row.total_records), cursor: Number(row.cursor), processed: Number(row.processed), imported: Number(row.imported), skipped: Number(row.skipped), failed: Number(row.failed), status: String(row.status), lastError: String(row.last_error), createdAt: row.created_at, updatedAt: row.updated_at }
@@ -75,7 +77,7 @@ export async function uploadIntercomBundle(project: Row, principal: ImportPrinci
       return { ...existing, lease_token: lease }
     }
     const created = await insert('support_import_runs', { workspace_id: project.workspace_id, project_id: project.id, provider: 'intercom', source_hash: hash, source_key: `support-imports/${project.workspace_id}/${project.public_id}/${crypto.randomUUID()}.json`, source_disk: disk, source_name: file.name.replace(/[\r\n\\/\x00-\x1F]/g, '_').slice(0, 255), source_bytes: bytes.byteLength, total_records: importRecords(bundle).length, status: 'uploading', lease_token: lease, lease_until: Date.now() + importLimits.leaseMs })
-    if (bundle.articles.length || bundle.collections.length) await rememberImportActor(project, created.id, principal)
+    if (bundle.articles.length || bundle.collections.length || bundle.attachmentFiles.size) await rememberImportActor(project, created.id, principal)
     return created
   })
   if (row.status !== 'uploading') return { run: runView(row), duplicate: true }
@@ -132,9 +134,12 @@ async function importRunAuthor(project: Row, runId: unknown): Promise<KnowledgeA
   }
   fail(409, 'import_actor_invalid', 'The persisted migration principal requires operator review.')
 }
-async function importRecord(project: Row, item: { type: string, payload: Row }, bundle: IntercomBundle, author: () => Promise<KnowledgeAuthor>) {
+async function importRecord(project: Row, item: { type: string, payload: Row }, bundle: IntercomBundle, author: () => Promise<KnowledgeAuthor>, archive?: ImportArchive) {
   if (item.type === 'contact') return await importContact(project, item.payload)
-  if (item.type === 'conversation') return await importConversation(project, item.payload, bundle.format)
+  if (item.type === 'conversation') {
+    if (bundle.attachmentFiles.size) await author()
+    return await importConversation(project, item.payload, bundle, archive)
+  }
   const context = { fingerprint, external, timestamp, mapping, remember, author, defaultLocale: bundle.articleLocale }
   return item.type === 'collection' ? await importIntercomCollection(project, item.payload, context) : await importIntercomArticle(project, item.payload, context)
 }
@@ -168,18 +173,23 @@ function authorType(author: Row) {
   if (author.type === 'bot') return 'automation'
   fail(422, 'unsupported_source_author', 'Unknown source author type is retained for review rather than attributed to an invented agent.')
 }
-async function importMessage(project: Row, conversation: Row, sourceId: string, source: Row, format: IntercomBundle['format'], created: unknown, visibility: 'public' | 'internal') {
+async function importMessage(project: Row, conversation: Row, sourceId: string, source: Row, bundle: IntercomBundle, created: unknown, visibility: 'public' | 'internal', staged: ImportAttachment[]) {
+  if (source.redacted === true) fail(422, 'source_body_missing', 'Source message was redacted and requires review.')
+  const files = sourceAttachments(source, sourceId, bundle.attachmentFiles, visibility)
+  const hashInput = files.length ? { source, attachmentHashes: files.map(file => file.sha256) } : source
   const previous = await mapping(project, 'message', sourceId)
   if (previous) {
-    if (previous.source_hash !== fingerprint(source)) fail(409, 'source_message_changed', 'Previously imported message content changed in the source. Native history was preserved for review.')
+    if (previous.source_hash !== fingerprint(hashInput)) fail(409, 'source_message_changed', 'Previously imported message content changed in the source. Native history was preserved for review.')
     if (!await one('SELECT id FROM support_messages WHERE id = ? AND conversation_id = ? AND project_id = ?', [previous.target_id, conversation.id, project.id])) fail(409, 'import_target_missing', 'A previously mapped message was removed. Review erasure/retention before importing again.')
+    await checkImportedAttachments(project, conversation, files)
     return false
   }
-  if (Array.isArray(source.attachments) && source.attachments.length) fail(422, 'source_attachments_pending', 'Source attachments require separate qualified transfer. The entire supplied record is retained.')
-  const body = await messageBody(source.body, format), author = authorType(object(source.author)), at = timestamp(source.created_at ?? created, 'message.created_at')
+  const body = files.length && source.body === '' ? '' : await messageBody(source.body, bundle.format)
+  const author = authorType(object(source.author)), at = timestamp(source.created_at ?? created, 'message.created_at')
   const message = await insert('support_messages', { workspace_id: project.workspace_id, project_id: project.id, conversation_id: conversation.id, contact_id: conversation.contact_id, body, visibility, author_type: author, author_id: 0, delivery_status: 'imported' })
   await query('UPDATE support_messages SET created_at = ?, updated_at = ? WHERE id = ?', [at, at, message.id])
-  await remember(project, 'message', sourceId, message.id, source)
+  await remember(project, 'message', sourceId, message.id, source, hashInput)
+  staged.push(...files)
   return true
 }
 function nextPage(value: unknown): number | null {
@@ -209,7 +219,7 @@ function completeConversation(source: Row): Row {
   if (parts.length > importLimits.maximumPaginatedParts) fail(422, 'source_parts_limit', 'A paginated conversation exceeds the 5000-part operational batch bound.')
   return { ...first!, conversation_parts: { conversation_parts: parts, total_count: parts.length, pages: { page: 1, next: null }, complete_page_sequence: true }, import_page_provenance: provenance }
 }
-async function importConversation(project: Row, source: Row, format: IntercomBundle['format']) {
+async function importConversation(project: Row, source: Row, bundle: IntercomBundle, archive?: ImportArchive) {
   const paginated = Array.isArray(source.pages)
   source = completeConversation(source)
   const id = external(source.id), partsContainer = object(source.conversation_parts), parts = partsContainer.conversation_parts
@@ -243,14 +253,16 @@ async function importConversation(project: Row, source: Row, format: IntercomBun
     row = await insert('support_conversations', { workspace_id: project.workspace_id, project_id: project.id, contact_id: targetContact.id, subject: text(source.title || initial.subject || `Imported conversation ${id}`, 'subject', 200), status: state, resolved_at: resolvedAt, unread_count: 0, channel: 'intercom-import' })
     await query('UPDATE support_conversations SET created_at = ?, updated_at = ? WHERE id = ?', [createdAt, updatedAt, row.id])
   }
-  let appended = await importMessage(project, row, `${id}:source:${initial.id == null ? 'root' : external(initial.id)}`, initial, format, source.created_at, 'public') ? 1 : 0
+  const staged: ImportAttachment[] = []
+  let appended = await importMessage(project, row, `${id}:source:${initial.id == null ? 'root' : external(initial.id)}`, initial, bundle, source.created_at, 'public', staged) ? 1 : 0
   for (const candidate of parts) {
     const part = object(candidate), partId = external(part.id), kind = String(part.part_type)
-    if (kind === 'comment' || kind === 'note') appended += await importMessage(project, row, `${id}:part:${partId}`, part, format, part.created_at, kind === 'note' ? 'internal' : 'public') ? 1 : 0
-    else if (part.body != null && part.body !== '') fail(422, 'unsupported_source_part', 'Unknown message-bearing conversation part is retained for review rather than silently skipped.')
+    if (kind === 'comment' || kind === 'note') appended += await importMessage(project, row, `${id}:part:${partId}`, part, bundle, part.created_at, kind === 'note' ? 'internal' : 'public', staged) ? 1 : 0
+    else if ((part.body != null && part.body !== '') || (Array.isArray(part.attachments) && part.attachments.length)) fail(422, 'unsupported_source_part', 'Unknown message-bearing conversation part is retained for review rather than silently skipped.')
     else await remember(project, 'part_metadata', `${id}:${partId}`, 0, part)
   }
   await remember(project, 'conversation', id, row.id, source)
+  await storeImportedAttachments(project, row, staged, archive)
   return { id: row.id, skipped: !newConversation && appended === 0 }
 }
 export async function processImportBatch(id: unknown, options: { batchSize?: number } = {}) {
@@ -279,12 +291,14 @@ export async function processImportBatch(id: unknown, options: { batchSize?: num
         const project = (await one('SELECT * FROM support_projects WHERE id = ? AND workspace_id = ?', [run.project_id, run.workspace_id]))!
         let outcome: { id?: unknown, skipped?: boolean, message?: string } = {}, review: SupportError | undefined
         try {
-          outcome = await db.transaction(async () => await importRecord(project, item, bundle, () => importRunAuthor(project, runId)))
+          outcome = await db.transaction(async () => await importRecord(project, item, bundle, () => importRunAuthor(project, runId), { disk: String(run.source_disk), key: String(run.source_key) }))
         }
         catch (error) { if (error instanceof SupportError) review = error; else throw error }
         const status = review ? 'needs_review' : outcome.skipped ? 'skipped' : 'imported', previous = await one('SELECT id, status, target_id FROM support_import_records WHERE import_run_id = ? AND position = ?', [run.id, cursor])
         const recordStatus = status === 'skipped' && previous?.status === 'imported' && Number(previous.target_id) === Number(outcome.id) ? 'imported' : status
-        const report = { entity_type: item.type, external_id: typeof item.payload.id === 'string' || typeof item.payload.id === 'number' ? String(item.payload.id).slice(0, 200) : '(missing)', status: recordStatus, target_id: outcome.id ?? 0, error_code: review?.code || '', message: review?.message || outcome.message || '', source_payload: JSON.stringify(item.payload) }
+        const firstPage = item.type === 'conversation' && Array.isArray(item.payload.pages) ? object(object(item.payload.pages[0]).response) : undefined
+        const sourceId = item.payload.id ?? firstPage?.id
+        const report = { entity_type: item.type, external_id: typeof sourceId === 'string' || typeof sourceId === 'number' ? String(sourceId).slice(0, 200) : '(missing)', status: recordStatus, target_id: outcome.id ?? 0, error_code: review?.code || '', message: review?.message || outcome.message || '', source_payload: JSON.stringify(item.payload) }
         if (previous) await query('UPDATE support_import_records SET status = ?, target_id = ?, error_code = ?, message = ?, source_payload = ?, updated_at = ? WHERE id = ?', [report.status, report.target_id, report.error_code, report.message, report.source_payload, new Date().toISOString(), previous.id])
         else await insert('support_import_records', { workspace_id: run.workspace_id, project_id: run.project_id, import_run_id: run.id, position: cursor, ...report })
         const totals = await query('SELECT status, COUNT(*) AS count FROM support_import_records WHERE import_run_id = ? GROUP BY status', [run.id])
@@ -376,7 +390,7 @@ export async function previewIntercomBundle(project: Row, principal: ImportPrinc
         }
         catch (error) { if (error instanceof SupportError) reports.push({ status: 'needs_review', code: error.code, message: error.message }); else throw error }
       }
-      // The importer primitives above perform SQL/local text parsing only: no archive, queue or provider writes.
+      // Without an archive destination, even the attachment metadata and quota rehearsal is SQL only.
       throw new PreviewRollback(reports)
     })
   }

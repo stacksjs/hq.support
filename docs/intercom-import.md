@@ -21,6 +21,14 @@ Every response page must name the same conversation, contain at most 500 parts a
 
 The administrative upload is multipart `file` at `POST /api/support/projects/{project}/imports/intercom`, with native owner/admin authentication and ordinary cookie CSRF protection. Limits are 10,000,000 bytes, 5,000 total supplied records, nesting depth 32 and 100,000 JSON values. The response is HTTP 202 with the actual persisted run state. Source bytes go to a private native Stacks storage disk with a SHA-256 digest. The same archive hash returns its existing run.
 
+## Conversation attachments
+
+Keep the original `attachments` entries on the source message and conversation parts. Add an optional top-level `attachmentFiles` array with one entry per exact source URL. Each entry contains `url`, `data` as canonical base64, and `sha256` as the lowercase hex digest of the decoded bytes. Obtain the bytes separately from an approved Intercom export or download. HQ.support treats source URLs as private references and makes no requests to them. [Intercom attachment response fields](https://developers.intercom.com/docs/references/rest-api/api.intercom.io/models/part_attachment)
+
+The importer verifies the SHA-256 digest and checks Intercom's `filesize` when present. It keeps files from internal notes private and exposes files from public messages to the customer who owns the conversation. Native attachment storage allowances apply. Split large migrations into bundles with up to 100 supplied files and up to 100 attachment transfers totaling 10 MB, including repeated references. The 10 MB JSON upload limit still includes base64 overhead. A message can retain up to ten attachments.
+
+Missing bytes, source size conflicts and redacted messages stay in review. The dry run rehearses native metadata and quota changes inside a rollback without writing blobs. A real worker writes to deterministic private keys under the archive's attachment prefix, so retries address the same files. Retention and erasure reviews must include the retained archive, which contains the supplied bytes, and its attachment prefix.
+
 ## Article migration
 
 Supply full Article retrieve responses, including title, HTML `body` or `body_markdown`, source author, state and UTC Unix timestamps. Intercom supplies `default_locale` for multilingual help centers; for a single-language response without it, set bundle `articleLocale` explicitly. Supplied `translated_content` locales are checked together before any locale is committed. A duplicate default-locale entry must agree with the top-level fields. [Intercom Article reference](https://developers.intercom.com/docs/references/rest-api/api.intercom.io/articles/article)
@@ -47,7 +55,7 @@ Historical messages preserve source UTC timestamps, public comments and internal
 
 ## Review boundaries
 
-The source archive and per-record provenance are retained; configure their retention/export/erasure lifecycle before production migration. This slice does not transfer remote attachments, group conversations, redacted/missing bodies or unknown message-bearing part/author types. Those records are retained with explicit review codes, with no phantom native conversation or pretend attachment. Metadata-only parts are retained as metadata, rather than fabricated customer messages. HTML bodies are converted through the native plain-text importer; request plaintext source responses for faithful link text and destinations.
+The source archive and per-record provenance are retained; configure their retention/export/erasure lifecycle before production migration. Group conversations, attachment URLs without supplied bytes, redacted or missing bodies and unknown message-bearing part or author types stay in explicit review. Metadata-only parts remain metadata. HTML bodies are converted through the native plain-text importer; request plaintext source responses for faithful link text and destinations.
 
 `tests/feature/imports-http.test.ts` uses actual authenticated HTTP, private filesystem bytes, the native database queue processor in fresh Bun processes, and disposable SQLite/PostgreSQL databases. It covers pause/resume checkpoints, identical and cross-file replay, external identity versus email, historical notes/timestamps, complete 501-part pagination, incomplete history refusal, changed-history conflicts, missing attachment review, source checksum failure/recovery and tenant isolation. No production Intercom export has been claimed as qualified by these fixture tests.
 
