@@ -58,7 +58,7 @@ jobs:
         run: bun --no-env-file scripts/qualify-support-browser.ts --skip-build
       - name: Retain public readback evidence and separate verifier provenance
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: support-elements-readback-${{ github.run_attempt }}
           path: |
