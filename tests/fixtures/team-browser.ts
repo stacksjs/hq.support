@@ -68,7 +68,7 @@ try {
       return new Response(response.body, { status: response.status, headers: outgoing })
     }
     if (url.pathname === '/favicon.ico') return new Response(null, { status: 204 })
-    const path = url.pathname === '/app' ? '/app.html' : url.pathname === '/app/team-settings' ? '/app/team-settings.html' : url.pathname
+    const path = ['/app', '/app/team-settings', '/app/reports'].includes(url.pathname) ? `${url.pathname}.html` : url.pathname
     const file = resolve(output, '.' + decodeURIComponent(path))
     if (!file.startsWith(output + sep)) return new Response('Forbidden', { status: 403 })
     return await Bun.file(file).exists() ? new Response(Bun.file(file), { headers: path.endsWith('.html') ? { 'content-type': 'text/html', 'cache-control': 'no-store' } : {} }) : new Response('Not found', { status: 404 })
@@ -236,6 +236,15 @@ try {
   await input(searchInput, 'archivedsecretneedle'); await text('Sign in to open your workspace.'); pendingLogout.release.resolve(); await Bun.sleep(200)
   check(await evaluate(`!document.querySelector('#reply') && document.querySelectorAll('.conversation-row').length === 0 && document.querySelector(${JSON.stringify(searchInput)}).value === '' && !document.body.textContent.includes('Archive case 000')`), 'logout cleanup discards private search results, drafts and late query responses')
   check(Number(arrival.id) > Number(oldBody.id) && Number(otherBox.id) !== Number(closedMatch.id) && siblingRecord.id, 'search qualification uses distinct persisted native records and real new arrivals')
+
+  await navigate(cdp, origin + '/_fixture/owner', { quietMs: 100, timeoutMs: 20000 })
+  await navigate(cdp, origin + '/app/reports', { quietMs: 100, timeoutMs: 20000 })
+  const timingCards = `Array.from(document.querySelectorAll('[aria-labelledby="report-messenger-heading"] .metric-cell'))`
+  await waitFor(() => evaluate(`${timingCards}.length === 3`), 15000, { label: 'Compiled Messenger timing cards' })
+  check(await evaluate(`${timingCards}.some(card => card.textContent.includes('First human reply') && card.textContent.includes('1 sample') && card.querySelector('strong').textContent !== 'No data')`), 'Reports renders a measured human reply from the native inbox')
+  await input('#report-project', String(sibling.public_id))
+  await waitFor(() => evaluate(`${timingCards}.length === 3 && ${timingCards}.every(card => card.querySelector('strong').textContent === 'No data')`), 15000, { label: 'Project without measured replies' })
+  check(await evaluate(`document.querySelector('#report-project').value === ${JSON.stringify(String(sibling.public_id))}`), 'Reports switches projects without retaining the previous project’s timing values')
   console.info(`PASS team UI functional (${assertions.length} checks)`)
   await Bun.write(resolve(artifacts, 'report.json'), JSON.stringify({ passed: runtimeErrors.length === 0, functionalPassed: true, assertions, runtimeErrors, browser: (await cdp.send('Browser.getVersion')).product }, null, 2))
   assert.deepEqual(runtimeErrors, [], 'No browser runtime errors: retain this gate until the native compiler fix is published')

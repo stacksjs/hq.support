@@ -38,6 +38,16 @@ remaining qualification and deployment issues.
 
 ## Retained backend evidence
 
+The project Reports page adds a rolling 30-day cohort for Messenger conversations.
+It shows elapsed-time averages and sample counts for the first human reply,
+follow-up replies, and resolution. The first reply is measured from the first
+customer message. A follow-up is measured from the latest customer message to
+the next human reply, once per customer turn. Resolution uses the current close
+timestamp, so reopening removes the sample until the conversation closes again.
+Only public, stored messages from customers and signed-in agents enter the
+timing calculation. All-time project totals continue to include every channel.
+Business-hour SLA cohorts and provider-receipt timing are tracked in #5.
+
 `./buddy test tests/feature/support-http.test.ts` starts an isolated real HTTP server and real disposable SQLite or PostgreSQL database, applies the committed native model migrations and native auth tables, then verifies registration/login, cross-workspace refusals, write/read key scope, customer session hashing, allowed-origin CORS, customer isolation, internal note confidentiality, exact wire summaries, idempotency replay/conflict, atomic outbox creation, pending invitations within two seats, concurrent 120th/121st free conversation admission, existing-thread replies after the cap, exact tenth/eleventh AI admission, HQ usage and confirmed one-use connect grants. Tests mutate verification flags only inside their owned test database; there is no endpoint that accepts those flags from a customer.
 
 `./buddy typecheck` passes for the initial backend slice. The same retained HTTP harness passes against real disposable SQLite and PostgreSQL databases. It includes explicit transaction rollback, concurrent outbox leasing, retained/recoverable provider overflow, real private filesystem attachment upload/download/delete, exact aggregate storage and maximum file boundary checks. Production provider and Redis acceptance remain separate. Wallet and subscription checkout availability is conditional on explicit provider configuration; no simulated successful payment is exposed to production users.
