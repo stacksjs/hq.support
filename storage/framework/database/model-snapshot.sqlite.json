@@ -3787,7 +3787,7 @@
           },
           {
             "name": "failed_at",
-            "type": "date",
+            "type": "datetime",
             "isPrimaryKey": false,
             "isUnique": false,
             "isNullable": true,
@@ -9600,7 +9600,7 @@
       }
     ]
   },
-  "hash": "5583b48851ff8434ccaa0cc1d583288c9abf80dd5b69aca67a0ee881ad24e0ef",
+  "hash": "43cf450742a0c8aacb4aa53d66b2270f62b109efc08e3e8b21315de0d665db52",
   "dialect": "sqlite",
-  "updatedAt": "2026-11-27T01:09:25.366Z"
+  "updatedAt": "2026-11-27T02:52:27.185Z"
 }

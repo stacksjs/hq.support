@@ -3788,7 +3788,7 @@
           },
           {
             "name": "failed_at",
-            "type": "date",
+            "type": "datetime",
             "isPrimaryKey": false,
             "isUnique": false,
             "isNullable": true,
@@ -9604,7 +9604,7 @@
       }
     ]
   },
-  "hash": "049915fb4e6a2489ae54af0c768a2b3b140e1c206164bc698fcb0800abd3e18b",
+  "hash": "6f99f6d547b2d824f3492566c73c5d1e7c2615394f9b1ccd6c707f3852f50b2d",
   "dialect": "postgres",
-  "updatedAt": "2026-11-27T01:09:25.885Z"
+  "updatedAt": "2026-11-27T02:52:27.539Z"
 }
