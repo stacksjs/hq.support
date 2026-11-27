@@ -24,6 +24,7 @@ const api = await route.serve({ port: 0, hostname: '127.0.0.1' }), apiOrigin = `
 const root = resolve(import.meta.dir, '../..'), output = await mkdtemp(resolve(tmpdir(), 'hq-support-team-browser-')), artifacts = resolve(root, 'storage/framework/runtime/team-browser')
 let host: ReturnType<typeof Bun.serve> | undefined, browser: Awaited<ReturnType<typeof launch>> | undefined, peer: Awaited<ReturnType<typeof launch>> | undefined
 let cookie = '', csrf = '', peerCookie = '', migrationCookie = '', failSend = false, failList = false, simulatePeerDisconnect = false
+let agentStreams = 0, agentSnapshots = 0, finiteAgentReads = 0, suppressReplayHints = false, suppressedReplayHints = 0
 let retentionGate: { path: string, entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>> } | undefined
 let incompleteRetentionPath: string | undefined
 let inconsistentMigrationTotals = false
@@ -67,8 +68,9 @@ try {
   const ownerCookie = await browserCookie('owner'), agentCookie = await browserCookie('agent'), adminCookie = await browserCookie('admin')
   const compiled = await generateStaticSite({ pagesDir: resolve(root, 'resources/views'), outputDir: output, publicDir: resolve(root, 'public'), partialsDir: resolve(root, 'resources/partials'), componentsDir: resolve(root, 'resources/components'), router: { enabled: false }, minify: false, cache: false, sitemap: false, robots: false })
   assert.equal(compiled.failedCount, 0)
-  host = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+  host = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request, server) {
     const url = new URL(request.url)
+    if (url.pathname.endsWith('/realtime/stream')) server.timeout(request, 0)
     if (url.pathname.startsWith('/_fixture/')) return new Response(null, { status: 303, headers: { location: '/app/team-settings', 'set-cookie': url.pathname.endsWith('/migration') ? migrationCookie : url.pathname.endsWith('/peer') ? peerCookie : url.pathname.endsWith('/agent') ? agentCookie : url.pathname.endsWith('/admin') ? adminCookie : ownerCookie } })
     if (url.pathname === '/case-fixture') return new Response('<!doctype html><html lang="en"><head><title>Support case fixture</title></head><body></body></html>', { headers: { 'content-type': 'text/html' } })
     if (url.pathname.startsWith('/api/')) {
@@ -112,7 +114,19 @@ try {
       const held = searchGate
       if (request.method === 'GET' && url.pathname.endsWith('/inbox') && held && !held.used && held.query === url.searchParams.get('q')) { held.used = true; held.entered.resolve(); await held.release.promise }
       const outgoing = new Headers(response.headers); outgoing.delete('content-encoding'); outgoing.delete('content-length')
-      return new Response(response.body, { status: response.status, headers: outgoing })
+      let body = response.body
+      if (response.ok && url.pathname.startsWith('/api/support/projects/') && url.pathname.endsWith('/realtime/replay')) finiteAgentReads++
+      if (response.ok && url.pathname.startsWith('/api/support/projects/') && url.pathname.endsWith('/realtime/snapshot')) agentSnapshots++
+      if (response.ok && body && url.pathname.startsWith('/api/support/projects/') && url.pathname.endsWith('/realtime/stream')) {
+        agentStreams++
+        body = body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            if (suppressReplayHints && /invalidated|"event":"changed"/.test(new TextDecoder().decode(chunk))) suppressedReplayHints++
+            else controller.enqueue(chunk)
+          },
+        }))
+      }
+      return new Response(body, { status: response.status, headers: outgoing })
     }
     if (url.pathname === '/favicon.ico') return new Response(null, { status: 204 })
     const path = ['/app', '/app/settings', '/app/team-settings', '/app/reports', '/app/ticket-settings', '/app/usage', '/login'].includes(url.pathname) ? `${url.pathname}.html` : url.pathname
@@ -121,6 +135,7 @@ try {
     return await Bun.file(file).exists() ? new Response(Bun.file(file), { headers: path.endsWith('.html') ? { 'content-type': 'text/html', 'cache-control': 'no-store' } : {} }) : new Response('Not found', { status: 404 })
   } })
   const origin = host.url.origin
+  config.app.url = origin
   browser = await launch({ headless: true, shared: false, chromePath: process.env.CHROME_PATH, startTimeoutMs: 60000, commandTimeoutMs: 20000 })
   const cdp = browser.cdp
   cdp.on('Runtime.exceptionThrown', event => runtimeErrors.push(String(event.exceptionDetails.exception?.description || event.exceptionDetails.text)))
@@ -295,9 +310,16 @@ try {
   await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 50 && document.body.textContent.includes('Load more conversations')`), 15000, { label: 'Combined native search page' })
   const combined = searchTraffic.at(-1)!
   check(combined.q === 'nebularoute' && combined.inboxId === String(archive.id) && combined.status === 'open' && !combined.cursor && !await evaluate(`document.body.textContent.includes('Matching other inbox') || document.body.textContent.includes('Matching resolved case')`), 'query, status and team inbox compose in the actual native HTTP request')
+  const searchPath = prefix + '/inbox?' + new URLSearchParams({ q: 'nebularoute', inboxId: String(archive.id), status: 'open' })
+  const originalCursor = (await http(searchPath, 'GET', undefined, owner.token)).data.nextCursor
+  assert.ok(originalCursor)
   const arrival = await archived('New matching arrival', 'nebularoute')
-  await click('Load more conversations'); await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 55`), 15000, { label: 'Historical search keyset continuation' })
-  check(searchTraffic.at(-1)?.q === 'nebularoute' && searchTraffic.at(-1)?.inboxId === String(archive.id) && searchTraffic.at(-1)?.status === 'open' && !!searchTraffic.at(-1)?.cursor && await evaluate(`document.body.textContent.includes('Archive case 000') && !document.body.textContent.includes('New matching arrival') && new Set(Array.from(document.querySelectorAll('.conversation-row strong')).map(row=>row.textContent)).size === 55`), 'cursor continuation retains all filters and excludes an intervening newer matching arrival without duplicates')
+  const originalContinuation = await http(searchPath + '&cursor=' + encodeURIComponent(originalCursor), 'GET', undefined, owner.token)
+  check(originalContinuation.data.conversations.length === 5 && originalContinuation.data.conversations.every((row: { id: string }) => row.id !== arrival.id), 'the original native cursor excludes the newer arrival from the historical continuation')
+  await click('Load more conversations')
+  await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 56 && document.body.textContent.includes('New matching arrival') && document.body.textContent.includes('Archive case 000')`), 15000, { label: 'Live filtered arrivals and historical search results coexist' })
+  check(searchTraffic.some(entry => entry.q === 'nebularoute' && entry.inboxId === String(archive.id) && entry.status === 'open' && entry.cursor)
+    && await evaluate(`new Set(Array.from(document.querySelectorAll('.conversation-row strong')).map(row=>row.textContent)).size === 56`), 'live list refresh and cursor continuation retain the active filters and avoid duplicate results')
   check(await evaluate(`document.querySelector('#reply').value === 'Private draft retained while searching persisted history'`), 'search and pagination preserve the selected historical conversation draft')
   await evaluate(`document.querySelector('[aria-label="Refresh inbox"]').click()`); await text('New matching arrival')
   check(searchTraffic.at(-1)?.q === 'nebularoute' && !searchTraffic.at(-1)?.cursor && await evaluate(`document.querySelector('#team-inbox').value === ${JSON.stringify(String(archive.id))}`), 'explicit refresh starts a new query page with the current filters and includes new arrivals')
@@ -674,6 +696,34 @@ try {
   await text('Customer replied before the due time.')
   check(await evaluate(`document.querySelector('#reply').value === ${JSON.stringify(followUpDraft)}`), 'early customer replies refresh the selected thread outside the snoozed filter and preserve the draft')
 
+  await click('Open')
+  await waitFor(() => evaluate(`${caseListed} && !document.querySelector('[aria-label="Refresh inbox"]').disabled`), 10000, { label: 'Open inbox ready for an independently authenticated mutation' })
+  await waitFor(() => agentStreams > 0 && finiteAgentReads > 0, 20000, { label: 'Native agent stream and replay both use the signed-in browser' })
+  const routed = await http(prefix + `/conversations/${snoozedCase}`, 'PATCH', { status: 'snoozed', snoozedUntil: Date.now() + 60_000 }, owner.token)
+  assert.equal(routed.status, 200)
+  await waitFor(() => evaluate(`!(${caseListed}) && !!document.querySelector('#conversation-snooze-time')`), 10000, { label: 'Agent sees a second credential snooze the open case without a refresh gesture' })
+  await query('UPDATE support_conversations SET snoozed_until = ? WHERE id = ?', [Date.now() - 1, snoozedCase])
+  await runJob('ReopenSnoozedConversations')
+  await waitFor(() => evaluate(`${caseListed} && !document.querySelector('#conversation-snooze-time')`), 10000, { label: 'Worker reopen invalidates the active open inbox through durable replay' })
+  check(await evaluate(`document.querySelector('#reply').value === ${JSON.stringify(followUpDraft)}`), 'live routing and worker reopen preserve the operator draft')
+  const beforeReads = finiteAgentReads
+  const beforeDrop = suppressedReplayHints
+  suppressReplayHints = true
+  try {
+    const lostHintReply = await fetch(apiOrigin + `/api/widget/projects/${project.public_id}/conversations/${snoozedCase}/messages`, { method: 'POST', headers: { origin, authorization: `Bearer ${customer}`, 'content-type': 'application/json' }, body: JSON.stringify({ body: 'Customer activity with its live hint suppressed.', idempotencyKey: 'inbox-realtime-lost-hint' }) })
+    assert.equal(lostHintReply.status, 201)
+    await waitFor(() => suppressedReplayHints > beforeDrop, 10000, { label: 'Fixture dropped a real wire hint' })
+    await waitFor(() => finiteAgentReads > beforeReads && evaluate("document.querySelector('#agent-message-history').textContent.includes('Customer activity with its live hint suppressed.')"), 38000, { label: 'Periodic finite replay recovers the missed hint' })
+    check(await evaluate(`document.querySelector('#reply').value === ${JSON.stringify(followUpDraft)}`), 'finite replay recovers customer activity when the live hint is lost')
+  }
+  finally { suppressReplayHints = false }
+  const snapshotsBeforeExpiry = agentSnapshots
+  await query('UPDATE support_replay_channels SET lease_until = ? WHERE workspace_id = ? AND project_id = ? AND name = ?', [Date.now() - 1, project.workspace_id, project.id, `support.agent.${project.id}`])
+  const afterExpiry = await fetch(apiOrigin + `/api/widget/projects/${project.public_id}/conversations/${snoozedCase}/messages`, { method: 'POST', headers: { origin, authorization: `Bearer ${customer}`, 'content-type': 'application/json' }, body: JSON.stringify({ body: 'Customer activity while the old replay lease was expired.', idempotencyKey: 'inbox-realtime-expired-lease' }) })
+  assert.equal(afterExpiry.status, 201)
+  await waitFor(() => agentSnapshots > snapshotsBeforeExpiry && evaluate("document.querySelector('#agent-message-history').textContent.includes('Customer activity while the old replay lease was expired.')"), 38000, { label: 'The inbox re-enrolls and reads current state after an expired replay lease' })
+  check(await evaluate(`document.querySelector('#reply').value === ${JSON.stringify(followUpDraft)}`), 'snapshot recovery after expiry restores the view and keeps the unsent draft')
+
   await openMigrationSettings('owner')
   await input('#settings-project', String(project.public_id))
   await waitFor(() => evaluate(`!!document.querySelector('[aria-label="Archive Refund outline"]')`), 5000, { label: 'Saved reply archive control' })
@@ -681,6 +731,15 @@ try {
   await text('Saved reply archived.')
   await text('No saved replies found.')
   check(await evaluate(`!document.querySelector('[aria-label="Archive Refund outline"]')`), 'archived replies disappear from the active settings list')
+
+  await openMigrationSettings('agent')
+  const streamsBeforeRevocation = agentStreams
+  await navigate(cdp, origin + '/app', { quietMs: 100, timeoutMs: 20000 })
+  await selectConversation('Question about a refund')
+  await waitFor(() => agentStreams > streamsBeforeRevocation, 20000, { label: 'Ordinary agent has an active project subscription before revocation' })
+  await query("UPDATE support_memberships SET status = 'revoked' WHERE workspace_id = ? AND user_id = ?", [workspace.id, agent.id])
+  await waitFor(() => evaluate("document.body.textContent.includes('This project is no longer available to your account.') && !document.querySelector('#reply') && !document.querySelector('.conversation-row')"), 38000, { label: 'Realtime authorization loss clears the protected inbox and thread' })
+  check(true, 'revoking the active agent removes the protected list and selected conversation during finite reconciliation')
 
   console.info(`PASS team UI functional (${assertions.length} checks)`)
   await Bun.write(resolve(artifacts, 'report.json'), JSON.stringify({ passed: runtimeErrors.length === 0, functionalPassed: true, assertions, runtimeErrors, presenceTiming, cacheDriver: config.cache.driver, browser: (await cdp.send('Browser.getVersion')).product }, null, 2))

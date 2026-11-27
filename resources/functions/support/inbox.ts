@@ -6,6 +6,7 @@ import { useDebounce } from '@stacksjs/stx/composables/use-timer'
 import type { AgentIdentity, Assignment, RoutingAgent, SupportTeamMember, SupportTeam, TeamInbox } from './team-routing'
 import { routingReasonLabel } from './team-routing'
 import { createInboxPresence } from './inbox-presence'
+import { createInboxReplay } from './inbox-replay'
 import { createSavedReplyList } from './saved-replies'
 
 interface Project { id: string | number, public_id: string, name: string, workspace_id: string | number }
@@ -62,6 +63,7 @@ export function createInbox() {
   const attachments = state<ThreadAttachment[]>([])
   const attachmentsNext = state<string | null>(null), attachmentsLoading = state(false), attachmentsError = state(false)
   let attachmentsRevision = 0
+  let earlierAttachmentsLoaded = false
   const contact = state<Contact | null>(null)
   const search = state('')
   const searchError = state(''), searchMode = state('')
@@ -139,6 +141,7 @@ export function createInbox() {
   const snoozeOpen = state(false), snoozeTime = state(''), snoozeInvalid = state(false)
   const seenReply = state('0'), replyAtStart = state<string | null>(null)
   const presence = createInboxPresence(request, requestResponse, async () => { await refreshConversation() }, conversationAccessLost)
+  const liveInbox = createInboxReplay(requestResponse, refreshVisibleInbox, projectAccessLost)
   const viewerNames = derived(() => presence.viewers().map(viewer => person(viewer.userId)).join(', '))
   const composingNames = derived(() => presence.viewers().filter(viewer => viewer.composing).map(viewer => person(viewer.userId)).join(', '))
   const replyChanged = derived(() => visibility() === 'public' && hasReply() && replyAtStart() !== null && Number(presence.latestReply()) > Number(replyAtStart()))
@@ -238,9 +241,9 @@ export function createInbox() {
     return `${item.source === 'configuration' ? 'Team configuration' : 'Manual change'} · ${person(item.actor_id)}`
   }
   function syncRouting(item: Conversation) { routingInbox.set(String(item.inbox_id || 0)); routingAssignee.set(String(item.assignee_id || 0)) }
-  function listPath(cursor?: string | null) { const query = new URLSearchParams(); if (search().trim()) query.set('q', search().trim()); if (inboxFilter()) query.set('inboxId', inboxFilter()); if (filter() !== 'all') query.set('status', filter()); if (cursor) query.set('cursor', cursor); return `/api/support/projects/${encodeURIComponent(project())}/inbox?${query}` }
+  function listPath(cursor?: string | null, limit?: number) { const query = new URLSearchParams(); if (search().trim()) query.set('q', search().trim()); if (inboxFilter()) query.set('inboxId', inboxFilter()); if (filter() !== 'all') query.set('status', filter()); if (cursor) query.set('cursor', cursor); if (limit) query.set('limit', String(limit)); return `/api/support/projects/${encodeURIComponent(project())}/inbox?${query}` }
   function queryIssue() { return search().length > 200 ? 'Search is limited to 200 characters.' : search().trim().length === 1 ? 'Enter at least 2 characters to search subjects and messages.' : '' }
-  function cancelList() { generation++; listController?.abort(); listController = undefined; visibleListRequest?.abort(); debouncedSearch.cancel() }
+  function cancelList() { generation++; listController?.abort(); listController = undefined; visibleListRequest?.abort(); visibleListRequest = undefined; debouncedSearch.cancel() }
   const debouncedSearch = useDebounce(() => { if (!disposed) void refresh() }, 300)
   function searchChanged() {
     cancelList(); conversations.set([]); nextCursor.set(null); searchMode.set(''); error.set(''); searchError.set(queryIssue())
@@ -249,7 +252,25 @@ export function createInbox() {
     if (!search().trim()) void refresh()
     else debouncedSearch()
   }
-  function clearPrivateState() { presence.stop(!disposed); closeSavedReplies(); resetSnooze(); drafts.clear(); conversations.set([]); current.set(null); clearRetentionEvidence(); resetTranscript(); resetAttachments(); contact.set(null); draft.set(''); replyImage.set(null); replyImageError.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = '' }
+  function clearPrivateState(deniedProject?: string) {
+    liveInbox.stop()
+    if (deniedProject) {
+      for (const key of drafts.keys()) if (key.startsWith(deniedProject + ':')) drafts.delete(key)
+    }
+    else drafts.clear()
+    presence.stop(!disposed); closeSavedReplies(); resetSnooze(); conversations.set([]); current.set(null); clearRetentionEvidence(); resetTranscript(); resetAttachments(); contact.set(null); draft.set(''); replyImage.set(null); replyImageError.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = ''
+  }
+  function projectAccessLost() {
+    const denied = project()
+    cancelList()
+    selection++
+    clearPrivateState(denied)
+    projects.update(items => items.filter(item => String(item.public_id || item.id) !== denied))
+    project.set(''); activeProject = ''
+    loading.set(false); threadLoading.set(false); sending.set(false); routingBusy.set(false); inboxFilter.set('')
+    error.set('This project is no longer available to your account.')
+    if (narrowDetails()) void closeDetails()
+  }
   function conversationAccessLost() {
     closeSavedReplies()
     resetSnooze()
@@ -274,11 +295,11 @@ export function createInbox() {
     }
     catch (failure) { if (!disposed && selectedProject === project() && version === generation) routingError.set(failure instanceof Error ? failure.message : 'Routing settings could not be loaded.') }
   }
-  async function loadHistory() {
+  async function loadHistory(signal?: AbortSignal) {
     const item = current(), selectedProject = project(), version = selection
     if (!item) return
-    try { const data = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${item.id}/routing-audit`); if (!disposed && selectedProject === project() && version === selection) assignments.set(data.assignments || []) }
-    catch (failure) { if (!disposed && version === selection) routingError.set(failure instanceof Error ? failure.message : 'Assignment history could not be loaded.') }
+    try { const data = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${item.id}/routing-audit`, { signal }); if (!disposed && !signal?.aborted && selectedProject === project() && version === selection) assignments.set(data.assignments || []) }
+    catch (failure) { if (!disposed && !signal?.aborted && version === selection) routingError.set(failure instanceof Error ? failure.message : 'Assignment history could not be loaded.') }
   }
   function clearRetentionEvidence() {
     retentionRequest?.abort()
@@ -394,6 +415,7 @@ export function createInbox() {
         project.set(String(data.projects[0].public_id || data.projects[0].id))
         activeProject = project()
         await refresh()
+        updateLiveInbox()
       }
     }
     catch (failure) { if (!disposed) error.set(failure instanceof Error ? failure.message : 'Your workspace could not be loaded.') }
@@ -420,9 +442,18 @@ export function createInbox() {
     finally { if (!disposed && version === generation) loading.set(false) }
   }
 
-  function canRefreshVisibleInbox() {
+  function canRefreshVisibleInbox(replay: boolean) {
     return !disposed && document.visibilityState === 'visible' && !!project() && !!user() && !loading() && !threadLoading()
-      && !sending() && !routingBusy() && !loadedAdditionalPage && !search().trim()
+      && !sending() && !routingBusy() && !queryIssue() && (replay || (!loadedAdditionalPage && !search().trim()))
+  }
+
+  async function syncRefreshedRouting(item: Conversation, next: Conversation, signal: AbortSignal) {
+    const routingChanged = item.status !== next.status || item.snoozed_until !== next.snoozed_until
+      || item.assignee_id !== next.assignee_id || item.inbox_id !== next.inbox_id || item.routing_reason !== next.routing_reason
+    if (!routingChanged) return
+    if (routingInbox() === String(item.inbox_id || 0) && routingAssignee() === String(item.assignee_id || 0)) syncRouting(next)
+    routingNotice.set(routingReasonLabel(next.routing_reason))
+    await loadHistory(signal)
   }
 
   async function reconcileSelectedConversation(rows: Conversation[], item: Conversation | null, version: number, selected: number, signal: AbortSignal) {
@@ -443,33 +474,57 @@ export function createInbox() {
     const next = { ...item, ...updated }
     if (JSON.stringify(next) === JSON.stringify(item)) return
     current.set(next)
-    const routingChanged = item.status !== next.status || item.snoozed_until !== next.snoozed_until
-      || item.assignee_id !== next.assignee_id || item.inbox_id !== next.inbox_id || item.routing_reason !== next.routing_reason
-    if (!routingChanged) return
-    if (routingInbox() === String(item.inbox_id || 0) && routingAssignee() === String(item.assignee_id || 0)) syncRouting(next)
-    routingNotice.set(routingReasonLabel(next.routing_reason))
     if (item.status === 'snoozed' && next.status === 'open') void refreshConversation().catch(() => undefined)
-    await loadHistory()
+    await syncRefreshedRouting(item, next, signal)
   }
 
-  async function refreshVisibleInbox() {
-    if (visibleListRequest || !canRefreshVisibleInbox()) return
+  async function refreshVisibleInbox(parent?: AbortSignal) {
+    const replay = parent !== undefined
+    if (visibleListRequest || parent?.aborted || !canRefreshVisibleInbox(replay)) return false
     const controller = new AbortController(), version = generation, selected = selection, item = current(), previous = conversations()
-    const timeout = setTimeout(() => controller.abort(), 8_000)
+    const abort = () => controller.abort()
+    parent?.addEventListener('abort', abort, { once: true })
+    const timeout = setTimeout(abort, 8_000)
     visibleListRequest = controller
+    let reconcilingThread = false
     try {
-      const data = await request(listPath(), { signal: controller.signal })
-      if (controller.signal.aborted || version !== generation || previous !== conversations() || !canRefreshVisibleInbox()) return
-      const rows: Conversation[] = data.conversations || []
+      const limit = replay ? Math.min(100, Math.max(previous.length, 50)) : undefined
+      const data = await request(listPath(null, limit), { signal: controller.signal })
+      if (controller.signal.aborted || version !== generation || previous !== conversations() || !canRefreshVisibleInbox(replay)) return false
+      const head: Conversation[] = data.conversations || []
+      const boundary = head.at(-1)
+      const older = replay && loadedAdditionalPage && data.nextCursor && boundary
+        ? previous.filter(row => Number(row.id) < Number(boundary.id))
+        : []
+      const rows = [...head, ...older]
       if (JSON.stringify(rows) !== JSON.stringify(previous)) conversations.set(rows)
-      nextCursor.set(data.nextCursor || null)
-      await reconcileSelectedConversation(rows, item, version, selected, controller.signal)
+      const overlaps = boundary && previous.some(row => Number(row.id) >= Number(boundary.id))
+      nextCursor.set(older.length && overlaps ? nextCursor() : data.nextCursor || null)
+      if (item) {
+        if (selected !== selection || sending() || routingBusy()) return false
+        reconcilingThread = true
+        const refreshed = await refreshConversation(false, controller.signal)
+        if (!refreshed) return false
+      }
+      return version === generation && !controller.signal.aborted
     }
-    catch { /* A failed background read is retried on the next visible refresh. */ }
-    finally { clearTimeout(timeout); if (visibleListRequest === controller) visibleListRequest = undefined }
+    catch (failure) {
+      if (!controller.signal.aborted && version === generation) {
+        const status = (failure as { status?: number }).status
+        if (status === 403) projectAccessLost()
+        else if (status === 404 && reconcilingThread && selected === selection) conversationAccessLost()
+      }
+      return false
+    }
+    finally {
+      clearTimeout(timeout)
+      parent?.removeEventListener('abort', abort)
+      if (visibleListRequest === controller) visibleListRequest = undefined
+    }
   }
 
   async function changeProject() {
+    liveInbox.stop()
     stashDraft(activeProject)
     presence.stop()
     cancelList(); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); conversations.set([]); threadLoading.set(false)
@@ -486,6 +541,7 @@ export function createInbox() {
     replyImageError.set('')
     retryKey = ''; retryFingerprint = ''; retryCursor = undefined; seenReply.set('0'); replyAtStart.set(null); inboxFilter.set(''); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); activeProject = project()
     await refresh()
+    updateLiveInbox()
   }
 
   function conversationPath(selectedProject: string, id: string | number) { return `/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(id))}` }
@@ -500,10 +556,19 @@ export function createInbox() {
   function attachmentDownloadPath(id: string) { return `/api/support/projects/${encodeURIComponent(project())}/attachments/${encodeURIComponent(id)}` }
   function resetAttachments(data?: ThreadDetail) {
     attachmentsRevision++
+    earlierAttachmentsLoaded = false
     attachments.set(data?.attachments?.toReversed() ?? [])
     attachmentsNext.set(data?.attachmentsNextCursor ?? null)
     attachmentsLoading.set(false)
     attachmentsError.set(false)
+  }
+  function refreshAttachmentHead(data: ThreadDetail) {
+    if (!data.attachmentsNextCursor || !data.attachments.length) { resetAttachments(data); return }
+    const head = data.attachments.toReversed()
+    const boundary = Number(head.at(-1)!.id)
+    const older = attachments().filter(file => Number(file.id) < boundary)
+    attachments.set([...head, ...older])
+    if (!older.length) attachmentsNext.set(data.attachmentsNextCursor)
   }
   async function loadOlderAttachments() {
     const item = current(), cursor = attachmentsNext(), selectedProject = project(), selected = selection, revision = attachmentsRevision
@@ -519,6 +584,7 @@ export function createInbox() {
       const known = new Set(attachments().map(file => file.id))
       const page = data.attachments.toReversed().filter(file => !known.has(file.id))
       attachments.update(files => [...files, ...page])
+      earlierAttachmentsLoaded = true
       attachmentsNext.set(data.attachmentsNextCursor)
       if (buttonHadFocus && !data.attachmentsNextCursor && page.length) {
         await nextTick()
@@ -594,14 +660,15 @@ export function createInbox() {
       }
     }
   }
-  function showMessages(data: ThreadDetail, revealLatest = false) {
+  function showMessages(data: ThreadDetail, revealLatest = false, keepAttachmentPages = false) {
     const threadMessages = data.messages || []
     const last = threadMessages.reduce((latest, message) => message.visibility === 'public' && message.author_type === 'agent' && Number(message.id) > Number(latest) ? String(message.id) : latest, data.lastAgentReplyId ?? '0')
     const previous = messages()
     const readingOlder = earlierMessagesLoaded || messagesController || messagesError()
     const cachedBodies = readingOlder && new Map(previous.map(message => [String(message.id), message.body]))
     const changedBody = cachedBodies && threadMessages.some(message => cachedBodies.has(String(message.id)) && cachedBodies.get(String(message.id)) !== message.body)
-    if (changedBody || current()?.subject !== data.conversation.subject) resetTranscript()
+    const subjectChanged = current()?.subject !== data.conversation.subject
+    if (changedBody || subjectChanged) resetTranscript()
     current.set(data.conversation)
     const shown = messages()
     const first = threadMessages[0]
@@ -622,7 +689,8 @@ export function createInbox() {
       messages.set(threadMessages)
       messagesNext.set(data.messagesNextCursor ?? null)
     }
-    resetAttachments(data)
+    if (!keepAttachmentPages || subjectChanged || (!earlierAttachmentsLoaded && !attachmentsLoading())) resetAttachments(data)
+    else refreshAttachmentHead(data)
     if (pendingAgentReply() === null) seenReply.set(last)
     else acknowledgeLoadedReply()
   }
@@ -686,7 +754,7 @@ export function createInbox() {
     catch (failure) { if (!disposed) notice.set(failure instanceof Error ? failure.message : 'The read marker could not be saved.') }
   }
 
-  async function refreshConversation(revealLatest = false) {
+  async function refreshConversation(revealLatest = false, signal?: AbortSignal) {
     const item = current(), selectedProject = project(), selected = selection
     if (!item) return
     if (!revealLatest && latestReview?.selection === selected) {
@@ -694,9 +762,11 @@ export function createInbox() {
       return
     }
     const refresh = ++messageRefresh
-    const data: ThreadDetail = await request(threadDetailPath(selectedProject, item.id))
-    if (disposed || selectedProject !== project() || selected !== selection || messageRefresh !== refresh) return
-    showMessages(data, revealLatest)
+    const data: ThreadDetail = await request(threadDetailPath(selectedProject, item.id), { signal })
+    if (disposed || signal?.aborted || selectedProject !== project() || selected !== selection || messageRefresh !== refresh) return
+    showMessages(data, revealLatest, signal !== undefined)
+    if (signal) await syncRefreshedRouting(item, data.conversation, signal)
+    if (signal?.aborted || selected !== selection || messageRefresh !== refresh) return
     return true
   }
   async function reviewReply() {
@@ -905,8 +975,15 @@ export function createInbox() {
     const date = new Date(value)
     return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(locale, { month: 'short', day: 'numeric' })
   }
+  function updateLiveInbox() {
+    if (!disposed && document.visibilityState === 'visible' && user() && project()) liveInbox.start(project())
+    else liveInbox.stop()
+  }
   function setupPresence() {
-    const refreshOnReturn = useEventListener('visibilitychange', () => void refreshVisibleInbox(), { target: document })
+    const refreshOnReturn = useEventListener('visibilitychange', () => {
+      updateLiveInbox()
+      void refreshVisibleInbox()
+    }, { target: document })
     const refreshTimer = setInterval(() => void refreshVisibleInbox(), 60_000)
     detailsCleanup.push(presence.listen(), () => { refreshOnReturn.remove(); clearInterval(refreshTimer) })
   }

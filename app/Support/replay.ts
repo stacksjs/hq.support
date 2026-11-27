@@ -52,11 +52,20 @@ export async function appendSupportReplay(project: Row, outbox: Row, payload: Ro
   const tx = requireWorkspaceTransaction(Number(project.workspace_id))
   const personId = await publicContact(project, String(outbox.kind), payload)
   const names = [agentReplayChannel(project), ...(personId ? [customerReplayChannel(project, personId)] : [])].sort()
+  await appendEnrolledChanges(project, tx, names, String(outbox.event_id))
+}
+
+export async function appendRoutingReplay(project: Row, auditId: unknown) {
+  const tx = requireWorkspaceTransaction(Number(project.workspace_id))
+  await appendEnrolledChanges(project, tx, [agentReplayChannel(project)], `routing:${auditId}`)
+}
+
+async function appendEnrolledChanges(project: Row, tx: WorkspaceTransaction, names: string[], eventKey: string) {
   const store = supportReplayStore(project, tx)
   for (const channel of names) {
     const enrolled = (await tx.query('SELECT id FROM support_replay_channels WHERE workspace_id = ? AND project_id = ? AND name = ? AND lease_until > ?', [project.workspace_id, project.id, channel, Date.now()]))[0]
     if (!enrolled) continue
-    await store.append({ channel, event: 'changed', data: null, idempotencyKey: String(outbox.event_id) })
+    await store.append({ channel, event: 'changed', data: null, idempotencyKey: eventKey })
     tx.afterCommit(async () => {
       // A lost hint cannot alter a cursor. Later finite replay recovers without Redis.
       try { await supportReplayInvalidations().publish(channel) }

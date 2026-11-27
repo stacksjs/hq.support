@@ -10,7 +10,7 @@ import WorkflowJob from '../../app/Jobs/RunSupportWorkflows'
 import { config, overridesReady } from '@stacksjs/config'
 import { db, workspaceTransaction, requireWorkspaceTransaction, query, one } from '../../app/Support/database'
 import { createWorkspace, createProject, createSession, createConversation, conversation, reply, enqueue, usage } from '../../app/Support/service'
-import { routeConversation } from '../../app/Support/routing'
+import { reopenSnoozedConversations, routeConversation } from '../../app/Support/routing'
 import { markRead } from '../../app/Support/reads'
 import { upload } from '../../app/Support/attachments'
 import { Storage } from '@stacksjs/storage'
@@ -93,6 +93,21 @@ await Bun.sleep(50); await refreshNotices()
 assert.equal(notices.filter(name => name === names[1]).length, noticeCount, 'private note sends no customer hint')
 assert.equal((await head(names[0]!)).head.seq, 2)
 await routeConversation(project, created.conversation.id, { assigneeId: Number(user.id) }, { userId: Number(user.id), source: 'manual' })
+assert.equal((await head(names[0]!)).head.seq, 3, 'an assignment advances the enrolled agent channel')
+await receivedHints(4)
+const routingHead = await head(names[0]!)
+await routeConversation(project, created.conversation.id, { assigneeId: Number(user.id) }, { userId: Number(user.id), source: 'manual' })
+assert.deepEqual(await head(names[0]!), routingHead, 'repeating the same assignment adds no activity event')
+await routeConversation(project, created.conversation.id, { status: 'snoozed', snoozedUntil: Date.now() + 30_000 }, { userId: Number(user.id), source: 'manual' })
+assert.equal((await head(names[0]!)).head.seq, 4, 'a follow-up schedule advances the agent channel')
+await query('UPDATE support_conversations SET snoozed_until = ? WHERE id = ?', [Date.now() - 1, created.conversation.id])
+assert.deepEqual(await reopenSnoozedConversations(), { reopened: 1 })
+assert.deepEqual(await reopenSnoozedConversations(), { reopened: 0 })
+const woke = await head(names[0]!)
+assert.equal(woke.head.seq, 5, 'one worker reopen advances the agent channel exactly once')
+assert.deepEqual(woke.messages.slice(-3).map(event => [event.event, event.data]), [['changed', null], ['changed', null], ['changed', null]])
+assert.deepEqual(await head(names[1]!), beforePrivate, 'routing and scheduled wake-up expose no customer replay metadata')
+await receivedHints(6)
 const firstMessage = await one('SELECT id FROM support_messages WHERE conversation_id = ? ORDER BY id LIMIT 1', [Number(created.conversation.id)])
 await markRead(project, created.conversation.id, Number(user.id), firstMessage!.id)
 await upload(project, created.conversation.id, new File(['Private evidence'], 'internal.txt', { type: 'text/plain' }), 'private-file')
@@ -101,7 +116,7 @@ await Bun.sleep(50); await refreshNotices()
 assert.equal(notices.filter(name => name === names[1]).length, noticeCount)
 await reply(project, created.conversation.id, { body: 'Public reply', idempotencyKey: 'reply-1' }, { customer })
 assert.equal((await head(names[1]!)).head.seq, 2)
-await receivedHints(5)
+await receivedHints(8)
 const beforeRollback = await head(names[0]!), beforeCustomerRollback = await head(names[1]!)
 const beforeHints = notices.length
 await assert.rejects(workspaceTransaction(Number(workspace.id), async () => {

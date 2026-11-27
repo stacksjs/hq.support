@@ -1,6 +1,7 @@
 import type { Row } from './database'
 import { insert, one, query, workspaceTransaction } from './database'
 import { fail, identifier, text } from './errors'
+import { appendRoutingReplay } from './replay'
 import { conversation, conversationStatuses, member, summary } from './service'
 
 export type RoutingActor = { userId: number, source: 'manual' } | { source: 'workflow', workflowRunId: number } | { userId: number, source: 'configuration' } | { source: 'ingress' | 'overflow' | 'snooze' }
@@ -12,7 +13,11 @@ const bool = (value: unknown, fallback: boolean) => {
 }
 const state = (row: Row) => ({ assigneeId: Number(row.assignee_id), teamId: Number(row.team_id), inboxId: Number(row.inbox_id), status: String(row.status), snoozedUntil: row.snoozed_until == null ? null : Number(row.snoozed_until) })
 async function audit(project: Row, before: Row, after: Row, actor: RoutingActor, reason: string) {
-  await insert('support_assignment_audits', { workspace_id: project.workspace_id, project_id: project.id, conversation_id: after.id, actor_id: 'userId' in actor ? actor.userId : 0, workflow_run_id: 'workflowRunId' in actor ? actor.workflowRunId : 0, source: actor.source, reason, before_state: JSON.stringify(state(before)), after_state: JSON.stringify(state(after)) })
+  const beforeState = JSON.stringify(state(before)), afterState = JSON.stringify(state(after))
+  const decision = await insert('support_assignment_audits', { workspace_id: project.workspace_id, project_id: project.id, conversation_id: after.id, actor_id: 'userId' in actor ? actor.userId : 0, workflow_run_id: 'workflowRunId' in actor ? actor.workflowRunId : 0, source: actor.source, reason, before_state: beforeState, after_state: afterState })
+  // Ingress already appends through the conversation or message outbox event.
+  if (actor.source !== 'ingress' && (beforeState !== afterState || before.routing_reason !== after.routing_reason))
+    await appendRoutingReplay(project, decision.id)
 }
 async function authorize(project: Row, actor: RoutingActor) {
   if (actor.source === 'manual') return await member(actor.userId, Number(project.workspace_id))
