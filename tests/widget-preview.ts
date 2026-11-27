@@ -1,5 +1,6 @@
 import { resolve, sep } from 'node:path'
 import { createHash } from 'node:crypto'
+import serverConfig from '../config/server'
 const root = resolve(import.meta.dir, '..')
 
 export async function createWidgetPreview(options: { port?: number, assetsDirectory?: string, native?: boolean, customerPort?: number } = {}) {
@@ -15,9 +16,11 @@ export async function createWidgetPreview(options: { port?: number, assetsDirect
     await overridesReady
     if (config.database.queryLogging) config.database.queryLogging.enabled = false
     config.email.default = 'capture'
-    const auth = await migrateAuthTables()
+    const initialAuth = await migrateAuthTables()
     const migrated = await runDatabaseMigration()
-    if (!auth.success || !migrated.isOk) throw new Error('Native test database migration failed.')
+    // The generated User schema may be created after the first auth pass.
+    const auth = await migrateAuthTables()
+    if (!initialAuth.success || !migrated.isOk || !auth.success) throw new Error('Native test database migration failed.')
     await injectGlobalAutoImports()
     await route.importRoutes()
     nativeApi = request => route.handleRequest(request)
@@ -54,7 +57,7 @@ export async function createWidgetPreview(options: { port?: number, assetsDirect
       if (url.pathname === '/loader-proof') return new Response(Bun.file(resolve(root, 'tests/widget-loader-host.html')), { headers: { 'Content-Security-Policy': policy } })
       if (url.pathname === '/element-proof.js') return new Response(inlineProof, { headers: { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' } })
       if (url.pathname === '/loader-proof.js') return new Response(loader.outputs[0], { headers: { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' } })
-      if (url.pathname === '/support.js') return new Response(Bun.file(resolve(assets, 'support.js')), { headers: { 'Content-Type': 'text/javascript' } })
+      if (url.pathname === '/support.js') return new Response(Bun.file(resolve(assets, 'support.js')), { headers: { ...serverConfig.headers['/support.js'], 'Content-Type': 'text/javascript' } })
       if (url.pathname === '/favicon.ico') return new Response(null, { status: 204 })
       if (url.pathname.startsWith('/api/widget/projects/proof/')) {
         const resource = url.pathname.slice('/api/widget/projects/proof'.length)
@@ -83,7 +86,11 @@ export async function createWidgetPreview(options: { port?: number, assetsDirect
       if (path !== base && !path.startsWith(base + sep)) return new Response('Forbidden', { status: 403 })
       if (url.pathname.endsWith('/')) path = resolve(path, 'index.html')
       if (!(await Bun.file(path).exists()) && !url.pathname.includes('.')) path = path + '.html'
-      return (await Bun.file(path).exists()) ? new Response(Bun.file(path)) : new Response('Not found', { status: 404 })
+      const widgetHeaders = url.pathname.startsWith('/widgets/') ? {
+        ...serverConfig.headers['/widgets/*'],
+        ...Object.entries(serverConfig.headers).find(([entry]) => entry === url.pathname)?.[1],
+      } : undefined
+      return (await Bun.file(path).exists()) ? new Response(Bun.file(path), { headers: widgetHeaders }) : new Response('Not found', { status: 404 })
     },
   })
   let customer: ReturnType<typeof Bun.serve> | undefined

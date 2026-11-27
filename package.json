@@ -86,7 +86,7 @@
     "@stacksjs/socials": "^0.75.647",
     "@stacksjs/storage": "^0.75.647",
     "@stacksjs/stx": "0.2.924",
-    "@stacksjs/support": "^0.75.647",
+    "@stacksjs/support": "0.75.695",
     "@stacksjs/telephony": "^0.75.647",
     "@stacksjs/ts-cloud": "0.16.152",
     "@stacksjs/validation": "^0.75.647",
