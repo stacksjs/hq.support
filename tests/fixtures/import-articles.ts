@@ -58,6 +58,11 @@ try {
   const before = { jobs: Number((await one('SELECT COUNT(*) AS n FROM jobs'))?.n), users: Number((await one('SELECT COUNT(*) AS n FROM users'))?.n) }
   const preview = await upload(source, { integration: true, dryRun: true })
   check(preview.status === 200 && preview.data.totalRecords === 2 && preview.data.compatibleRecords === 2 && preview.data.reviewRecords === 0, `dry-run rehearses native article and collection mapping ${JSON.stringify(preview.data)}`)
+  const ownerPreview = await upload(source, { dryRun: true })
+  assert.deepEqual(ownerPreview.data.records, [
+    { position: 0, entityType: 'collection', sourceId: '18', status: 'compatible', errorCode: null },
+    { position: 1, entityType: 'article', sourceId: 'article-one', status: 'compatible', errorCode: null },
+  ], 'owner preview identifies supplied collections and articles in import order')
   check(Number((await one('SELECT COUNT(*) AS n FROM support_articles'))?.n) === 0 && Number((await one('SELECT COUNT(*) AS n FROM support_article_revisions'))?.n) === 0 && Number((await one('SELECT COUNT(*) AS n FROM support_import_mappings'))?.n) === 0 && Number((await one('SELECT COUNT(*) AS n FROM support_import_runs'))?.n) === 0, 'dry-run rolls back native content, revisions, source mappings and run records')
   check(Number((await one('SELECT COUNT(*) AS n FROM jobs'))?.n) === before.jobs && !await Storage.disk('local').directoryExists('support-imports'), 'article rehearsal creates neither private archive nor queue intent')
   const accepted = await upload(source, { integration: true })

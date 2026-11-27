@@ -47,13 +47,23 @@ try {
     form.set('file', new File([bytes], 'intercom-bundle.json', { type: 'application/json' }))
     if (options.dryRun !== undefined) form.set('dryRun', String(options.dryRun))
     const result = await fetch(base + `${options.integration ? '/v1/projects/' + project.public_id : prefix}/imports/intercom`, { method: 'POST', headers: { accept: 'application/json', authorization: `Bearer ${options.key || token}` }, body: form })
-    return { status: result.status, data: await result.json() as any, bytes }
+    return { status: result.status, data: await result.json() as any, bytes, headers: result.headers }
   }
   const source = { version: 1, provider: 'intercom', format: 'plaintext', contacts: [contact('c1'), contact('c2')], conversations: [conversation('one', 'c1', [part('reply-1'), part('note-1', 'note', 'Private historical note')]), conversation('two', 'c2', [part('reply-2')])] }
   const nativeProfileBeforePreview = await one('SELECT name, email, attributes, updated_at FROM support_contacts WHERE id = ?', [Number(existing.contact.id)])
   const jobsBeforePreview = Number((await one('SELECT COUNT(*) AS count FROM jobs'))?.count)
   const preview = await upload(source, { integration: true, key: keys.ingestKey, dryRun: true })
   check(preview.status === 200 && preview.data.dryRun && preview.data.totalRecords === 4 && preview.data.compatibleRecords === 4 && preview.data.reviewRecords === 0, `server preview rehearses actual native mapping compatibility ${JSON.stringify(preview.data)}`)
+  check(Object.keys(preview.data).sort().join(',') === 'compatibleRecords,dryRun,reasons,reviewRecords,skippedRecords,totalRecords', 'integration preview keeps the exact summary contract')
+  const ownerPreview = await upload(source, { dryRun: true })
+  check(ownerPreview.status === 200 && ownerPreview.headers.get('cache-control') === 'no-store',
+    'owner preview is private and non-cacheable')
+  assert.deepEqual(ownerPreview.data.records, [
+    { position: 0, entityType: 'contact', sourceId: 'c1', status: 'compatible', errorCode: null },
+    { position: 1, entityType: 'contact', sourceId: 'c2', status: 'compatible', errorCode: null },
+    { position: 2, entityType: 'conversation', sourceId: 'one', status: 'compatible', errorCode: null },
+    { position: 3, entityType: 'conversation', sourceId: 'two', status: 'compatible', errorCode: null },
+  ], 'owner preview shows ordered source IDs without transcripts, target IDs or attachment URLs')
   check(Number((await one('SELECT COUNT(*) AS count FROM support_import_runs'))?.count) === 0 && Number((await one('SELECT COUNT(*) AS count FROM support_import_mappings'))?.count) === 0 && Number((await one('SELECT COUNT(*) AS count FROM support_conversations'))?.count) === 0 && Number((await one('SELECT COUNT(*) AS count FROM support_messages'))?.count) === 0, 'dry run rolls back every target/archive/mapping row on the actual database')
   check(Number((await one('SELECT COUNT(*) AS count FROM jobs'))?.count) === jobsBeforePreview && !await Storage.disk('local').directoryExists('support-imports'), 'dry run creates no queue intent or private archive file')
   check(JSON.stringify(await one('SELECT name, email, attributes, updated_at FROM support_contacts WHERE id = ?', [Number(existing.contact.id)])) === JSON.stringify(nativeProfileBeforePreview), 'dry run preserves existing native row values and timestamps exactly')
@@ -105,7 +115,12 @@ try {
   const firstPage = conversation('paged', 'c1', Array.from({ length: 500 }, (_, i) => part(`paged-${i}`))), lastPage = conversation('paged', 'c1', [part('paged-last')])
   Object.assign(firstPage.conversation_parts, { pages: { page: 1, per_page: 500, total_pages: 2, next: 'https://api.intercom.io/conversations/paged?page=2&per_page=500' } })
   Object.assign(lastPage.conversation_parts, { pages: { page: 2, per_page: 500, total_pages: 2, next: null } })
-  const paged = await upload({ version: 1, provider: 'intercom', format: 'plaintext', contacts: [], conversations: [{ pages: [{ page: 1, response: firstPage }, { page: 2, response: lastPage }] }] })
+  const pagedBundle = { version: 1, provider: 'intercom', format: 'plaintext', contacts: [], conversations: [{ pages: [{ page: 1, response: firstPage }, { page: 2, response: lastPage }] }] }
+  const pagedPreview = await upload({ ...pagedBundle, conversations: [{ ...pagedBundle.conversations[0]!, id: 'wrapper-id' }] }, { dryRun: true })
+  check(pagedPreview.status === 200 && pagedPreview.data.compatibleRecords === 1, 'complete numbered responses pass the owner preview')
+  assert.deepEqual(pagedPreview.data.records, [{ position: 0, entityType: 'conversation', sourceId: 'paged', status: 'compatible', errorCode: null }],
+    'owner preview uses the original conversation response ID for complete pagination')
+  const paged = await upload(pagedBundle)
   await resumeInNewProcess(paged.data.run.id, 'worker')
   const pagedStatus = (await http(`${prefix}/imports/${paged.data.run.id}`, 'GET', undefined, token)).data
   check(pagedStatus.run.status === 'completed' && pagedStatus.records[0].external_id === 'paged', 'complete numbered response pages import without truncation and retain the source conversation ID')
@@ -144,6 +159,15 @@ try {
   const inconsistentPreview = await upload(inconsistentBundle, { integration: true, key: keys.ingestKey, dryRun: true })
   check(inconsistentPreview.status === 200 && inconsistentPreview.data.reviewRecords === inconsistentIds.length && inconsistentPreview.data.compatibleRecords === 0,
     `native preview rejects inconsistent source pagination: ${JSON.stringify(inconsistentPreview.data)}`)
+  const ownerReview = await upload({ ...inconsistentBundle,
+    contacts: [contact('malformed@example.test'), { ...contact('missing'), id: undefined }],
+    conversations: [{ ...inconsistentBundle.conversations[0]!, id: 'wrapper-id' }, ...inconsistentBundle.conversations.slice(1)],
+  }, { dryRun: true })
+  assert.deepEqual(ownerReview.data.records, [
+    { position: 0, entityType: 'contact', sourceId: null, status: 'needs_review', errorCode: 'invalid_source_id' },
+    { position: 1, entityType: 'contact', sourceId: null, status: 'needs_review', errorCode: 'invalid_input' },
+    ...inconsistentIds.map((sourceId, index) => ({ position: index + 2, entityType: 'conversation', sourceId, status: 'needs_review', errorCode: 'incomplete_source_history' })),
+  ], 'preview identifies each failed paginated record by the first provider response and omits malformed IDs')
   const inconsistent = await upload(inconsistentBundle)
   await resumeInNewProcess(inconsistent.data.run.id, 'worker')
   const inconsistentReport = (await http(`${prefix}/imports/${inconsistent.data.run.id}`, 'GET', undefined, token)).data
@@ -312,6 +336,18 @@ try {
   check(sameTimeReport.run.status === 'completed' && sameTimeReport.run.skipped === 1,
     'an identical source timestamp matches the stored UTC date even when SQL omits its zone')
 
+  const reviewerEmail = 'migration-reviewer@example.test', reviewerPassword = 'ImportReviewer2026!'
+  const registration = await http('/register', 'POST', { name: 'Migration Reviewer', email: reviewerEmail, password: reviewerPassword, password_confirmation: reviewerPassword })
+  check([200, 201].includes(registration.status), 'disposable reviewer account registers')
+  const reviewer = (await one('SELECT id FROM users WHERE email = ?', [reviewerEmail]))!
+  await query("INSERT INTO support_memberships (workspace_id, user_id, email, role, status) VALUES (?, ?, ?, 'agent', 'active')", [workspace.id, reviewer.id, reviewerEmail])
+  const reviewerToken = (await http('/login', 'POST', { email: reviewerEmail, password: reviewerPassword })).data.access_token
+  const agentPreview = await upload(source, { key: reviewerToken, dryRun: true })
+  check(agentPreview.status === 403 && agentPreview.data.records === undefined, 'agent cannot inspect the source inventory')
+  await query("UPDATE support_memberships SET role = 'admin' WHERE workspace_id = ? AND user_id = ?", [workspace.id, reviewer.id])
+  const adminPreview = await upload(source, { key: reviewerToken, dryRun: true })
+  check(adminPreview.status === 200 && adminPreview.data.records.length === 4 && adminPreview.data.records.every((record: any) => record.status === 'skipped'),
+    'an admin sees every previously imported source record as skipped in a later preview')
   console.log(`PASS Intercom migration HTTP ${checks} checks`)
 }
 finally { await server.stop(true) }

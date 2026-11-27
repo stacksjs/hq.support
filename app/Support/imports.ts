@@ -117,6 +117,18 @@ function importRecords(bundle: IntercomBundle) {
   // Keep pre-existing contact/conversation positions stable for version-one resumptions.
   return [...bundle.contacts.map(payload => ({ type: 'contact', payload })), ...bundle.conversations.map(payload => ({ type: 'conversation', payload })), ...bundle.collections.map(payload => ({ type: 'collection', payload })), ...bundle.articles.map(payload => ({ type: 'article', payload }))]
 }
+type ImportRecord = ReturnType<typeof importRecords>[number]
+function firstSourcePage(item: ImportRecord): Row | undefined {
+  if (item.type === 'conversation' && Array.isArray(item.payload.pages))
+    return object(object(item.payload.pages[0]).response)
+}
+
+function previewSourceId(item: ImportRecord): string | null {
+  const firstPage = firstSourcePage(item)
+  try { return external(firstPage ? firstPage.id : item.payload.id) }
+  catch (error) { if (error instanceof SupportError) return null; throw error }
+}
+
 async function importPrincipalAuthor(project: Row, principal: ImportPrincipal): Promise<KnowledgeAuthor> {
   await authorizeImport(project, principal)
   if (typeof principal === 'number') return principal
@@ -141,7 +153,7 @@ async function importRunAuthor(project: Row, runId: unknown): Promise<KnowledgeA
   }
   fail(409, 'import_actor_invalid', 'The persisted migration principal requires operator review.')
 }
-async function importRecord(project: Row, item: { type: string, payload: Row }, bundle: IntercomBundle, author: () => Promise<KnowledgeAuthor>, archive?: ImportArchive) {
+async function importRecord(project: Row, item: ImportRecord, bundle: IntercomBundle, author: () => Promise<KnowledgeAuthor>, archive?: ImportArchive) {
   if (item.type === 'contact') return await importContact(project, item.payload)
   if (item.type === 'conversation') {
     if (bundle.attachmentFiles.size) await author()
@@ -337,8 +349,7 @@ export async function processImportBatch(id: unknown, options: { batchSize?: num
         catch (error) { if (error instanceof SupportError) review = error; else throw error }
         const status = review ? 'needs_review' : outcome.skipped ? 'skipped' : 'imported', previous = await one('SELECT id, status, target_id FROM support_import_records WHERE import_run_id = ? AND position = ?', [run.id, cursor])
         const recordStatus = status === 'skipped' && previous?.status === 'imported' && Number(previous.target_id) === Number(outcome.id) ? 'imported' : status
-        const firstPage = item.type === 'conversation' && Array.isArray(item.payload.pages) ? object(object(item.payload.pages[0]).response) : undefined
-        const sourceId = item.payload.id ?? firstPage?.id
+        const sourceId = item.payload.id ?? firstSourcePage(item)?.id
         const report = { entity_type: item.type, external_id: typeof sourceId === 'string' || typeof sourceId === 'number' ? String(sourceId).slice(0, 200) : '(missing)', status: recordStatus, target_id: outcome.id ?? 0, error_code: review?.code || '', message: review?.message || outcome.message || '', source_payload: JSON.stringify(item.payload) }
         if (previous) await query('UPDATE support_import_records SET status = ?, target_id = ?, error_code = ?, message = ?, source_payload = ?, updated_at = ? WHERE id = ?', [report.status, report.target_id, report.error_code, report.message, report.source_payload, new Date().toISOString(), previous.id])
         else await insert('support_import_records', { workspace_id: run.workspace_id, project_id: run.project_id, import_run_id: run.id, position: cursor, ...report })
@@ -413,8 +424,9 @@ export async function integrationImportStatus(project: Row, principal: ImportPri
   await authorizeImport(project, principal)
   return { run: safeIntegrationRun(await runFor(project, id)) }
 }
+type ImportPreviewReport = { status: 'compatible' | 'skipped' | 'needs_review', code: string, message: string }
 class PreviewRollback extends Error {
-  constructor(readonly reports: { status: string, code: string, message: string }[]) { super('Migration preview rollback') }
+  constructor(readonly reports: ImportPreviewReport[]) { super('Migration preview rollback') }
 }
 export async function previewIntercomBundle(project: Row, principal: ImportPrincipal, file: File) {
   await authorizeImport(project, principal)
@@ -423,7 +435,7 @@ export async function previewIntercomBundle(project: Row, principal: ImportPrinc
   try {
     await workspaceTransaction(Number(project.workspace_id), async () => {
       await authorizeImport(project, principal)
-      const reports: { status: string, code: string, message: string }[] = []
+      const reports: ImportPreviewReport[] = []
       for (const item of records) {
         try {
           const result = await db.transaction(async () => await importRecord(project, item, bundle, () => importPrincipalAuthor(project, principal)))
@@ -439,7 +451,25 @@ export async function previewIntercomBundle(project: Row, principal: ImportPrinc
     if (!(error instanceof PreviewRollback)) throw error
     const reasons = new Map<string, { code: string, count: number, message: string }>()
     for (const report of error.reports) if (report.code) { const reason = reasons.get(report.code) || { code: report.code, count: 0, message: report.message }; reason.count++; reasons.set(report.code, reason) }
-    return { dryRun: true, totalRecords: records.length, compatibleRecords: error.reports.filter(item => item.status === 'compatible').length, skippedRecords: error.reports.filter(item => item.status === 'skipped').length, reviewRecords: error.reports.filter(item => item.status === 'needs_review').length, reasons: [...reasons.values()] }
+    const summary = {
+      dryRun: true,
+      totalRecords: records.length,
+      compatibleRecords: error.reports.filter(item => item.status === 'compatible').length,
+      skippedRecords: error.reports.filter(item => item.status === 'skipped').length,
+      reviewRecords: error.reports.filter(item => item.status === 'needs_review').length,
+      reasons: [...reasons.values()],
+    }
+    if (typeof principal !== 'number') return summary
+    return {
+      ...summary,
+      records: error.reports.map((report, position) => ({
+        position,
+        entityType: records[position]!.type,
+        sourceId: previewSourceId(records[position]!),
+        status: report.status,
+        errorCode: report.code || null,
+      })),
+    }
   }
   throw new Error('Migration preview did not roll back')
 }
