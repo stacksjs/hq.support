@@ -442,9 +442,9 @@ export function createInbox() {
     finally { if (!disposed && version === generation) loading.set(false) }
   }
 
-  function canRefreshVisibleInbox(replay: boolean) {
+  function canRefreshVisibleInbox() {
     return !disposed && document.visibilityState === 'visible' && !!project() && !!user() && !loading() && !threadLoading()
-      && !sending() && !routingBusy() && !queryIssue() && (replay || (!loadedAdditionalPage && !search().trim()))
+      && !sending() && !routingBusy() && !queryIssue()
   }
 
   async function syncRefreshedRouting(item: Conversation, next: Conversation, signal: AbortSignal) {
@@ -479,27 +479,42 @@ export function createInbox() {
   }
 
   async function refreshVisibleInbox(parent?: AbortSignal) {
-    const replay = parent !== undefined
-    if (visibleListRequest || parent?.aborted || !canRefreshVisibleInbox(replay)) return false
+    if (visibleListRequest || parent?.aborted || !canRefreshVisibleInbox()) return false
     const controller = new AbortController(), version = generation, selected = selection, item = current(), previous = conversations()
+    const tail = loadedAdditionalPage ? previous.at(-1) : undefined
+    const sameList = () => !controller.signal.aborted && version === generation && previous === conversations() && canRefreshVisibleInbox()
     const abort = () => controller.abort()
     parent?.addEventListener('abort', abort, { once: true })
     const timeout = setTimeout(abort, 8_000)
     visibleListRequest = controller
     let reconcilingThread = false
     try {
-      const limit = replay ? Math.min(100, Math.max(previous.length, 50)) : undefined
-      const data = await request(listPath(null, limit), { signal: controller.signal })
-      if (controller.signal.aborted || version !== generation || previous !== conversations() || !canRefreshVisibleInbox(replay)) return false
-      const head: Conversation[] = data.conversations || []
-      const boundary = head.at(-1)
-      const older = replay && loadedAdditionalPage && data.nextCursor && boundary
-        ? previous.filter(row => Number(row.id) < Number(boundary.id))
-        : []
-      const rows = [...head, ...older]
+      const limit = Math.min(100, Math.max(previous.length, 50))
+      const first = await request(listPath(null, limit), { signal: controller.signal })
+      let rows: Conversation[] = first.conversations || []
+      let cursor: string | null = first.nextCursor || null
+
+      if (tail) {
+        // Reload the displayed range instead of keeping stale filtered rows.
+        // Allow one extra page for new arrivals at the front of the list.
+        const oldest = Number(tail.id)
+        const pages = Math.ceil(previous.length / limit)
+        for (let page = 0; cursor && Number(rows.at(-1)?.id) > oldest && page < pages; page++) {
+          if (!sameList()) return false
+          const data = await request(listPath(cursor, limit), { signal: controller.signal })
+          rows.push(...(data.conversations || []))
+          cursor = data.nextCursor || null
+        }
+        const firstUnloaded = rows.findIndex(row => Number(row.id) < oldest)
+        if (firstUnloaded > 0) {
+          rows = rows.slice(0, firstUnloaded)
+          cursor = String(rows.at(-1)!.id)
+        }
+      }
+
+      if (!sameList()) return false
       if (JSON.stringify(rows) !== JSON.stringify(previous)) conversations.set(rows)
-      const overlaps = boundary && previous.some(row => Number(row.id) >= Number(boundary.id))
-      nextCursor.set(older.length && overlaps ? nextCursor() : data.nextCursor || null)
+      nextCursor.set(cursor)
       if (item) {
         if (selected !== selection || sending() || routingBusy()) return false
         reconcilingThread = true

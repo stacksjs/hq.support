@@ -25,6 +25,7 @@ const root = resolve(import.meta.dir, '../..'), output = await mkdtemp(resolve(t
 let host: ReturnType<typeof Bun.serve> | undefined, browser: Awaited<ReturnType<typeof launch>> | undefined, peer: Awaited<ReturnType<typeof launch>> | undefined
 let cookie = '', csrf = '', peerCookie = '', migrationCookie = '', failSend = false, failList = false, simulatePeerDisconnect = false
 let agentStreams = 0, agentSnapshots = 0, finiteAgentReads = 0, suppressReplayHints = false, suppressedReplayHints = 0
+let failAgentReplay = false, refusedAgentReplay = 0
 let retentionGate: { path: string, entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>> } | undefined
 let incompleteRetentionPath: string | undefined
 let inconsistentMigrationTotals = false
@@ -32,7 +33,7 @@ let migrationGate: { entered: ReturnType<typeof Promise.withResolvers<void>>, re
 let savedReplyGate: { entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>> } | undefined
 const presenceTiming: Record<string, number> = {}
 const assertions: string[] = [], runtimeErrors: string[] = []
-const searchTraffic: Array<{ q: string | null, inboxId: string | null, status: string | null, cursor: string | null, path: string }> = []
+const searchTraffic: Array<{ q: string | null, inboxId: string | null, status: string | null, cursor: string | null, limit: string | null, path: string }> = []
 let searchGate: { query: string, used: boolean, entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>> } | undefined
 function holdSearch(query: string) { searchGate = { query, used: false, entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() }; return searchGate }
 const check = (condition: unknown, message: string) => { assert.ok(condition, message); assertions.push(message) }
@@ -74,13 +75,17 @@ try {
     if (url.pathname.startsWith('/_fixture/')) return new Response(null, { status: 303, headers: { location: '/app/team-settings', 'set-cookie': url.pathname.endsWith('/migration') ? migrationCookie : url.pathname.endsWith('/peer') ? peerCookie : url.pathname.endsWith('/agent') ? agentCookie : url.pathname.endsWith('/admin') ? adminCookie : ownerCookie } })
     if (url.pathname === '/case-fixture') return new Response('<!doctype html><html lang="en"><head><title>Support case fixture</title></head><body></body></html>', { headers: { 'content-type': 'text/html' } })
     if (url.pathname.startsWith('/api/')) {
+      if (failAgentReplay && url.pathname.startsWith('/api/support/projects/') && url.pathname.includes('/realtime/')) {
+        refusedAgentReplay++
+        return Response.json({ error: { code: 'realtime_unavailable' } }, { status: 503 })
+      }
       if (simulatePeerDisconnect && request.method === 'POST' && url.pathname.endsWith('/presence')) {
         const payload = await request.clone().json() as { state: string }
         if (payload.state === 'away') return Response.json({ viewers: [] })
       }
       if (failList && request.method === 'GET' && url.pathname.endsWith('/inbox')) { failList = false; return Response.json({ error: { message: 'Fixture inbox refresh failure. Reply draft kept.' } }, { status: 503 }) }
       if (failSend && request.method === 'POST' && url.pathname.endsWith('/messages')) { failSend = false; return Response.json({ error: { message: 'Fixture transport failure. Keep this reply draft.' } }, { status: 503 }) }
-      if (request.method === 'GET' && url.pathname.endsWith('/inbox')) searchTraffic.push({ q: url.searchParams.get('q'), inboxId: url.searchParams.get('inboxId'), status: url.searchParams.get('status'), cursor: url.searchParams.get('cursor'), path: url.pathname })
+      if (request.method === 'GET' && url.pathname.endsWith('/inbox')) searchTraffic.push({ q: url.searchParams.get('q'), inboxId: url.searchParams.get('inboxId'), status: url.searchParams.get('status'), cursor: url.searchParams.get('cursor'), limit: url.searchParams.get('limit'), path: url.pathname })
       const headers = new Headers(request.headers); headers.delete('host')
       const response = await fetch(new URL(url.pathname + url.search, apiOrigin), { method: request.method, headers, body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body })
       if (response.ok && request.method === 'GET' && url.pathname === incompleteRetentionPath) {
@@ -321,6 +326,40 @@ try {
   check(searchTraffic.some(entry => entry.q === 'nebularoute' && entry.inboxId === String(archive.id) && entry.status === 'open' && entry.cursor)
     && await evaluate(`new Set(Array.from(document.querySelectorAll('.conversation-row strong')).map(row=>row.textContent)).size === 56`), 'live list refresh and cursor continuation retain the active filters and avoid duplicate results')
   check(await evaluate(`document.querySelector('#reply').value === 'Private draft retained while searching persisted history'`), 'search and pagination preserve the selected historical conversation draft')
+  for (let index = 55; index < 160; index++) await archived(`Archive case ${String(index).padStart(3, '0')}`, 'Historical message about nebularoute')
+  await evaluate(`document.querySelector('[aria-label="Refresh inbox"]').click()`)
+  const matchingRows = (count: number) => evaluate(`document.querySelectorAll('.conversation-row').length === ${count} && !document.querySelector('[aria-label="Refresh inbox"]').disabled`)
+  await waitFor(() => matchingRows(50), 15000, { label: 'First page of the long filtered inbox' })
+  await click('Load more conversations')
+  await waitFor(() => matchingRows(100), 15000, { label: 'Second page of the long filtered inbox' })
+  await click('Load more conversations')
+  await waitFor(() => matchingRows(150), 15000, { label: 'Third page of the long filtered inbox' })
+  const olderCase = await one('SELECT id FROM support_conversations WHERE project_id = ? AND subject = ?', [project.id, 'Archive case 012'])
+  const previousBoundary = await one('SELECT id FROM support_conversations WHERE project_id = ? AND subject = ?', [project.id, 'Archive case 011'])
+  assert.ok(olderCase && previousBoundary)
+  await evaluate(`document.querySelector('#reply').focus()`)
+  const beforeLiveRead = searchTraffic.length
+  assert.equal((await http(prefix + `/conversations/${olderCase.id}/routing`, 'POST', { inboxId: Number(archive.id), assigneeId: 0, status: 'closed' }, owner.token)).status, 200)
+  await waitFor(() => searchTraffic.slice(beforeLiveRead).some(entry => entry.q === 'nebularoute' && entry.inboxId === String(archive.id) && entry.status === 'open' && entry.limit === '100' && !entry.cursor), 15000, { label: 'Fresh live read of the filtered list after the independent status change' })
+  await waitFor(() => evaluate(`!document.body.textContent.includes('Archive case 012') && document.querySelectorAll('.conversation-row').length === 149`), 12000, { label: 'Live replay removes a case that left the filter on the third loaded page' })
+  check(await evaluate(`document.body.textContent.includes('Archive case 011') && document.querySelector('#reply').value === 'Private draft retained while searching persisted history' && document.activeElement.id === 'reply'`), 'live refresh keeps the other historical row, unsent draft, and composer focus')
+  const beforeContinuation = searchTraffic.length
+  await click('Load more conversations')
+  await waitFor(() => matchingRows(160), 15000, { label: 'Manual continuation below the refreshed range' })
+  check(searchTraffic.slice(beforeContinuation).some(entry => entry.q === 'nebularoute' && entry.inboxId === String(archive.id) && entry.status === 'open' && entry.cursor === String(previousBoundary.id))
+    && await evaluate(`new Set(Array.from(document.querySelectorAll('.conversation-row strong')).map(row => row.textContent)).size === 160`), 'continuation uses the refreshed boundary and returns each remaining result once')
+  const fallbackCase = await one('SELECT id FROM support_conversations WHERE project_id = ? AND subject = ?', [project.id, 'Archive case 010'])
+  assert.ok(fallbackCase)
+  const failedReads = refusedAgentReplay
+  failAgentReplay = true
+  try {
+    assert.equal((await http(prefix + `/conversations/${fallbackCase.id}/routing`, 'POST', { inboxId: Number(archive.id), assigneeId: 0, status: 'closed' }, owner.token)).status, 200)
+    await waitFor(() => refusedAgentReplay > failedReads, 15000, { label: 'Replay outage reaches the browser after the second status change' })
+    await evaluate(`document.dispatchEvent(new Event('visibilitychange'))`)
+    await waitFor(() => matchingRows(159), 12000, { label: 'Visible inbox refresh with replay unavailable' })
+    check(!await evaluate(`document.body.textContent.includes('Archive case 010')`) && await evaluate(`document.querySelector('#reply').value === 'Private draft retained while searching persisted history'`), 'visible fallback refresh applies the same filtered range and preserves the draft when replay is unavailable')
+  }
+  finally { failAgentReplay = false }
   await evaluate(`document.querySelector('[aria-label="Refresh inbox"]').click()`); await text('New matching arrival')
   check(searchTraffic.at(-1)?.q === 'nebularoute' && !searchTraffic.at(-1)?.cursor && await evaluate(`document.querySelector('#team-inbox').value === ${JSON.stringify(String(archive.id))}`), 'explicit refresh starts a new query page with the current filters and includes new arrivals')
   await input(searchInput, ''); await waitFor(() => evaluate(`document.querySelector('[aria-label="Refresh inbox"]').disabled === false`), 15000, { label: 'Empty query refresh' })
