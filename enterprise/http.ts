@@ -10,8 +10,10 @@ import { inspectLicense, requireEnterprise } from './license'
 import { applyRetention, configureRetention, previewRetention, retentionHold, retentionPolicy } from './retention'
 import { directoryGroup, groupResource, writeGroup } from './groups'
 import { audit, configureProvider, issueScimToken, oidcConfig, samlConfig, provider, provision, revokeScimToken, scimIdentity, scimPrincipal, scimResource, setProvisionedActive } from './identity'
+import { scimDiscovery } from './scim-discovery'
+import { scimEqualityFilter } from './scim-filter'
 
-export type EnterpriseOperation = 'retention.get' | 'retention.configure' | 'retention.preview' | 'retention.run' | 'retention.hold' | 'status' | 'configure' | 'token.issue' | 'token.revoke' | 'audit' | 'oidc.start' | 'oidc.link' | 'oidc.callback' | 'scim.config' | 'scim.list' | 'scim.get' | 'scim.create' | 'scim.replace' | 'scim.patch' | 'scim.delete' | 'scim.groups.list' | 'scim.groups.get' | 'scim.groups.create' | 'scim.groups.replace' | 'scim.groups.patch' | 'scim.groups.delete' | 'saml.start' | 'saml.link' | 'saml.callback'
+export type EnterpriseOperation = 'retention.get' | 'retention.configure' | 'retention.preview' | 'retention.run' | 'retention.hold' | 'status' | 'configure' | 'token.issue' | 'token.revoke' | 'audit' | 'oidc.start' | 'oidc.link' | 'oidc.callback' | 'scim.config' | 'scim.schemas' | 'scim.resource-types' | 'scim.list' | 'scim.get' | 'scim.create' | 'scim.replace' | 'scim.patch' | 'scim.delete' | 'scim.groups.list' | 'scim.groups.get' | 'scim.groups.create' | 'scim.groups.replace' | 'scim.groups.patch' | 'scim.groups.delete' | 'saml.start' | 'saml.link' | 'saml.callback'
 const json = (body: unknown, status = 200, scim = false) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', ...(scim ? { 'Content-Type': 'application/scim+json' } : {}) } })
 async function account(request: RequestInstance) {
   const user = await request.user()
@@ -130,13 +132,22 @@ export async function enterpriseHttp(request: RequestInstance, operation: Enterp
     if (scim) {
       const token = /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') ?? '')?.[1] ?? ''
       const principal = await scimPrincipal(workspaceId, token)
+      if (operation === 'scim.schemas' || operation === 'scim.resource-types') {
+        const endpoint = operation === 'scim.schemas' ? 'Schemas' : 'ResourceTypes'
+        const hasFilter = new URL(request.url).searchParams.has('filter')
+        const resource = scimDiscovery(endpoint, workspaceId, request.getParam('id'), hasFilter)
+        const response = json(resource, 200, true)
+        if ('meta' in resource) response.headers.set('Content-Location', resource.meta.location)
+        return response
+      }
       if (operation.startsWith('scim.groups.')) {
         if (operation === 'scim.groups.list') {
-          const params = new URL(request.url).searchParams, filter = params.get('filter'), match = filter ? /^displayName eq "([^"\\]+)"$/.exec(filter) : null
-          if (filter && !match) fail(400, 'invalidFilter', 'Only displayName eq filters are supported.')
+          const params = new URL(request.url).searchParams
+          const filter = scimEqualityFilter('Groups', params.getAll('filter'))
           const start = Number(params.get('startIndex') || 1), count = Math.min(100, Number(params.get('count') ?? 100))
           if (!Number.isSafeInteger(start) || start < 1 || !Number.isSafeInteger(count) || count < 0) fail(400, 'invalidValue', 'Invalid pagination values.')
-          const where = 'workspace_id = ? AND provider_id = ?' + (match ? ' AND display_name = ?' : ''), values = [workspaceId, principal.provider_id, ...(match ? [match[1]] : [])]
+          const where = 'workspace_id = ? AND provider_id = ?' + (filter ? ` AND ${filter.column} = ?` : '')
+          const values = [workspaceId, principal.provider_id, ...(filter ? [filter.value] : [])]
           const total = Number((await one(`SELECT COUNT(*) AS total FROM support_enterprise_groups WHERE ${where}`, values))?.total)
           const rows = await query(`SELECT * FROM support_enterprise_groups WHERE ${where} ORDER BY id LIMIT ? OFFSET ?`, [...values, count, start - 1])
           return json({ schemas: ['urn:ietf:params:scim:api:messages:2.0:ListResponse'], totalResults: total, startIndex: start, itemsPerPage: rows.length, Resources: await Promise.all(rows.map(groupResource)) }, 200, true)
@@ -148,12 +159,12 @@ export async function enterpriseHttp(request: RequestInstance, operation: Enterp
       }
       if (operation === 'scim.config') return json({ schemas: ['urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig'], patch: { supported: true }, bulk: { supported: false, maxOperations: 0, maxPayloadSize: 0 }, filter: { supported: true, maxResults: 100 }, changePassword: { supported: false }, sort: { supported: false }, etag: { supported: false }, authenticationSchemes: [{ type: 'oauthbearertoken', name: 'Workspace bearer token', description: 'A revocable workspace provisioning token', primary: true }] }, 200, true)
       if (operation === 'scim.list') {
-        const params = new URL(request.url).searchParams, filter = params.get('filter')
-        const match = filter ? /^userName eq "([^"\\]+)"$/.exec(filter) : null
-        if (filter && !match) fail(400, 'invalidFilter', 'Only userName eq filters are supported.')
+        const params = new URL(request.url).searchParams
+        const filter = scimEqualityFilter('Users', params.getAll('filter'))
         const start = Math.max(1, Number(params.get('startIndex') || 1)), count = Math.min(100, Math.max(0, Number(params.get('count') ?? 100)))
         if (!Number.isSafeInteger(start) || !Number.isSafeInteger(count)) fail(400, 'invalidValue', 'Invalid pagination values.')
-        const where = 'i.workspace_id = ? AND i.provider_id = ? AND i.deleted_at = 0' + (match ? ' AND m.email = ?' : ''), values = [workspaceId, principal.provider_id, ...(match ? [match[1]!.toLowerCase()] : [])]
+        const where = 'i.workspace_id = ? AND i.provider_id = ? AND i.deleted_at = 0' + (filter ? ` AND ${filter.column} = ?` : '')
+        const values = [workspaceId, principal.provider_id, ...(filter ? [filter.value] : [])]
         const total = Number((await one(`SELECT COUNT(*) AS total FROM support_enterprise_identities i JOIN support_memberships m ON m.id = i.membership_id AND m.workspace_id = i.workspace_id WHERE ${where}`, values))?.total)
         const rows = await query(`SELECT i.*, m.email, m.status FROM support_enterprise_identities i JOIN support_memberships m ON m.id = i.membership_id AND m.workspace_id = i.workspace_id WHERE ${where} ORDER BY i.id LIMIT ? OFFSET ?`, [...values, count, start - 1])
         return json({ schemas: ['urn:ietf:params:scim:api:messages:2.0:ListResponse'], totalResults: total, startIndex: start, itemsPerPage: rows.length, Resources: rows.map(scimResource) }, 200, true)

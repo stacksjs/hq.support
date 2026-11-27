@@ -109,10 +109,51 @@ try {
   const scimToken = issued.data.token
   check((await request(scimPath + '/Users', 'GET')).status === 401, 'SCIM requires dedicated bearer')
   check((await request(`/scim/v2/${Number(workspace.id) + 1}/Users`, 'GET', undefined, scimToken)).status === 401, 'SCIM token bound to workspace')
-  const provisioned = await request(scimPath + '/Users', 'POST', { schemas: ['urn:ietf:params:scim:schemas:core:2.0:User'], externalId: 'idp-agent-1', userName: 'agent@example.test', active: true, roles: ['owner'] }, scimToken)
+  const discoveredSchemas = await request(scimPath + '/Schemas', 'GET', undefined, scimToken)
+  check(discoveredSchemas.status === 200, `SCIM schema discovery returns HTTP 200, got ${discoveredSchemas.status}`)
+  check(discoveredSchemas.headers.get('content-type') === 'application/scim+json' && discoveredSchemas.headers.get('cache-control') === 'no-store', 'discovery uses the SCIM media type and is not cached')
+  check(discoveredSchemas.data.schemas[0] === 'urn:ietf:params:scim:api:messages:2.0:ListResponse' && discoveredSchemas.data.totalResults === 2, 'discovery lists both shipped schemas')
+  const discoveredTypes = await request(scimPath + '/ResourceTypes', 'GET', undefined, scimToken)
+  check(discoveredTypes.status === 200 && discoveredTypes.data.totalResults === 2, 'discovery lists both shipped resource types')
+  const unpaginated = await request(scimPath + '/Schemas?startIndex=10&count=0', 'GET', undefined, scimToken)
+  check(unpaginated.status === 200 && unpaginated.data.Resources.length === 2, 'SCIM discovery ignores pagination')
+  for (const endpoint of ['/Schemas', '/ResourceTypes']) {
+    const filtered = await request(scimPath + endpoint + '?filter=' + encodeURIComponent('name eq "Missing"'), 'GET', undefined, scimToken)
+    check(filtered.status === 403 && filtered.data.scimType === 'invalidFilter', 'SCIM discovery rejects unsupported filters')
+  }
+  for (const [name, endpoint, fields] of [['User', '/Users', ['userName', 'active']], ['Group', '/Groups', ['displayName', 'members']]] as const) {
+    const id = `urn:ietf:params:scim:schemas:core:2.0:${name}`
+    const schema = await request(scimPath + '/Schemas/' + encodeURIComponent(id), 'GET', undefined, scimToken)
+    const type = await request(scimPath + '/ResourceTypes/' + name, 'GET', undefined, scimToken)
+    check(schema.status === 200 && schema.data.id === id && schema.data.name === name && schema.data.meta.resourceType === 'Schema', `SCIM discovers the individual ${name} schema`)
+    check(type.status === 200 && type.data.id === name && type.data.endpoint === endpoint && type.data.schema === id && type.data.meta.resourceType === 'ResourceType', `SCIM discovers the individual ${name} resource type`)
+    check(fields.every(field => schema.data.attributes.some((attribute: { name: string }) => attribute.name === field)), `SCIM advertises supported ${name} fields`)
+    check(!schema.data.attributes.some((attribute: { name: string }) => ['password', 'roles', 'entitlements'].includes(attribute.name)), `SCIM leaves unsupported ${name} fields out of discovery`)
+    check(schema.data.meta.location === '/api' + scimPath + '/Schemas/' + id, `SCIM publishes a followable ${name} schema location`)
+    check(type.data.meta.location === '/api' + scimPath + '/ResourceTypes/' + name, `SCIM publishes a followable ${name} type location`)
+    check(schema.headers.get('content-location') === schema.data.meta.location && type.headers.get('content-location') === type.data.meta.location,
+      'SCIM discovery detail uses Content-Location matching the resource metadata')
+    if (name === 'Group') {
+      const members = schema.data.attributes.find((attribute: { name: string }) => attribute.name === 'members')
+      check(members.subAttributes.some((attribute: { name: string, required: boolean }) => attribute.name === 'value' && attribute.required), 'group discovery requires a member resource ID')
+    }
+    const linkedSchema = await request(schema.data.meta.location.slice('/api'.length), 'GET', undefined, scimToken)
+    check(linkedSchema.status === 200 && linkedSchema.data.id === id, 'SCIM follows the schema location')
+  }
+  for (const path of ['/Schemas', '/Schemas/no-schema', '/ResourceTypes', '/ResourceTypes/no-type']) {
+    check((await request(scimPath + path)).status === 401, 'SCIM discovery requires a provisioning token')
+    check((await request(`/scim/v2/${otherWorkspace.id}` + path, 'GET', undefined, scimToken)).status === 401, 'SCIM discovery remains workspace scoped')
+  }
+  for (const path of ['/Schemas/no-schema', '/ResourceTypes/no-type']) {
+    const missing = await request(scimPath + path, 'GET', undefined, scimToken)
+    check(missing.status === 404 && missing.data.schemas[0] === 'urn:ietf:params:scim:api:messages:2.0:Error', 'unsupported discovery resources return SCIM 404')
+  }
+  const userExternalId = 'Agent "stable" \\ 1'
+  const provisioned = await request(scimPath + '/Users', 'POST', { schemas: ['urn:ietf:params:scim:schemas:core:2.0:User'], externalId: userExternalId, userName: 'agent@example.test', active: true, roles: ['owner'] }, scimToken)
   check(provisioned.status === 201, `SCIM provisions ${JSON.stringify(provisioned.data)}`)
   check((await one('SELECT role FROM support_memberships WHERE workspace_id = ? AND email = ?', [workspace.id, 'agent@example.test']))?.role === 'agent', 'SCIM cannot grant privileged role')
-  const group = await request(scimPath + '/Groups', 'POST', { externalId: 'support-team', displayName: 'Support Team', members: [{ value: provisioned.data.id }], roles: ['owner'] }, scimToken)
+  const groupExternalId = 'Group "stable" \\ 1'
+  const group = await request(scimPath + '/Groups', 'POST', { externalId: groupExternalId, displayName: 'Support Team', members: [{ value: provisioned.data.id }], roles: ['owner'] }, scimToken)
   check(group.status === 201 && group.data.members.length === 1, `SCIM group provisioning ${JSON.stringify(group.data)}`)
   check((await request(`/scim/v2/${otherWorkspace.id}/Groups/${group.data.id}`, 'GET', undefined, scimToken)).status === 401, 'directory group token cannot cross workspace boundary')
   check((await request(scimPath + `/Groups/${group.data.id}`, 'PATCH', { Operations: [{ op: 'add', path: 'members', value: [{ value: '999999999' }] }] }, scimToken)).status === 404, 'directory group rejects unscoped or unknown user resource')
@@ -121,6 +162,32 @@ try {
   check((await request(scimPath + `/Groups/${group.data.id}`, 'PATCH', { Operations: [{ op: 'add', path: 'members', value: [{ value: provisioned.data.id }] }] }, scimToken)).status === 200, 'SCIM group member add')
   const groups = await request(scimPath + '/Groups?filter=' + encodeURIComponent('displayName eq "Support Team"'), 'GET', undefined, scimToken)
   check(groups.status === 200 && groups.data.totalResults === 1, 'SCIM directory group filter')
+  const lookup = (resource: 'Users' | 'Groups', filter: string) => request(scimPath + '/' + resource + '?filter=' + encodeURIComponent(filter), 'GET', undefined, scimToken)
+  const mixedCaseUser = await lookup('Users', 'USERNAME Eq "AGENT@example.test"')
+  check(mixedCaseUser.status === 200 && mixedCaseUser.data.Resources[0]?.id === provisioned.data.id, 'SCIM compares filter names and operators without case')
+  const groupName = 'Escalations "Tier 2" \\ EMEA\u2028Group'
+  const renamedGroup = await request(scimPath + '/Groups/' + group.data.id, 'PATCH', { Operations: [{ op: 'replace', path: 'displayName', value: groupName }] }, scimToken)
+  check(renamedGroup.status === 200 && renamedGroup.data.displayName === groupName, 'SCIM accepts quoted group names')
+  const groupByName = await lookup('Groups', 'DISPLAYNAME EQ ' + JSON.stringify(groupName))
+  check(groupByName.status === 200 && groupByName.data.Resources[0]?.id === group.data.id, 'SCIM decodes JSON string escapes when matching a group name')
+  check((await lookup('Groups', 'displayName eq "Support Team"')).data.totalResults === 0, 'a renamed group no longer matches its old name')
+  for (const [resource, externalId, expected] of [['Users', userExternalId, provisioned.data.id], ['Groups', groupExternalId, group.data.id]] as const) {
+    const expression = 'EXTERNALid Eq ' + JSON.stringify(externalId)
+    const result = await lookup(resource, expression)
+    check(result.status === 200 && result.data.totalResults === 1 && result.data.Resources[0]?.id === expected, 'SCIM resolves the stable external ID exactly')
+    const query = new URLSearchParams([['filter', expression], ['filter', 'externalId eq "other"']])
+    const repeated = await request(`${scimPath}/${resource}?${query}`, 'GET', undefined, scimToken)
+    check(repeated.status === 400 && repeated.data.scimType === 'invalidFilter', 'SCIM rejects duplicate filter query parameters')
+    const foreign = await request(`/scim/v2/${otherWorkspace.id}/${resource}?filter=${encodeURIComponent(expression)}`, 'GET', undefined, scimToken)
+    check(foreign.status === 401 && foreign.headers.get('content-type') === 'application/scim+json', 'external ID lookup requires a token for that workspace')
+    const otherCase = await lookup(resource, 'externalId eq ' + JSON.stringify(externalId.toLowerCase()))
+    check(otherCase.status === 200 && otherCase.data.totalResults === 0 && otherCase.data.Resources.length === 0, 'SCIM keeps external ID values case-sensitive')
+    const invalidValues = [String.fromCharCode(0), String.fromCharCode(0xd800)].map(value => 'externalId eq ' + JSON.stringify(value))
+    for (const invalid of ['', 'externalId sw "Agent"', 'externalId eq 42', 'externalId eq "a" or externalId eq "b"', 'externalId eq "bad\\q"', ...invalidValues]) {
+      const failure = await lookup(resource, invalid)
+      check(failure.status === 400 && failure.data.scimType === 'invalidFilter', 'SCIM rejects unsupported or malformed equality filters')
+    }
+  }
   const membership = await one('SELECT * FROM support_memberships WHERE workspace_id = ? AND email = ?', [workspace.id, 'agent@example.test'])
   check(membership?.status === 'pending' && membership.user_id === null, 'SCIM creates invitation without account takeover')
   const unlinked = await start(idp.public_id)
@@ -218,10 +285,16 @@ try {
   check((await request(scimPath + `/Users/${provisioned.data.id}`, 'PATCH', { Operations: [{ op: 'replace', path: 'active', value: true }] }, scimToken)).status === 402, 'expired license blocks reactivation')
   check((await request(scimPath + `/Groups/${group.data.id}`, 'DELETE', undefined, scimToken)).status === 204, 'directory group deletion remains available after expiry')
   check((await request(scimPath + `/Groups/${group.data.id}`, 'GET', undefined, scimToken)).status === 404, 'deleted SCIM group cannot be read')
+  check((await lookup('Groups', 'externalId eq ' + JSON.stringify(groupExternalId))).data.totalResults === 0, 'external ID lookup excludes a deleted group')
   check((await request(scimPath + `/Users/${provisioned.data.id}`, 'DELETE', undefined, scimToken)).status === 204, 'SCIM user DELETE deprovisions after expiry')
   check((await request(scimPath + `/Users/${provisioned.data.id}`, 'GET', undefined, scimToken)).status === 404, 'deleted SCIM user cannot be read')
+  check((await lookup('Users', 'externalId eq ' + JSON.stringify(userExternalId))).data.totalResults === 0, 'external ID lookup excludes a tombstoned user')
   check((await request(workspacePath + `/scim-tokens/${issued.data.id}`, 'DELETE', undefined, owner)).status === 200, 'token revocation allowed after expiry')
   check((await request(scimPath + '/Users', 'GET', undefined, scimToken)).status === 401, 'revoked SCIM token unusable')
+  for (const path of ['/Schemas', '/Schemas/urn:ietf:params:scim:schemas:core:2.0:User', '/ResourceTypes', '/ResourceTypes/Group']) {
+    const response = await request(scimPath + path, 'GET', undefined, scimToken)
+    check(response.status === 401 && response.headers.get('content-type') === 'application/scim+json', 'revoked token refuses every discovery route using SCIM errors')
+  }
   check((await request(`/enterprise/providers/${idp.public_id}/saml/acs`, 'POST', { SAMLResponse: 'unsigned' })).status === 503, 'SAML explicitly unavailable')
   process.env.SUPPORT_ENTERPRISE_LICENSE = license(otherWorkspace.public_id)
   const samlIssuer = 'https://saml.example.test/entity', entityId = 'https://support.example.test/saml/entity'

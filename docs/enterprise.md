@@ -134,10 +134,19 @@ is returned once; SQL stores only its SHA-256 digest. Each token binds one
 workspace and provider. Revoke with DELETE to the same path plus `/{id}`.
 
 The SCIM base URL is `/api/scim/v2/{workspace}` using the numeric workspace ID.
-Send `Authorization: Bearer scim_...`. Supported endpoints are
-`ServiceProviderConfig` and `Users` (GET list/detail, POST, PUT, PATCH and DELETE).
-Listing supports `userName eq "address@example.com"`, `startIndex` and `count`
-with a 100-item maximum. PATCH accepts one replacement of boolean `active`.
+Send `Authorization: Bearer scim_...` for `ServiceProviderConfig`, `Schemas`,
+`ResourceTypes`, `Users` and `Groups`. The read-only discovery endpoints list
+the supported User and Group fields and their mutability. Fetch a single schema
+at `Schemas/{schema-urn}` or a resource type at `ResourceTypes/User` or
+`ResourceTypes/Group`. Discovery returns both supported entries without
+pagination and rejects filter requests.
+
+`Users` supports GET list/detail, POST, PUT, PATCH and DELETE.
+Listing supports `startIndex` and `count` with a 100-item maximum. A request
+may include one equality filter, `userName eq "address@example.com"` or
+`externalId eq "directory-user-42"`. Attribute names and `eq` are case
+insensitive. Values use quoted JSON strings. User names are normalized as email
+addresses. External IDs match exactly. PATCH accepts one replacement of boolean `active`.
 PUT preserves immutable `userName`/`externalId` and updates `active`. DELETE
 deactivates and tombstones the resource so subsequent GET/list cannot return it.
 Other Users patch paths, filters, bulk, password changes, sorting and ETags are
@@ -164,7 +173,9 @@ human agent is deactivated.
 
 `Groups` supports GET list/detail, POST, PUT, PATCH and DELETE under the same
 workspace/provider-bound SCIM base URL. List pagination uses `startIndex`/`count`
-and supports `displayName eq "Support Team"`. POST/PUT accept `displayName`,
+and supports one equality filter on `displayName` or `externalId`. Both values
+match exactly. Use `externalId` to find the same group after its display name
+changes. POST/PUT accept `displayName`,
 optional immutable `externalId`, and up to 100 `members: [{ "value": "user-id" }]`.
 Every member must be an undeleted SCIM User resource of the same provider and
 workspace. PATCH replaces `displayName` or adds/removes/replaces `members`,
