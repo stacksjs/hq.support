@@ -17,7 +17,9 @@ interface PagedConversation {
 }
 ```
 
-Every response page must name the same conversation, contain at most 500 parts and include its original next-page cursor. The chain must be contiguous, begin at one and end at null; part IDs cannot repeat. Complete explicit page sequences support up to 5,000 parts per conversation. An ambiguous unpaged 500-part response, unfinished chain or missing full `conversation_parts` is held for review. A source-controlled completeness flag cannot bypass these checks. These structural checks validate the supplied bundle; an operator remains responsible for supplying an unfiltered source export.
+Every response page must name the same conversation, contain at most 500 parts, and include its original next-page cursor. The chain must begin at page one, advance by one page, and end at `next:null`. Part IDs cannot repeat. Intercom 2.18 reports `total_count` for the current page. When supplied, part counts and page counts must match the archive, the page size must stay consistent, and the conversation's update timestamp must agree across pages. The importer retains filtered continuation URLs and inconsistent page histories for review by source ID. Retrieve fresh, unfiltered pages to resolve them. [Intercom 2.18 pagination](https://developers.intercom.com/docs/references/changelog#page-through-a-conversations-parts)
+
+Explicit pagination supports up to 5,000 parts per conversation. An ambiguous unpaged 500-part response, unfinished chain, or missing full `conversation_parts` is held for review. The operator remains responsible for retrieving all parts without filters, including when an export omits its original request parameters.
 
 The administrative upload is multipart `file` at `POST /api/support/projects/{project}/imports/intercom`, with native owner/admin authentication and ordinary cookie CSRF protection. Limits are 10,000,000 bytes, 5,000 total supplied records, nesting depth 32 and 100,000 JSON values. The response is HTTP 202 with the actual persisted run state. Source bytes go to a private native Stacks storage disk with a SHA-256 digest. The same archive hash returns its existing run.
 

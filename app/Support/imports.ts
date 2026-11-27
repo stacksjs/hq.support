@@ -197,13 +197,20 @@ function nextPage(value: unknown): number | null {
   if (Number.isSafeInteger(value) && Number(value) > 0) return Number(value)
   const record = object(value)
   if (Number.isSafeInteger(record.page) && Number(record.page) > 0) return Number(record.page)
-  if (typeof value === 'string') { try { const page = Number(new URL(value).searchParams.get('page')); if (Number.isSafeInteger(page) && page > 0) return page } catch { /* Invalid source cursor is refused below. */ } }
+  const cursor = typeof value === 'string' ? URL.parse(value) : null
+  if (cursor) {
+    const partFilters = ['include_part_types', 'exclude_part_types', 'parts_created_after', 'parts_created_before']
+    if (partFilters.some(name => cursor.searchParams.has(name)))
+      fail(422, 'incomplete_source_history', 'A source page cursor filters conversation parts. Retrieve every unfiltered page.')
+    const page = Number(cursor.searchParams.get('page'))
+    if (Number.isSafeInteger(page) && page > 0) return page
+  }
   fail(422, 'incomplete_source_history', 'Conversation page continuation must identify the next numbered page.')
 }
 function completeConversation(source: Row): Row {
   if (!Array.isArray(source.pages)) return source
   if (!source.pages.length || source.pages.length > 100) fail(422, 'incomplete_source_history', 'Supply an ordered page sequence beginning at page one.')
-  let first: Row | undefined, id = '', expected = 1
+  let first: Row | undefined, id = '', expected = 1, pageSize: number | undefined
   const parts: Row[] = [], seen = new Set<string>(), provenance: Row[] = []
   for (const wrapper of source.pages) {
     const page = object(wrapper), response = object(page.response), container = object(response.conversation_parts), paging = object(container.pages)
@@ -211,7 +218,23 @@ function completeConversation(source: Row): Row {
     if (!first) { first = response; id = external(response.id) }
     if (external(response.id) !== id || container.conversation_parts.length > importLimits.maximumConversationParts) fail(422, 'incomplete_source_history', 'All pages must belong to the same conversation within the source page bound.')
     if (paging.page !== undefined && Number(paging.page) !== expected) fail(422, 'incomplete_source_history', 'Source page metadata does not match the requested sequence.')
-    const next = nextPage(paging.next), last = expected === source.pages.length
+    const partCount = container.conversation_parts.length, last = expected === source.pages.length
+    if (container.total_count != null && Number(container.total_count) !== partCount)
+      fail(422, 'incomplete_source_history', 'A page contains a different number of parts than its source response reports.')
+    const emptyConversation = source.pages.length === 1 && partCount === 0
+    if (paging.total_pages != null && Number(paging.total_pages) !== source.pages.length
+      && !(emptyConversation && Number(paging.total_pages) === 0))
+      fail(422, 'incomplete_source_history', 'The supplied page count disagrees with the source response.')
+    if (paging.per_page != null) {
+      const declaredSize = Number(paging.per_page)
+      if (!Number.isSafeInteger(declaredSize) || declaredSize < 1 || declaredSize > importLimits.maximumConversationParts
+        || (pageSize !== undefined && declaredSize !== pageSize) || partCount > declaredSize || (!last && partCount !== declaredSize))
+        fail(422, 'incomplete_source_history', 'Conversation pages must use a consistent size and include all reported parts.')
+      pageSize = declaredSize
+    }
+    if (first.updated_at != null && response.updated_at != null && Number(first.updated_at) !== Number(response.updated_at))
+      fail(422, 'incomplete_source_history', 'The source conversation changed between page requests. Retrieve its pages again.')
+    const next = nextPage(paging.next)
     if ((last && next !== null) || (!last && next !== expected + 1)) fail(422, 'incomplete_source_history', 'The page chain must be contiguous and terminate with next:null.')
     for (const candidate of container.conversation_parts) { const part = object(candidate), key = external(part.id); if (seen.has(key)) fail(422, 'duplicate_source_part', 'A part occurs on more than one page. Review the export before migrating.'); seen.add(key); parts.push(part) }
     provenance.push({ page: expected, next, responseHash: fingerprint(response) }); expected++

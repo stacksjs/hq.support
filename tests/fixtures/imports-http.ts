@@ -103,7 +103,8 @@ try {
   check(reviewed.data.run.status === 'needs_review' && reviewed.data.records[0].error_code === 'incomplete_source_history' && reviewed.data.sourceArchiveRetained, 'ambiguous unpaged 500-part source is retained and never declared complete')
   check(!await one("SELECT id FROM support_import_mappings WHERE project_id = ? AND entity_type = 'conversation' AND external_id = 'truncated'", [project.id]), 'an incomplete source conversation leaves no phantom target or partial message mapping')
   const firstPage = conversation('paged', 'c1', Array.from({ length: 500 }, (_, i) => part(`paged-${i}`))), lastPage = conversation('paged', 'c1', [part('paged-last')])
-  Object.assign(firstPage.conversation_parts, { pages: { page: 1, next: { page: 2 } } }); Object.assign(lastPage.conversation_parts, { pages: { page: 2, next: null } })
+  Object.assign(firstPage.conversation_parts, { pages: { page: 1, per_page: 500, total_pages: 2, next: 'https://api.intercom.io/conversations/paged?page=2&per_page=500' } })
+  Object.assign(lastPage.conversation_parts, { pages: { page: 2, per_page: 500, total_pages: 2, next: null } })
   const paged = await upload({ version: 1, provider: 'intercom', format: 'plaintext', contacts: [], conversations: [{ pages: [{ page: 1, response: firstPage }, { page: 2, response: lastPage }] }] })
   await resumeInNewProcess(paged.data.run.id, 'worker')
   const pagedStatus = (await http(`${prefix}/imports/${paged.data.run.id}`, 'GET', undefined, token)).data
@@ -118,6 +119,45 @@ try {
   const badPages = await upload({ version: 1, provider: 'intercom', contacts: [], conversations: [{ pages: [{ page: 1, response: firstPage }] }] })
   await resumeInNewProcess(badPages.data.run.id, 'worker')
   check((await http(`${prefix}/imports/${badPages.data.run.id}`, 'GET', undefined, token)).data.records[0].error_code === 'incomplete_source_history', 'unfinished page chain is held for review')
+  const inconsistentPages = (id: string, issue: 'parts' | 'pages' | 'updated' | 'size' | 'filter') => {
+    const first = conversation(id, 'c1', [part(`${id}-1`)])
+    const last = conversation(id, 'c1', [part(`${id}-2`)])
+    const next = issue === 'filter' ? `https://api.intercom.io/conversations/${id}?page=2&exclude_part_types=note` : { page: 2 }
+    Object.assign(first.conversation_parts, { pages: { page: 1, per_page: 1, total_pages: 2, next } })
+    Object.assign(last.conversation_parts, { pages: { page: 2, per_page: issue === 'size' ? 2 : 1, total_pages: issue === 'pages' ? 3 : 2, next: null } })
+    if (issue === 'parts') last.conversation_parts.total_count = 2
+    if (issue === 'updated') last.updated_at++
+    return { pages: [{ page: 1, response: first }, { page: 2, response: last }] }
+  }
+  const inconsistentConversations = [
+    ['pages-missing-part', 'parts'],
+    ['pages-missing-page', 'pages'],
+    ['pages-source-changed', 'updated'],
+    ['pages-size-changed', 'size'],
+    ['pages-filtered', 'filter'],
+  ] as const
+  const inconsistentIds = inconsistentConversations.map(([id]) => id)
+  const inconsistentBundle = {
+    version: 1, provider: 'intercom', contacts: [],
+    conversations: inconsistentConversations.map(([id, issue]) => inconsistentPages(id, issue)),
+  }
+  const inconsistentPreview = await upload(inconsistentBundle, { integration: true, key: keys.ingestKey, dryRun: true })
+  check(inconsistentPreview.status === 200 && inconsistentPreview.data.reviewRecords === inconsistentIds.length && inconsistentPreview.data.compatibleRecords === 0,
+    `native preview rejects inconsistent source pagination: ${JSON.stringify(inconsistentPreview.data)}`)
+  const inconsistent = await upload(inconsistentBundle)
+  await resumeInNewProcess(inconsistent.data.run.id, 'worker')
+  const inconsistentReport = (await http(`${prefix}/imports/${inconsistent.data.run.id}`, 'GET', undefined, token)).data
+  check(inconsistentReport.run.status === 'needs_review' && inconsistentReport.run.failed === inconsistentIds.length
+    && inconsistentReport.records.every((record: any, index: number) => record.external_id === inconsistentIds[index] && record.error_code === 'incomplete_source_history'),
+    'inconsistent page evidence retains each original source ID for review')
+  for (const id of inconsistentIds)
+    check(!await one("SELECT id FROM support_import_mappings WHERE project_id = ? AND entity_type = 'conversation' AND external_id = ?", [project.id, id]),
+      'inconsistent source pages cannot write partial conversation history')
+  const emptyResponse = conversation('pages-no-parts', 'c1')
+  Object.assign(emptyResponse.conversation_parts, { pages: { page: 1, per_page: 500, total_pages: 0, next: null } })
+  const emptyPreview = await upload({ version: 1, provider: 'intercom', contacts: [], conversations: [{ pages: [{ page: 1, response: emptyResponse }] }] },
+    { integration: true, key: keys.ingestKey, dryRun: true })
+  check(emptyPreview.status === 200 && emptyPreview.data.compatibleRecords === 1, 'a source conversation with an initial message and zero parts is compatible')
   const attachmentSource = conversation('attachments', 'c1'); attachmentSource.source.attachments = [{ url: 'https://attachments.example/private.pdf' }] as never[]
   const attachments = await upload({ version: 1, provider: 'intercom', contacts: [], conversations: [attachmentSource] })
   await resumeInNewProcess(attachments.data.run.id, 'worker')
