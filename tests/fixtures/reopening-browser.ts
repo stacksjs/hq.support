@@ -19,10 +19,11 @@ if (config.database.queryLogging) config.database.queryLogging.enabled = false
 assert.equal((await migrateAuthTables()).success, true); assert.equal((await runDatabaseMigration()).isOk, true); assert.equal((await migrateAuthTables()).success, true)
 await injectGlobalAutoImports(); await route.importRoutes()
 const api = await route.serve({ port: 0, hostname: '127.0.0.1' }), apiOrigin = `http://127.0.0.1:${api.port}`
-const root = resolve(import.meta.dir, '../..'), output = await mkdtemp(resolve(tmpdir(), 'hq-support-reopening-browser-')), artifacts = resolve(root, 'storage/framework/runtime/reopening-browser')
+const root = resolve(import.meta.dir, '../..'), temporary = await mkdtemp(resolve(tmpdir(), 'hq-support-reopening-browser-')), artifacts = resolve(root, 'storage/framework/runtime/reopening-browser')
+const output = resolve(temporary, 'site')
 await mkdir(artifacts, { recursive: true })
 for (const file of ['report.json', 'failure.json', 'failure.png', 'messenger-375.png', 'inbox-1440.png']) await rm(resolve(artifacts, file), { force: true })
-Storage.init({ default: 'local', disks: { local: { driver: 'local', root: resolve(output, 'private') } } })
+Storage.init({ default: 'local', disks: { local: { driver: 'local', root: resolve(temporary, 'private') } } })
 let host: ReturnType<typeof Bun.serve> | undefined, boundary: ReturnType<typeof Bun.serve> | undefined, browser: Awaited<ReturnType<typeof launch>> | undefined
 let cookie = '', csrf = '', lostAck = false, failHistory = false, attachNext = false
 const submissions: { path: string, payload: any, status: number, destination?: string }[] = [], assertions: string[] = [], runtimeErrors: string[] = [], requests: string[] = []
@@ -57,6 +58,9 @@ try {
   const projectRow = (await one('SELECT * FROM support_projects WHERE id = ?', [project.id]))!
   const contact = (await one('SELECT * FROM support_contacts WHERE project_id = ? AND external_id = ?', [project.id, 'late']))!
   await upload(projectRow, late.id, new File(['predecessor attachment'], 'original-only.txt', { type: 'text/plain' }), 'original-file', contact)
+  const agentFile = (await upload(projectRow, late.id, new File(['team-only attachment'], 'operator-only.txt', { type: 'text/plain' }), 'private-agent-file')).attachment
+  for (let index = 0; index < 20; index++)
+    await upload(projectRow, late.id, new File([`historic ${index}`], `file-${index}.txt`, { type: 'text/plain' }), `historic-file-${index}`)
   const browserLogin = await http('/login', 'POST', { email, password })
   const ownerCookie = browserSessionCookie((await startBrowserSession(browserLogin.data.access_token ?? browserLogin.data.token))!)
   const compiled = await generateStaticSite({ pagesDir: resolve(root, 'resources/views'), outputDir: output, publicDir: resolve(root, 'public'), partialsDir: resolve(root, 'resources/partials'), componentsDir: resolve(root, 'resources/components'), router: { enabled: false }, minify: false, cache: false, sitemap: false, robots: false }); assert.equal(compiled.failedCount, 0)
@@ -157,11 +161,20 @@ try {
   await navigate(cdp, origin + '/_fixture/owner', { quietMs: 100, timeoutMs: 20000 }); await wait(`document.querySelector('#project')?.value === ${JSON.stringify(project.public_id)}`, 'Native inbox ready')
   await click('All'); await wait(`Array.from(document.querySelectorAll('.conversation-row')).some(el=>el.textContent.includes('Late original request') && el.textContent.includes('Resolved'))`, 'Original request listed')
   await evaluate(`Array.from(document.querySelectorAll('.conversation-row')).find(el=>el.textContent.includes('Late original request') && el.textContent.includes('Resolved')).click()`); await wait(`document.querySelector('#reply') && !document.querySelector('#reply').disabled`, 'Original request selected')
+  await wait(`document.querySelector('#conversation-attachments')?.querySelectorAll('a').length === 20`, 'First attachment page is visible to the agent')
+  check(await evaluate(`!document.querySelector('#conversation-attachments').textContent.includes('operator-only.txt')`), 'older team-only files stay outside the first page')
+  await evaluate(`document.querySelector('#load-older-attachments').focus()`)
+  await click('Load older attachments')
+  await wait(`document.querySelector('#conversation-attachments')?.querySelectorAll('a').length === 22`, 'Older files attach to the same conversation panel')
+  await wait(`document.activeElement?.textContent.trim() === 'operator-only.txt'`, 'The last page moves focus from the removed control to its first new file')
+  const downloaded = await evaluate(`(async()=>{const link=[...document.querySelectorAll('#conversation-attachments a')].find(a=>a.textContent.includes('operator-only.txt'));const response=await fetch(link.href);return { hasDownload:link.hasAttribute('download'), path:new URL(link.href).pathname, status:response.status, disposition:response.headers.get('content-disposition'), body:await response.text() }})()`)
+  check(downloaded.hasDownload && downloaded.path.endsWith('/attachments/' + agentFile.id) && downloaded.status === 200 && downloaded.disposition?.startsWith('attachment;') && downloaded.body === 'team-only attachment', `the native agent link retrieves the exact private file through the scoped route ${JSON.stringify(downloaded)}`)
   await input('#reply', 'Staff draft on predecessor'); await input('#reply-mode', 'internal')
   await evaluate(`document.querySelector('[aria-label="Refresh inbox"]').click()`); await wait(`!document.querySelector('[aria-label="Refresh inbox"]').disabled`, 'Inbox refreshed')
   check(await evaluate(`document.querySelector('#reply').value === 'Staff draft on predecessor' && document.querySelector('.thread-breadcrumb').textContent.includes('Resolved')`), 'refresh never silently moves the selected historical request or its staff draft')
   await evaluate(`Array.from(document.querySelectorAll('[aria-label="Linked requests"] button')).find(el=>el.textContent.includes('Next')).click()`); await wait(`document.querySelector('.thread-scroll').textContent.includes('Late continuation from browser')`, 'Explicit next request navigation')
   check(await evaluate(`document.querySelector('#reply').value === '' && document.querySelector('#reply-mode').value === 'public'`), 'explicit next navigation starts with that request own empty public draft')
+  check(await evaluate(`document.querySelector('#conversation-attachments')?.textContent.includes('successor-only.txt') && !document.querySelector('#conversation-attachments')?.textContent.includes('operator-only.txt')`), 'linked navigation shows only the destination attachments')
   await input('#reply', 'Staff draft on successor')
   await evaluate(`Array.from(document.querySelectorAll('[aria-label="Linked requests"] button')).find(el=>el.textContent.includes('Previous')).click()`); await wait(`document.querySelector('#reply').value === 'Staff draft on predecessor'`, 'Previous staff draft restored')
   check(await evaluate(`document.querySelector('#reply-mode').value === 'internal' && !document.querySelector('.thread-scroll').textContent.includes('Late continuation from browser')`), 'previous navigation restores its original internal draft and only predecessor history')
@@ -172,6 +185,11 @@ try {
   await wait(`document.querySelector('#main').lang === 'ar' && document.querySelector('h1').textContent === 'صندوق الوارد'`, 'Localized RTL inbox ready')
   check(await evaluate(`document.querySelector('#main').dir === 'rtl' && document.documentElement.scrollWidth <= innerWidth && document.querySelector('#reply').value === 'Staff draft on successor'`), 'narrow Arabic inbox fits and preserves the selected request and reply draft')
   check(await evaluate(`document.querySelector('#reply-mode option').textContent === 'رد علني' && document.querySelector('.thread-scroll').getAttribute('aria-label') === 'رسائل المحادثة' && document.querySelector('.thread-scroll time').textContent === new Intl.DateTimeFormat('ar', { month: 'short', day: 'numeric' }).format(new Date(document.querySelector('.thread-scroll time').dateTime))`), 'the agent sees localized composer, history and dates')
+  await evaluate(`document.querySelector('#customer-details-toggle').click()`)
+  await wait(`document.querySelector('#customer-details[role=dialog][aria-modal=true]') && document.querySelector('#conversation-attachments-title')?.textContent.trim() === 'المرفقات'`, 'The mobile RTL details dialog exposes the translated attachments heading')
+  check(await evaluate(`document.querySelector('#conversation-attachments a').textContent.trim() === 'successor-only.txt'`), 'the mobile details dialog keeps the selected file available')
+  await evaluate(`document.querySelector('#customer-details-close').click()`)
+  await wait(`!document.querySelector('#customer-details[aria-modal=true]')`, 'The details dialog closes before editing the reply')
   await input('#reply', 'تمت مراجعة طلبك')
   await evaluate(`document.querySelector('#reply').focus()`)
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 })
@@ -199,4 +217,4 @@ catch (failure) {
   if (browser) { const image = await browser.cdp.send('Page.captureScreenshot', { format: 'png' }); await Bun.write(resolve(artifacts, 'failure.png'), Buffer.from(image.data, 'base64')) }
   throw failure
 }
-finally { held?.release.resolve(); await browser?.close(); await closeSharedBrowsers(); host?.stop(true); boundary?.stop(true); api.stop(true); await rm(output, { recursive: true, force: true }) }
+finally { held?.release.resolve(); await browser?.close(); await closeSharedBrowsers(); host?.stop(true); boundary?.stop(true); api.stop(true); await rm(temporary, { recursive: true, force: true }) }

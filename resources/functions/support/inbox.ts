@@ -11,7 +11,8 @@ interface Project { id: string | number, public_id: string, name: string, worksp
 interface Conversation { id: string | number, subject: string, status: string, customer_id?: string | number, updated_at?: string, unread_count?: number, assignee_id?: string | number, team_id?: string | number, inbox_id?: string | number, routing_reason?: string, resolved_at?: number, continued_from_id?: string | null, continuation_id?: string | null }
 interface Message { id: string | number, body: string, visibility: string, author_type: string, created_at: string }
 interface Contact { id?: string | number, name?: string, email?: string, company?: string }
-interface ThreadDetail { conversation: Conversation, messages: Message[], contact: Contact | null, lastAgentReplyId?: string }
+interface ThreadAttachment { id: string, fileName: string }
+interface ThreadDetail { conversation: Conversation, messages: Message[], attachments: ThreadAttachment[], attachmentsNextCursor: string | null, contact: Contact | null, lastAgentReplyId?: string }
 
 export function createInbox() {
   const user = state<{ id: string | number, name: string, email: string } | null>(null)
@@ -21,6 +22,9 @@ export function createInbox() {
   const conversations = state<Conversation[]>([])
   const current = state<Conversation | null>(null)
   const messages = state<Message[]>([])
+  const attachments = state<ThreadAttachment[]>([])
+  const attachmentsNext = state<string | null>(null), attachmentsLoading = state(false), attachmentsError = state(false)
+  let attachmentsRevision = 0
   const contact = state<Contact | null>(null)
   const search = state('')
   const searchError = state(''), searchMode = state('')
@@ -122,12 +126,12 @@ export function createInbox() {
     if (!search().trim()) void refresh()
     else debouncedSearch()
   }
-  function clearPrivateState() { presence.stop(!disposed); drafts.clear(); conversations.set([]); current.set(null); messages.set([]); contact.set(null); draft.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = '' }
+  function clearPrivateState() { presence.stop(!disposed); drafts.clear(); conversations.set([]); current.set(null); messages.set([]); resetAttachments(); contact.set(null); draft.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = '' }
   function conversationAccessLost() {
     selection++
     const item = current()
     if (item) drafts.delete(draftId(project(), item))
-    current.set(null); contact.set(null); messages.set([]); assignments.set([]); draft.set(''); replyAtStart.set(null); seenReply.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined
+    current.set(null); contact.set(null); messages.set([]); resetAttachments(); assignments.set([]); draft.set(''); replyAtStart.set(null); seenReply.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined
     threadLoading.set(false); sending.set(false); routingBusy.set(false)
     error.set('This conversation is no longer available to your account.')
   }
@@ -252,16 +256,57 @@ export function createInbox() {
     current.set(null)
     contact.set(null)
     messages.set([])
+    resetAttachments()
     draft.set('')
     retryKey = ''; retryFingerprint = ''; retryCursor = undefined; seenReply.set('0'); replyAtStart.set(null); inboxFilter.set(''); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); activeProject = project()
     await refresh()
   }
 
   function conversationPath(selectedProject: string, id: string | number) { return `/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(id))}` }
+  function threadDetailPath(selectedProject: string, id: string | number, beforeAttachment?: string) {
+    const query = new URLSearchParams({ attachmentLimit: '20' })
+    if (beforeAttachment) {
+      query.set('beforeAttachment', beforeAttachment)
+      query.set('limit', '1')
+    }
+    return `${conversationPath(selectedProject, id)}?${query}`
+  }
+  function attachmentDownloadPath(id: string) { return `/api/support/projects/${encodeURIComponent(project())}/attachments/${encodeURIComponent(id)}` }
+  function resetAttachments(data?: ThreadDetail) {
+    attachmentsRevision++
+    attachments.set(data?.attachments?.toReversed() ?? [])
+    attachmentsNext.set(data?.attachmentsNextCursor ?? null)
+    attachmentsLoading.set(false)
+    attachmentsError.set(false)
+  }
+  async function loadOlderAttachments() {
+    const item = current(), cursor = attachmentsNext(), selectedProject = project(), selected = selection, revision = attachmentsRevision
+    if (!item || !cursor || threadLoading() || attachmentsLoading()) return
+    const active = () => !disposed && selected === selection && selectedProject === project() && revision === attachmentsRevision
+    const buttonHadFocus = document.activeElement?.id === 'load-older-attachments'
+    attachmentsLoading.set(true)
+    attachmentsError.set(false)
+    try {
+      const data: ThreadDetail = await request(threadDetailPath(selectedProject, item.id, cursor))
+      if (!active()) return
+      if (String(data.conversation.id) !== String(item.id)) throw new Error('Unexpected attachment conversation.')
+      const known = new Set(attachments().map(file => file.id))
+      const page = data.attachments.toReversed().filter(file => !known.has(file.id))
+      attachments.update(files => [...files, ...page])
+      attachmentsNext.set(data.attachmentsNextCursor)
+      if (buttonHadFocus && !data.attachmentsNextCursor && page.length) {
+        await nextTick()
+        if (active() && document.activeElement === document.body) document.getElementById(`conversation-attachment-${page[0]!.id}`)?.focus()
+      }
+    }
+    catch { if (active()) attachmentsError.set(true) }
+    finally { if (active()) attachmentsLoading.set(false) }
+  }
   function showMessages(data: ThreadDetail) {
     const threadMessages = data.messages || []
     const last = threadMessages.reduce((latest, message) => message.visibility === 'public' && message.author_type === 'agent' && Number(message.id) > Number(latest) ? String(message.id) : latest, data.lastAgentReplyId ?? '0')
     messages.set(threadMessages)
+    resetAttachments(data)
     seenReply.set(last)
   }
   async function select(item: Conversation, loaded?: ThreadDetail) {
@@ -272,6 +317,7 @@ export function createInbox() {
     const selectedProject = project()
     current.set(item)
     messages.set([])
+    resetAttachments()
     contact.set(null)
     restoreDraft(item)
     syncRouting(item); assignments.set([]); routingError.set(''); routingNotice.set('')
@@ -279,7 +325,7 @@ export function createInbox() {
     notice.set('Loading conversation...'); threadLoading.set(true)
     try {
       const path = conversationPath(selectedProject, item.id)
-      const data: ThreadDetail = loaded ?? await request(path)
+      const data: ThreadDetail = loaded ?? await request(threadDetailPath(selectedProject, item.id))
       if (disposed || version !== selection || selectedProject !== project()) return
       current.set(data.conversation); syncRouting(data.conversation)
       showMessages(data)
@@ -298,7 +344,7 @@ export function createInbox() {
     if (!id || threadLoading() || sending() || routingBusy()) return
     stashDraft(); threadLoading.set(true); error.set('')
     try {
-      const data = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(id)}`)
+      const data: ThreadDetail = await request(threadDetailPath(selectedProject, id))
       if (disposed || selected !== selection || selectedProject !== project()) return
       if (String(data.conversation?.id) !== id) throw new Error('The linked request could not be confirmed. Your current reply draft is unchanged.')
       await select(data.conversation, data)
@@ -323,7 +369,7 @@ export function createInbox() {
   async function refreshConversation() {
     const item = current(), selectedProject = project(), selected = selection, refresh = ++messageRefresh
     if (!item) return
-    const data: ThreadDetail = await request(conversationPath(selectedProject, item.id))
+    const data: ThreadDetail = await request(threadDetailPath(selectedProject, item.id))
     if (!disposed && selectedProject === project() && selected === selection && messageRefresh === refresh) showMessages(data)
   }
   async function reviewReply() {
@@ -373,7 +419,7 @@ export function createInbox() {
 
   async function selectAfterSend(item: Conversation, selectedProject: string) {
     const selected = selection, refresh = ++messageRefresh
-    const data = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(item.id))}`)
+    const data: ThreadDetail = await request(threadDetailPath(selectedProject, item.id))
     if (disposed || selectedProject !== project() || selected !== selection) return
     if (messageRefresh === refresh) showMessages(data)
     current.set(data.conversation)
@@ -429,5 +475,5 @@ export function createInbox() {
   }
   function setupPresence() { detailsCleanup.push(presence.listen()) }
   function destroy() { presence.stop(); disposed = true; cancelList(); selection++; clearPrivateState(); user.set(null); workspaces.set([]); projects.set([]); project.set(''); activeProject = '';  for (const cleanup of detailsCleanup.splice(0)) cleanup(); detailsScroll?.set(false); detailsOpener = null }
-  return { searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy, setupPresence, viewerNames, composingNames, replyChanged, collision, draftActivity, visibilityActivity, reviewReply }
+  return { attachments, attachmentsNext, attachmentsLoading, attachmentsError, attachmentDownloadPath, loadOlderAttachments, searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy, setupPresence, viewerNames, composingNames, replyChanged, collision, draftActivity, visibilityActivity, reviewReply }
 }
