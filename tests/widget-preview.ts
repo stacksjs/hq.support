@@ -62,6 +62,7 @@ export async function createWidgetPreview(options: { port?: number, assetsDirect
         if (request.headers.get('Authorization') !== 'Bearer fixture-session') return Response.json({ message: 'Forbidden' }, { status: 403 })
         if (resource === '/conversations' && request.method === 'GET') return Response.json({ conversations: messages.length ? [{ id: '1' }] : [] })
         if (resource === '/conversations/1/csat' && request.method === 'GET') return Response.json({ available: false, reason: 'disabled' })
+        if (resource === '/conversations/1/typing' && request.method === 'GET') return Response.json({ typing: false })
         if (resource === '/ticket-types' && request.method === 'GET') return Response.json({ types: [{ id: '1', name: 'Compiler qualification', fields: [{ key: 'quantity', label: 'Quantity', type: 'number', visibility: 'customer' }, { key: 'reply_email', label: 'Reply email', type: 'email', visibility: 'customer' }, { key: 'incident_date', label: 'Incident date', type: 'date', visibility: 'customer' }] }] })
         if (resource === '/events') return Response.json({ accepted: true })
         if ((resource === '/conversations' || resource.endsWith('/messages')) && request.method === 'POST') {
