@@ -2,8 +2,9 @@
 const pageTitle = 'Inbox'
 const pageDescription = 'Your HQ.support team inbox.'
 import labels from '../../../locales/en.yml'
+import attachments from '../../../locales/agent-attachments.yml'
 import { createI18n } from '@stacksjs/i18n/client'
-const english = createI18n({ locale: 'en', messages: { en: labels.inbox } })
+const english = createI18n({ locale: 'en', messages: { en: { ...labels.inbox, ...attachments.en } } })
 const words = () => (key: string, values?: Record<string, string | number>) => english.t(key, values)
 </script>
 <script client>
