@@ -12,6 +12,15 @@ import { registerChannelProvider } from './channel-providers'
 
 export interface EmailDependencies { awsRequest?: (options: AWSRequestOptions) => Promise<unknown>, fetchCert?: (url: string) => Promise<string> }
 export interface EmailPolicy { workspaceId: number, region: string, accountId: string, topicArn: string, bucket: string, prefix: string, fromAddresses: string[], inboundAddresses: string[], replyDomain: string, maxMicrosPerMessage: number, outbound?: { configurationSet: string, topicArn: string } }
+export function sesBillingScope(policy: EmailPolicy) {
+  if (!policy.outbound) return undefined
+  return { version: 1, accountId: policy.accountId, region: policy.region, configurationSet: policy.outbound.configurationSet, topicArn: policy.outbound.topicArn }
+}
+export function matchesSesBillingScope(recorded: unknown, scope: ReturnType<typeof sesBillingScope>): boolean {
+  if (!scope) return false
+  const candidate = object(recorded)
+  return Object.entries(scope).every(([key, value]) => candidate[key] === value)
+}
 export function emailAddress(input: unknown): string {
   const value = String(input || '').trim().toLowerCase()
   if (value.length > 254 || !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,63}$/.test(value) || value.includes('..') || value.split('@')[0]!.length > 64) fail(422, 'email_address_invalid', 'Use one canonical email address without display names.')
@@ -114,6 +123,8 @@ export function supportEmailProvider(dependencies: EmailDependencies = {}): Chan
     },
     async send(channel, config, thread, payload) {
       const policy = emailPolicy(channel, config), recipient = emailAddress(thread.recipient)
+      if (payload._sesBillingScope !== undefined && !matchesSesBillingScope(payload._sesBillingScope, sesBillingScope(policy)))
+        return { outcome: 'rejected', error: 'SES billing scope changed before dispatch.' }
       await one('SELECT id FROM email_suppressions LIMIT 1')
       if (await isSuppressed(recipient)) return { outcome: 'rejected', error: 'Email recipient is suppressed.' }
       const conversation = await one('SELECT subject FROM support_conversations WHERE id = ? AND project_id = ?', [thread.conversation_id, channel.project_id])

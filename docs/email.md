@@ -53,6 +53,39 @@ To enable signed acceptance recovery, set both `configurationSet` and `outboundT
 
 A timeout, 5xx or malformed acknowledgement becomes durable `unknown` unless a signed send receipt has already recorded acceptance. A matching signed receipt can recover it without submitting another request. Confirmed 4xx rejection releases the reservation. Acceptance updates the operation and inbox message and leaves the hold `cost_pending` until actual provider-cost evidence is reconciled. Invoice allocation and exact settlement are still pending. A fresh operation key represents a new send and must never be used to retry an uncertain delivery.
 
+### Resolve an uncertain send
+
+1. Inspect the original operation with authenticated `GET /api/support/projects/{project}/channel-deliveries/{delivery}`. Record the delivery ID and current status in the private case.
+2. Look up the original signed Send envelope from the configured outbound SNS destination or its protected retry queue. Replay that envelope to the same channel's outbound endpoint. A matching event moves the original delivery to accepted transport and keeps any wallet hold open for costs.
+3. Keep `unknown` and its reservation when a matching event or definitive rejection is unavailable. Use a different operation key only for a deliberate new send. A replay with the original key returns the existing operation.
+
+### Review a billing pool
+
+For sends with an outbound event destination, the worker records the AWS account, Region, configuration set, and SNS topic before submission. The signed Send event retains the provider message ID and UTC send time against that recorded scope. An event arriving after the API acknowledgement can still supply billing evidence. The first matching witness is kept through concurrent callbacks and replays. Historical sends that lack dispatch scope can recover transport acceptance and retain their wallet hold.
+
+Use a finalized USD [AWS CUR 2.0 export](https://docs.aws.amazon.com/cur/latest/userguide/dataexports-migrate.html) for a closed UTC month. Obtain the complete base outbound recipient usage for one usage account and Region devoted to these managed sends. Include applicable zero-cost recipient units. Record the invoice ID and the SHA-256 digest of the original export manifest. Retain the export and document the exact outbound SKU selection in the protected case record. For each pool, aggregate the verified base outbound send cost in decimal USD before converting the total once to whole microdollars. [AWS billing fields](https://docs.aws.amazon.com/cur/latest/userguide/table-dictionary-cur2-line-item.html) · [SES pricing and billing units](https://aws.amazon.com/ses/pricing/)
+
+Exclude attachments and data transfer, inbound processing, plan fees, dedicated IPs, observability, taxes, credits, and unsupported adjustments from this allocation. Keep those amounts with the reviewed invoice. Confirm the pool's exclusive sending scope independently. A matching count alone provides a reconciliation check.
+
+Save the normalized pool locally and run `./buddy support:ses-cost-preview --file <path>`.
+
+```json
+{
+  "format": "aws-cur2-ses-outbound-v1",
+  "accountId": "123456789012",
+  "region": "us-east-1",
+  "period": "2026-10",
+  "invoiceId": "example-invoice",
+  "manifestSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "currency": "USD",
+  "recipientUnits": 1000,
+  "costMicros": 160000
+}
+```
+
+Version 1 of the preview splits the verified monthly base cost evenly across the signed recipients. Residual microdollars go to recipients grouped by ascending workspace ID. A mismatch returns `incomplete` with an empty allocation. The command reports scoped provider cost and preserves reservations and wallet balances. Verified import, settlement, correction and retention still require separate qualification.
+
+
 The app reuses the native `EmailSuppression` schema and `isSuppressed` lookup, with no generated unscoped CRUD endpoints. Missing suppression storage fails closed for managed email. Suppressed recipients are refused before send. Bounce/complaint feedback ingestion, suppression administration, outbound attachments, delivery tracking and sending-authorization delegation still need separate qualification. This adapter supports transactional agent replies, not broadcast campaigns.
 
 `RunSupportEmail` runs each minute on `support-email`; `RunChannelDelivery` handles admitted inbox work and outbound operations on `support-channels`. Dispatch recovery has its own batch, and periodic receipt polling covers only providers that can retrieve a receipt. SES invoice holds stay pending without blocking either batch. Explicit scheduler registration and database workers are required even when Redis is used for cache/presence. Native receipt leases, unique inbox admission and attachment idempotency allow process restart without duplicate messages.

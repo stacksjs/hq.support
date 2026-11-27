@@ -1,5 +1,6 @@
 import { digest } from '../../app/Support/service'
 import assert from 'node:assert/strict'
+import { previewSesOutboundCosts } from '../../app/Support/ses-cost-preview'
 import { readFileSync } from 'node:fs'
 import { createSign } from 'node:crypto'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
@@ -209,6 +210,55 @@ try {
   check(sends === 3 && (await one('SELECT status FROM support_channel_deliveries WHERE id = ?', [uncertainRow.id]))?.status === 'unknown', 'lost provider acknowledgement persists unknown without retrying POST')
   const outbound = `/_email/channels/${channel.publicId}/outbound`
   const sendEvent = { eventType: 'Send', send: {}, mail: { messageId: 'ses-out-3', timestamp: new Date().toISOString(), sendingAccountId: accountId, source: config.fromAddress, destination: ['customer@example.test'], tags: { 'ses:configuration-set': [configurationSet], 'hq-dispatch': [dispatchTags[2]] } } }
+  const directSentAt = new Date(Number(accepted.accepted_at) - 1000).toISOString()
+  const directEnvelope = signed({ ...sendEvent, mail: { ...sendEvent.mail, messageId: 'ses-out-1', timestamp: directSentAt, tags: { 'ses:configuration-set': [configurationSet], 'hq-dispatch': [dispatchTags[0]] } } }, { TopicArn: outboundTopicArn })
+  const earlierPolicies = process.env.SUPPORT_EMAIL_POLICIES!
+  const rotatedPolicies = JSON.parse(earlierPolicies)
+  const rotatedSet = 'rotated-config'
+  rotatedPolicies[String(project.workspace_id)].configurationSet = rotatedSet
+  const rotated = signed({ ...sendEvent, mail: { ...sendEvent.mail, messageId: 'ses-out-1', timestamp: directSentAt, tags: { 'ses:configuration-set': [rotatedSet], 'hq-dispatch': [dispatchTags[0]] } } }, { TopicArn: outboundTopicArn })
+  try {
+    process.env.SUPPORT_EMAIL_POLICIES = JSON.stringify(rotatedPolicies)
+    check((await http(outbound, 'POST', rotated)).status === 409, 'a sender policy rotation cannot relabel an earlier SES operation for billing')
+  }
+  finally { process.env.SUPPORT_EMAIL_POLICIES = earlierPolicies }
+  const directReplays = await Promise.all([http(outbound, 'POST', directEnvelope), http(outbound, 'POST', directEnvelope)])
+  check(directReplays.every(result => result.status === 202 && result.data.duplicate), 'a signed send event after the API reply keeps the same transport status')
+  const directEvidence = await query('SELECT * FROM support_ses_send_evidence WHERE delivery_id = ? AND workspace_id = ? AND project_id = ?', [accepted.id, project.workspace_id, project.id])
+  check(directEvidence.length === 1 && directEvidence[0].account_id === accountId && directEvidence[0].region === region && directEvidence[0].configuration_set === configurationSet && directEvidence[0].provider_message_id === 'ses-out-1' && Number(directEvidence[0].sent_at) === Date.parse(directSentAt), 'one signed SES billing witness retains the exact account, region, configuration and provider time')
+  check(Number((await one('SELECT accepted_at FROM support_channel_deliveries WHERE id = ?', [accepted.id]))?.accepted_at) === Number(accepted.accepted_at), 'billing evidence preserves the acceptance timestamp already used for response reports')
+  check((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [accepted.wallet_reservation_id]))?.status === 'reserved', 'an SES send witness cannot settle the wallet by itself')
+  const period = directSentAt.slice(0, 7), monthEnd = new Date(`${period}-01T00:00:00.000Z`)
+  monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1)
+  const invoice = { format: 'aws-cur2-ses-outbound-v1', accountId, region, period, invoiceId: 'fixture-invoice', manifestSha256: 'a'.repeat(64), currency: 'USD', recipientUnits: 1, costMicros: 91 }
+  const costPreview = await previewSesOutboundCosts(invoice, monthEnd.getTime())
+  assert.equal(costPreview.state, 'matched')
+  assert.deepEqual(costPreview.allocations, [{ workspaceId: Number(project.workspace_id), recipients: 1, costMicros: 91 }])
+  const gap = await previewSesOutboundCosts({ ...invoice, recipientUnits: 2 }, monthEnd.getTime())
+  assert.equal(gap.state, 'incomplete')
+  assert.equal(gap.verifiedRecipients, 1)
+  assert.deepEqual(gap.allocations, [])
+  assert.equal((await previewSesOutboundCosts({ ...invoice, accountId: '000000000000' }, monthEnd.getTime())).verifiedRecipients, 0)
+  await assert.rejects(previewSesOutboundCosts(invoice, monthEnd.getTime() - 1), /billing month to close/)
+  const peerDelivery = await insert('support_channel_deliveries', {
+    workspace_id: otherWorkspace.id, project_id: other.id, channel_id: 999, thread_id: 999, message_id: 999,
+    public_id: crypto.randomUUID(), operation_key: 'ses-peer-preview', request_hash: 'peer-send', status: 'cost_pending', provider_message_id: 'ses-peer-out',
+  })
+  await insert('support_ses_send_evidence', {
+    workspace_id: otherWorkspace.id, project_id: other.id, channel_id: peerDelivery.channel_id, delivery_id: peerDelivery.id,
+    account_id: accountId, region, configuration_set: 'peer', provider_message_id: peerDelivery.provider_message_id,
+    notification_id: 'peer-evidence', event_sha256: 'b'.repeat(64), sent_at: Date.parse(directSentAt),
+  })
+  const sharedPool = await previewSesOutboundCosts({ ...invoice, recipientUnits: 2 }, monthEnd.getTime())
+  assert.deepEqual(sharedPool.allocations, [
+    { workspaceId: Number(project.workspace_id), recipients: 1, costMicros: 46 },
+    { workspaceId: Number(otherWorkspace.id), recipients: 1, costMicros: 45 },
+  ])
+
+  assert.equal((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [accepted.wallet_reservation_id]))?.status, 'reserved', 'invoice preview leaves wallet reservations unchanged')
+
+  const changedTimestamp = signed({ ...sendEvent, mail: { ...sendEvent.mail, messageId: 'ses-out-1', tags: { 'ses:configuration-set': [configurationSet], 'hq-dispatch': [dispatchTags[0]] } } }, { TopicArn: outboundTopicArn })
+  check((await http(outbound, 'POST', changedTimestamp)).status === 409, 'a signed event cannot move stored billing evidence into another time')
   const outboundEnvelope = signed(sendEvent, { TopicArn: outboundTopicArn })
   check((await http(outbound, 'POST', signed(sendEvent))).status === 401, 'inbound topic cannot acknowledge an outbound delivery')
   const wrongRecipient = signed({ ...sendEvent, mail: { ...sendEvent.mail, destination: ['other@example.test'] } }, { TopicArn: outboundTopicArn })
@@ -238,6 +288,13 @@ try {
   await dispatchChannelDelivery(Number(serviceFailureRow.id)); await dispatchChannelDelivery(Number(serviceFailureRow.id))
   check(sends === before503 + 1 && (await one('SELECT status FROM support_channel_deliveries WHERE id = ?', [serviceFailureRow.id]))?.status === 'unknown', 'HTTP 503 is uncertain and never automatically resends POST')
   check((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [serviceFailureRow.wallet_reservation_id]))?.status === 'reserved', 'uncertain service failure keeps maximum-cost hold')
+  const legacyDispatch = (await one('SELECT payload FROM support_channel_deliveries WHERE id = ?', [serviceFailureRow.id]))!
+  const { _sesBillingScope: removedScope, ...legacySendPayload } = JSON.parse(String(legacyDispatch.payload))
+  assert.ok(removedScope)
+  await query('UPDATE support_channel_deliveries SET payload = ? WHERE id = ?', [JSON.stringify(legacySendPayload), serviceFailureRow.id])
+  const legacySend = signed({ ...sendEvent, mail: { ...sendEvent.mail, messageId: 'ses-legacy-out', tags: { 'ses:configuration-set': [configurationSet], 'hq-dispatch': [dispatchTags.at(-1)] } } }, { TopicArn: outboundTopicArn })
+  check((await http(outbound, 'POST', legacySend)).status === 202, 'an older operation without dispatch scope can still recover its transport acceptance')
+  check(!await one('SELECT id FROM support_ses_send_evidence WHERE delivery_id = ?', [serviceFailureRow.id]), 'transport-only legacy acceptance does not create invoice evidence')
   const race = await http(path + `/conversations/${firstThread.conversation_id}/reply`, 'POST', { body: 'Provider event arrives before the API acknowledgement', idempotencyKey: 'email-send-event-race' }, owner)
   const raceRow = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [race.data.delivery.id]))!
   const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>()
@@ -245,6 +302,8 @@ try {
   const queued = dispatchChannelDelivery(Number(raceRow.id))
   try {
     await Promise.race([entered.promise, queued.then(() => assert.fail('Dispatch must reach the provider'))])
+    const reusedIdentity = signed({ ...sendEvent, mail: { ...sendEvent.mail, tags: { 'ses:configuration-set': [configurationSet], 'hq-dispatch': [dispatchTags.at(-1)] } } }, { TopicArn: outboundTopicArn })
+    check((await http(outbound, 'POST', reusedIdentity)).status === 409, 'one paid SES provider message identity cannot attest another attempted delivery')
     const raceEvent = signed({ ...sendEvent, mail: { ...sendEvent.mail, messageId: 'ses-out-race', tags: { 'ses:configuration-set': [configurationSet], 'hq-dispatch': [dispatchTags.at(-1)] } } }, { TopicArn: outboundTopicArn })
     check((await http(outbound, 'POST', raceEvent)).status === 202, 'signed receipt can acknowledge an in-flight send')
   }

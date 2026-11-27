@@ -139,6 +139,20 @@ export async function dispatchChannelDelivery(id: number, dependencies: ChannelD
     payload = object(JSON.parse(String(row.payload)))
     await validateOutboundMedia(project, thread.conversation_id, String(channel.provider), payload)
     await textProvider(String(channel.provider)).validate?.(channel, config, thread, payload, dependencies)
+    if (channel.provider === 'email') {
+      const { emailPolicy, sesBillingScope } = await import('./support-email')
+      const scope = sesBillingScope(emailPolicy(channel, config))
+      if (scope) {
+        payload = { ...payload, _sesBillingScope: scope }
+        // Persist the exact AWS pool before the single provider request. An
+        // expired lease must not submit a send or claim evidence for it.
+        const stored = await query(
+          "UPDATE support_channel_deliveries SET payload = ? WHERE id = ? AND workspace_id = ? AND project_id = ? AND status = 'dispatching' AND lease_token = ? AND lease_until > ? RETURNING id",
+          [JSON.stringify(payload), row.id, row.workspace_id, row.project_id, row.lease_token, Date.now()],
+        )
+        if (stored.length === 0) return { dispatched: false }
+      }
+    }
   }
   catch {
     await writeOutcome(row, { outcome: 'rejected', error: 'Connection or recipient policy changed before dispatch. No provider send attempted.' })
