@@ -1,6 +1,7 @@
 import { digest } from '../../app/Support/service'
 import assert from 'node:assert/strict'
 import { previewSesOutboundCosts } from '../../app/Support/ses-cost-preview'
+import { settleSesInvoice } from '../../app/Support/ses-cost-settlement'
 import { readFileSync } from 'node:fs'
 import { createSign } from 'node:crypto'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
@@ -19,7 +20,7 @@ import { processEmailReceipt } from '../../app/Support/email-receipts'
 import { emailReplyAddress, registerSupportEmail } from '../../app/Support/support-email'
 import { channelConfig, loadChannel } from '../../app/Support/channels'
 import { applyChannelInbound, dispatchChannelDelivery, recoverChannelWork } from '../../app/Support/managed-channels'
-import { configureWalletLimits } from '../../app/Support/billing'
+import { configureWalletLimits, reserveWallet } from '../../app/Support/billing'
 
 await overridesReady
 config.database.queryLogging.enabled = false
@@ -233,7 +234,7 @@ try {
   const invoice = { format: 'aws-cur2-ses-outbound-v1', accountId, region, period, invoiceId: 'fixture-invoice', manifestSha256: 'a'.repeat(64), currency: 'USD', recipientUnits: 1, costMicros: 91 }
   const costPreview = await previewSesOutboundCosts(invoice, monthEnd.getTime())
   assert.equal(costPreview.state, 'matched')
-  assert.deepEqual(costPreview.allocations, [{ workspaceId: Number(project.workspace_id), recipients: 1, costMicros: 91 }])
+  assert.deepEqual(costPreview.allocations, [{ workspaceId: Number(project.workspace_id), recipients: 1, costMicros: 91, chargedCents: 1 }])
   const gap = await previewSesOutboundCosts({ ...invoice, recipientUnits: 2 }, monthEnd.getTime())
   assert.equal(gap.state, 'incomplete')
   assert.equal(gap.verifiedRecipients, 1)
@@ -251,8 +252,8 @@ try {
   })
   const sharedPool = await previewSesOutboundCosts({ ...invoice, recipientUnits: 2 }, monthEnd.getTime())
   assert.deepEqual(sharedPool.allocations, [
-    { workspaceId: Number(project.workspace_id), recipients: 1, costMicros: 46 },
-    { workspaceId: Number(otherWorkspace.id), recipients: 1, costMicros: 45 },
+    { workspaceId: Number(project.workspace_id), recipients: 1, costMicros: 46, chargedCents: 1 },
+    { workspaceId: Number(otherWorkspace.id), recipients: 1, costMicros: 45, chargedCents: 1 },
   ])
 
   assert.equal((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [accepted.wallet_reservation_id]))?.status, 'reserved', 'invoice preview leaves wallet reservations unchanged')
@@ -366,6 +367,62 @@ try {
   const normalizedEmail = (await one('SELECT created_at FROM support_inbound WHERE id = (SELECT inbound_id FROM support_email_receipts WHERE id = ?)', [acceptedEmail.id]))!
   const normalizedAcceptedAt = normalizedEmail.created_at instanceof Date ? normalizedEmail.created_at.getTime() : new Date(String(normalizedEmail.created_at)).getTime()
   check(normalizedAcceptedAt === firstAcceptedAt && String((await one('SELECT conversation_id FROM support_channel_threads WHERE id = ?', [firstThread.id]))!.conversation_id) === String(advancedEmail.conversation_id) && Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [project.workspace_id]))!.used) === acceptedEmailMeter, 'delayed MIME processing preserves the first verified server email receipt time for quota-free reopening')
+  const balance = async (workspaceId: unknown) => Number((await one('SELECT wallet_cents FROM support_workspaces WHERE id = ?', [workspaceId]))!.wallet_cents)
+  await query('UPDATE support_workspaces SET wallet_cents = 100, managed_daily_cap_cents = 10, managed_monthly_cap_cents = 10 WHERE id = ?', [otherWorkspace.id])
+  const peerHold = await reserveWallet(Number(otherWorkspace.id), `channel:${peerDelivery.public_id}`, 1, 'email', Number(other.id))
+  const operator = 'Private fixture case SES-001'
+  const counts = await previewSesOutboundCosts({ ...invoice, recipientUnits: 0, costMicros: 0 }, monthEnd.getTime())
+  const charge = { ...invoice, recipientUnits: counts.verifiedRecipients, costMicros: counts.verifiedRecipients * 1000 }
+  const approve = async (value: typeof charge) => {
+    const preview = await previewSesOutboundCosts(value, monthEnd.getTime())
+    assert.equal(preview.state, 'matched')
+    return preview.approval
+  }
+  const before = await balance(project.workspace_id)
+  const sendsBeforeSettlement = sends
+  await assert.rejects(settleSesInvoice({ ...charge, recipientUnits: charge.recipientUnits + 1 }, '0'.repeat(64), operator, monthEnd.getTime()), /unit count differs/)
+  await query('UPDATE support_channel_deliveries SET wallet_reservation_id = ? WHERE id = ?', [accepted.wallet_reservation_id, peerDelivery.id])
+  const wrong = await approve(charge)
+  await assert.rejects(settleSesInvoice(charge, wrong, operator, monthEnd.getTime()), /exact email wallet reservation/)
+  assert.equal(await balance(project.workspace_id), before, 'a foreign reservation rolls back earlier wallet writes')
+  assert.equal((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [accepted.wallet_reservation_id]))?.status, 'reserved')
+  assert.equal((await one('SELECT status FROM support_channel_deliveries WHERE id = ?', [accepted.id]))?.status, 'cost_pending')
+  assert.equal(Number((await one('SELECT COUNT(*) AS count FROM support_ses_invoice_revisions'))!.count), 0)
+
+  await query('UPDATE support_channel_deliveries SET wallet_reservation_id = ? WHERE id = ?', [peerHold.public_id, peerDelivery.id])
+  await assert.rejects(settleSesInvoice(charge, wrong, operator, monthEnd.getTime()), /changed after preview/)
+  const approval = await approve(charge)
+  const settled = await Promise.all([settleSesInvoice(charge, approval, operator, monthEnd.getTime()), settleSesInvoice(charge, approval, operator, monthEnd.getTime())])
+  assert.deepEqual(settled.map(result => result.replayed).sort(), [false, true])
+  assert.equal(settled[0]!.chargedCents, 2, 'fractional sends share rounding within each workspace')
+  assert.equal((await one('SELECT delivery_status FROM support_messages WHERE id = ?', [accepted.message_id]))?.delivery_status, 'settled')
+  assert.equal((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [serviceFailureRow.wallet_reservation_id]))?.status, 'reserved', 'unverified legacy holds remain reserved')
+
+  const overage = { ...charge, replaces: approval, manifestSha256: 'c'.repeat(64), costMicros: charge.recipientUnits * 100000 }
+  const settledBalance = await balance(project.workspace_id)
+  await assert.rejects(settleSesInvoice(overage, await approve(overage), operator, monthEnd.getTime()), /exceeds the approved email hold/)
+  assert.equal(await balance(project.workspace_id), settledBalance)
+  const late = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [recovery.data.delivery.id]))!
+  const lateEvent = signed({ ...sendEvent, mail: { ...sendEvent.mail, messageId: late.provider_message_id, timestamp: directSentAt, tags: { 'ses:configuration-set': [configurationSet], 'hq-dispatch': [dispatchTags[1]] } } }, { TopicArn: outboundTopicArn })
+  check((await http(outbound, 'POST', lateEvent)).status === 202, 'a late signed event can witness a previously accepted and still-held send')
+  assert.equal((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [late.wallet_reservation_id]))?.status, 'reserved')
+  const correction = { ...charge, replaces: approval, manifestSha256: 'd'.repeat(64), recipientUnits: charge.recipientUnits + 1, costMicros: 0 }
+  const correctionApproval = await approve(correction)
+  await settleSesInvoice(correction, correctionApproval, operator, monthEnd.getTime())
+  assert.equal(await balance(project.workspace_id), settledBalance + 1 + Number(late.reserved_cents))
+  assert.equal((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [late.wallet_reservation_id]))?.status, 'settled')
+  assert.equal(await balance(otherWorkspace.id), 100)
+  assert.equal((await settleSesInvoice(charge, approval, operator, monthEnd.getTime())).replayed, true, 'old replay does not undo a newer correction')
+  assert.equal((await settleSesInvoice(correction, correctionApproval, operator, monthEnd.getTime())).replayed, true)
+  const competing = { ...correction, manifestSha256: 'e'.repeat(64) }
+  await assert.rejects(settleSesInvoice(competing, await approve(competing), operator, monthEnd.getTime()), /replace the current invoice approval/)
+  const reassessment = { ...correction, replaces: correctionApproval, manifestSha256: 'f'.repeat(64), costMicros: correction.recipientUnits * 1000 }
+  assert.equal((await settleSesInvoice(reassessment, await approve(reassessment), operator, monthEnd.getTime())).chargedCents, 2)
+  assert.equal(await balance(project.workspace_id), settledBalance + Number(late.reserved_cents), 'a later debit records only the revised cents difference')
+  assert.equal(await balance(otherWorkspace.id), 99)
+  assert.equal(Number((await one('SELECT COUNT(*) AS count FROM support_ses_invoice_revisions'))!.count), 3)
+  assert.equal(Number((await one("SELECT COUNT(*) AS count FROM support_wallet_entries WHERE kind = 'settlement_adjustment'"))!.count), charge.recipientUnits + correction.recipientUnits)
+  check(sends === sendsBeforeSettlement, 'invoice settlement and corrections never send another email')
   console.log(`PASS email HTTP and MIME (${checks} checks)`)
 }
 finally { server.stop(true) }

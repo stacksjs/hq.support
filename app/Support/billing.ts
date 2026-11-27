@@ -1,5 +1,5 @@
 import { env } from '@stacksjs/env'
-import { insert, one, query, workspaceTransaction } from './database'
+import { insert, one, query, requireWorkspaceTransaction, workspaceTransaction } from './database'
 import type { Row } from './database'
 import { digest, member, workspace } from './service'
 import { fail, text } from './errors'
@@ -246,10 +246,46 @@ export function managedCostCents(providerCents: number): number {
   return Math.ceil(value * (100 + billingPolicy.managedMarkupPercent) / 100)
 }
 
+/** Invoice settlements already own the workspace transaction and fix the cumulative cents allocation. */
+export async function settleSesWalletReservation(
+  workspaceId: number,
+  projectId: number,
+  deliveryId: string,
+  reservationId: string,
+  providerId: string,
+  invoiceRevisionId: number,
+  cost: { micros: number, cents: number },
+  previous?: { micros: number, cents: number },
+) {
+  requireWorkspaceTransaction(workspaceId)
+  const row = await one(`SELECT * FROM support_wallet_reservations
+    WHERE public_id = ? AND workspace_id = ? AND project_id = ? AND provider = 'email' AND operation_key = ?`,
+  [reservationId, workspaceId, projectId, `channel:${deliveryId}`])
+  const expected = previous
+    ? row?.status === 'settled' && row.provider_reference === providerId && Number(row.provider_cost_micros) === previous.micros && Number(row.actual_cents) === previous.cents
+    : row?.status === 'reserved' && row.provider_reference === '' && Number(row.provider_cost_micros) === -1 && Number(row.actual_cents) === 0
+  if (!row || !expected) fail(409, 'ses_invoice_reservation_changed', 'The invoice does not match the exact email wallet reservation.')
+  if (cost.cents > Number(row.reserved_cents)) fail(409, 'ses_invoice_reservation_exceeded', 'The invoice charge exceeds the approved email hold.')
+  const available = previous?.cents ?? Number(row.reserved_cents)
+  await entry(workspaceId, `ses-invoice:${invoiceRevisionId}:${reservationId}`, previous ? 'settlement_adjustment' : 'settle', available - cost.cents, 'email', providerId)
+  await query(`UPDATE support_wallet_reservations
+    SET status = 'settled', actual_cents = ?, provider_cost_micros = ?, provider_reference = ?, updated_at = ?
+    WHERE id = ? AND workspace_id = ?`, [cost.cents, cost.micros, providerId, new Date().toISOString(), row.id, workspaceId])
+}
+
+function costFromMicros(providerCostMicros: number, markupPercent: number): number {
+  if (!Number.isSafeInteger(providerCostMicros) || providerCostMicros < 0 || providerCostMicros > 1_000_000_000_000) fail(422, 'invalid_amount', 'A verified whole number of USD microdollars is required.')
+  return Math.ceil(providerCostMicros * (100 + markupPercent) / 1_000_000)
+}
+
 /** USD provider microdollars are aggregated before margin and the single cents rounding. */
 export function managedCostFromMicros(providerCostMicros: number): number {
-  if (!Number.isSafeInteger(providerCostMicros) || providerCostMicros < 0 || providerCostMicros > 1_000_000_000_000) fail(422, 'invalid_amount', 'A verified whole number of USD microdollars is required.')
-  return Math.ceil(providerCostMicros * (100 + billingPolicy.managedMarkupPercent) / 1_000_000)
+  return costFromMicros(providerCostMicros, billingPolicy.managedMarkupPercent)
+}
+
+/** The version 1 invoice rule is stable when a historical invoice is corrected. */
+export function sesInvoiceCostCents(providerCostMicros: number): number {
+  return costFromMicros(providerCostMicros, 15)
 }
 
 export async function settleProviderWallet(workspaceId: number, reservationId: string, providerCostMicros: number, providerReference: string) {

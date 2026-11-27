@@ -51,7 +51,7 @@ Replies use the existing durable ChannelDelivery journal and SQL wallet reservat
 
 To enable signed acceptance recovery, set both `configurationSet` and `outboundTopicArn` in the workspace's email policy. Use a separate SNS topic in the same AWS account and region. Enable only `SEND` events for this SES configuration set destination, restrict publication to the configured account and configuration set, and confirm the subscription through the operator flow. The channel probe checks the enabled destination during verification and requires `ses:GetConfigurationSetEventDestinations`. Route the original signed SNS envelope to `POST /api/email/channels/{channelPublicId}/outbound`. The event must match the account, configuration set, sender, recipient and HMAC tag of one attempted delivery. Keep the outbound destination and signing key available for outstanding events during rotation. [SNS event destination setup](https://docs.aws.amazon.com/ses/latest/dg/event-publishing-add-event-destination-sns.html) · [SES event publishing examples](https://docs.aws.amazon.com/ses/latest/dg/event-publishing-retrieving-sns-examples.html)
 
-A timeout, 5xx or malformed acknowledgement becomes durable `unknown` unless a signed send receipt has already recorded acceptance. A matching signed receipt can recover it without submitting another request. Confirmed 4xx rejection releases the reservation. Acceptance updates the operation and inbox message and leaves the hold `cost_pending` until actual provider-cost evidence is reconciled. Invoice allocation and exact settlement are still pending. A fresh operation key represents a new send and must never be used to retry an uncertain delivery.
+A timeout, 5xx or malformed acknowledgement becomes durable `unknown` unless a signed send receipt has already recorded acceptance. A matching signed receipt can recover it without submitting another request. Confirmed 4xx rejection releases the reservation. Acceptance updates the operation and inbox message and leaves the hold `cost_pending` until the operator reconciles the finalized provider cost. A fresh operation key represents a new send and must never be used to retry an uncertain delivery.
 
 ### Resolve an uncertain send
 
@@ -83,7 +83,17 @@ Save the normalized pool locally and run `./buddy support:ses-cost-preview --fil
 }
 ```
 
-Version 1 of the preview splits the verified monthly base cost evenly across the signed recipients. Residual microdollars go to recipients grouped by ascending workspace ID. A mismatch returns `incomplete` with an empty allocation. The command reports scoped provider cost and preserves reservations and wallet balances. Verified import, settlement, correction and retention still require separate qualification.
+Version 1 splits the verified monthly base cost evenly across the signed recipients. Residual microdollars go to recipients in workspace ID and recorded evidence order. A mismatch returns `incomplete` with an empty allocation. A match reports the provider cost and total charge for each workspace, plus a digest over the normalized invoice and exact signed evidence. Preview preserves wallet balances and reservations.
+
+Apply an approved pool from the deployment's private Buddy CLI after reviewing the original finalized export, the invoice, and the preview. Keep the original manifest and the exact export data files with the protected billing case. The CLI consumes the operator-normalized pool.
+
+```sh
+./buddy support:ses-cost-settle --file <path> --approve <digest-from-preview> --reason <billing-case>
+```
+
+Version 1 applies a 15% margin. Each workspace's charges for this account, Region and invoice period share one rounding to whole cents, using the same rule for later corrections. The transaction records the immutable invoice revision, settles the exact email reservations and records the ledger entries. Amounts above an original hold and changes after preview cause the transaction to roll back. A repeated approval returns its existing revision.
+
+For a late provider revision, normalize the new finalized manifest, set `replaces` to the current applied approval, and preview and apply the new file. All previously settled recipients must remain in the verified pool. Previously held sends may enter through their own signed evidence. The ledger retains the original entries and records the credit or debit difference. A stale revision cannot replace a newer one. Unverified sends retain their holds.
 
 
 The app reuses the native `EmailSuppression` schema and `isSuppressed` lookup, with no generated unscoped CRUD endpoints. Missing suppression storage fails closed for managed email. Suppressed recipients are refused before send. Bounce/complaint feedback ingestion, suppression administration, outbound attachments, delivery tracking and sending-authorization delegation still need separate qualification. This adapter supports transactional agent replies, not broadcast campaigns.
