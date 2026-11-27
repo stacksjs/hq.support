@@ -71,6 +71,7 @@ export const tsCloud: TsCloudConfig = {
     main: {
       root: '.', path: '/', domain, framework: 'stacks', port: webPort,
       start: 'bun node_modules/@stacksjs/buddy/dist/serve-entry.js',
+      sharedPaths: ['storage/app'],
       preStart: [installRuntimeDependencies, 'bun node_modules/@stacksjs/buddy/dist/cli.js migrate', 'bun node_modules/@stacksjs/buddy/dist/cli.js queue:table'],
       queues: [{ connection: 'database', queue: 'support-workflows,support-retention,support-imports,support-delivery,support-channels,support-sla,support-email,support-knowledge,default', processes: 2, timeout: 120, tries: 5, memory: 384, stopWaitSecs: 120 }],
       scheduler: true,
@@ -80,6 +81,7 @@ export const tsCloud: TsCloudConfig = {
     api: {
       root: '.', domain: `api.${domain}`, port: apiPort,
       start: 'bun node_modules/@stacksjs/actions/dist/serve/api.js',
+      sharedPaths: ['storage/app'],
       preStart: [installRuntimeDependencies],
       memoryHigh: '768M', memoryMax: '1536M',
       env: { ...variables, ...(siteMessengerProject ? { SUPPORT_SITE_MESSENGER_PROJECT_ID: siteMessengerProject } : {}), HOST: '127.0.0.1', PORT_API: String(apiPort) },
