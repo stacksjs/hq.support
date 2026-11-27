@@ -28,7 +28,7 @@ Before uploading, a clean disposable consumer installs the archive with scripts 
 
 `.github/workflows/publish-elements.yml` accepts a successful main `ci_run_id`, the reviewed version and a boolean publish choice. `verify-elements-ci.ts` checks the GitHub API for the exact current SHA, repository, main push, CI workflow path, completed success, and unexpired `support-elements-{SHA}` artifact. A successful check for another branch, fork, workflow or commit cannot authorize publication.
 
-The workflow downloads that candidate from the verified run. It checks the hashes, then reruns the clean consumer and hosted browser checks against the downloaded assets using `SUPPORT_BROWSER_ASSETS` and `--skip-build`. It dry-runs the original tarball through Stacks with no npm write credential.
+The workflow downloads that candidate from the verified run. It checks the hashes, then reruns the clean consumer and hosted browser checks against the downloaded assets using `SUPPORT_BROWSER_ASSETS` and `--skip-build`. CI and the publication verifier dry-run the original tarball through Stacks. Stacks uses the npm CLI for the dry run so the verification works without registry credentials.
 
 ```sh
 bun --no-env-file scripts/support-elements-release.ts publish-dry-run
