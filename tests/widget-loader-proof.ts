@@ -10,7 +10,9 @@ function check(condition: unknown, name: string) {
   if (!condition) failed++
 }
 try {
-  const url = new URLSearchParams(location.search).get('native') ? 'http://127.0.0.1:4411/support.js' : '/support.js'
+  const query = new URLSearchParams(location.search)
+  const localization = query.get('localization') === '1'
+  const url = query.get('native') ? 'http://127.0.0.1:4411/support.js' : '/support.js'
   const module = await import(url)
   check(!customElements.get('hq-support-messenger'), 'loader import is lazy and does not register elements')
   const first = module.createSupport()
@@ -19,7 +21,7 @@ try {
   let ready = 0
   first.on('ready', () => ready++)
   await first.boot({ endpoint: location.origin, project: 'proof', sessionToken: 'private-bootstrap-token', nonce: 'proof-style-nonce' })
-  await second.boot({ endpoint: location.origin, project: 'proof' })
+  await second.boot({ endpoint: location.origin, project: 'proof', ...(localization ? { locale: 'de' } : {}) })
   let hosts = [...document.querySelectorAll('[data-hq-support]')]
   check(hosts.length === 2, 'two controllers mount independent hosts')
   const fixedHost = document.querySelector('body > [data-hq-support]')!
@@ -39,6 +41,46 @@ try {
   check(getComputedStyle(messenger.shadowRoot.querySelector('section')).borderTopLeftRadius === '20px', 'native shadow styles work with the emitted CSP hashes')
   messenger.emit('unread', { count: 3 })
   check(launcher.unread === 3, 'unread event updates this instance launcher')
+  if (localization) {
+    second.open()
+    await other.updateComplete
+    check(other.shadowRoot.querySelector('section').lang === 'de' && other.shadowRoot.querySelector('h2').textContent === 'Wie können wir helfen?', 'a separate Messenger can open in German')
+    const conversation = () => messenger.shadowRoot.querySelector('section') as HTMLElement
+    const composer = conversation().querySelector<HTMLTextAreaElement>('#support-body')!
+    composer.focus()
+    composer.value = 'مرحبا بالدعم'
+    composer.setSelectionRange(1, 4)
+    composer.dispatchEvent(new Event('input', { bubbles: true }))
+    const session = messenger.sessionToken
+    await first.update({ locale: 'ar' })
+    await messenger.updateComplete
+    await launcher.updateComplete
+    check(ready === 1 && messenger.sessionToken === session && messenger.opened, 'switching locale preserves the open session without rebooting')
+    check(conversation().lang === 'ar' && getComputedStyle(conversation()).direction === 'rtl', 'Arabic applies a semantic right-to-left direction')
+    check(conversation().querySelector('#support-send').textContent.trim() === 'إرسال الرسالة' && launcher.shadowRoot.querySelector('button').getAttribute('aria-label') === 'تواصل مع الدعم', 'the composer and launcher use the active translation')
+    const translatedComposer = conversation().querySelector<HTMLTextAreaElement>('#support-body')!
+    check(translatedComposer.value === 'مرحبا بالدعم' && messenger.shadowRoot.activeElement === translatedComposer && translatedComposer.selectionStart === 1 && translatedComposer.selectionEnd === 4, 'live locale changes preserve the focused draft and text selection')
+    check(other.shadowRoot.querySelector('section').lang === 'de', 'changing the active controller leaves the second controller language intact')
+    check(conversation().getBoundingClientRect().width <= innerWidth, 'right-to-left Messenger fits the host viewport')
+    const result = new Promise(resolve => messenger.addEventListener('delivery', resolve, { once: true }))
+    translatedComposer.form!.requestSubmit()
+    await result
+    await messenger.updateComplete
+    const time = conversation().querySelector('time')!
+    const expectedTime = new Intl.DateTimeFormat('ar', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date('2026-01-15T17:45:00.000Z'))
+    check(time?.dateTime === '2026-01-15T17:45:00.000Z' && time.textContent === expectedTime, 'stored message timestamps use the active locale')
+    const deadline = Date.now() + 6000
+    const typingStatus = () => conversation().querySelector('[role=status].typing-status')!
+    while (!typingStatus().textContent?.trim() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+    check(typingStatus().textContent?.trim() === 'فريق الدعم يكتب الآن…' && typingStatus().getAttribute('aria-atomic') === 'true', 'typing is announced in Arabic through the same live region')
+    await first.update({ locale: 'en' })
+    await messenger.updateComplete
+    check(conversation().dir === 'ltr' && conversation().querySelector('time')?.dateTime === time.dateTime && messenger.thread.length === 1, 'returning to English retains the submitted conversation')
+    let unknownLocale = false
+    try { await first.update({ locale: 'fr' }) }
+    catch { unknownLocale = true }
+    check(unknownLocale && conversation().lang === 'en', 'unsupported locales leave the current conversation and language intact')
+  }
   first.close()
   await messenger.updateComplete
   check(!messenger.shadowRoot.querySelector('section'), 'close hides the native panel')

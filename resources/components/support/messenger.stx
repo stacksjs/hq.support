@@ -1,8 +1,10 @@
 <script component type="application/json">
-{"tag":"hq-support-messenger","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"opened":{"type":"boolean","default":false},"typing":{"type":"boolean","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"deliveryNotice":{"type":"string","attribute":false,"reflect":false},"attachments":{"type":"array","attribute":false,"reflect":false},"thread":{"type":"array","attribute":false,"reflect":false},"conversationId":{"type":"string","attribute":false,"reflect":false},"heading":{"type":"string","default":"How can we help?"},"csat":{"type":"object","attribute":false,"reflect":false},"csatOffer":{"type":"object","attribute":false,"reflect":false},"csatPending":{"type":"boolean","attribute":false,"reflect":false},"csatNotice":{"type":"string","attribute":false,"reflect":false},"csatChanged":{"type":"boolean","attribute":false,"reflect":false}},"events":{"ready":{},"opened":{},"closed":{},"unread":{},"delivery":{},"error":{}}}
+{"tag":"hq-support-messenger","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"opened":{"type":"boolean","default":false},"typing":{"type":"boolean","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"deliveryNotice":{"type":"string","attribute":false,"reflect":false},"attachments":{"type":"array","attribute":false,"reflect":false},"thread":{"type":"array","attribute":false,"reflect":false},"conversationId":{"type":"string","attribute":false,"reflect":false},"heading":{"type":"string","default":""},"locale":{"type":"string","attribute":false,"reflect":false,"default":"en"},"csat":{"type":"object","attribute":false,"reflect":false},"csatOffer":{"type":"object","attribute":false,"reflect":false},"csatPending":{"type":"boolean","attribute":false,"reflect":false},"csatNotice":{"type":"string","attribute":false,"reflect":false},"csatChanged":{"type":"boolean","attribute":false,"reflect":false}},"events":{"ready":{},"opened":{},"closed":{},"unread":{},"delivery":{},"error":{}}}
 </script>
 <script client>
-interface Message { id: string, body: string, author_type: string, delivery_status?: string }
+import { messengerDate, messengerDirection, messengerLocale, messengerText } from '../../functions/support/messenger-locale'
+
+interface Message { id: string, body: string, author_type: string, created_at?: string, delivery_status?: string }
 interface Attachment { id: string, fileName: string, mimeType: string, bytes: number, visibility: string }
 interface CsatOffer { question: string, revision: number }
 interface CsatAnswer { id: string, score: number, comment: string, question: string, revision: number, createdAt: string }
@@ -42,7 +44,17 @@ function onConnect() {
 function onDisconnect() {
   this.shutdown()
 }
-async function boot(options: { url?: string, project?: string, token?: string } = {}): Promise<void> {
+function text(key: string, values?: Record<string, string | number>): string {
+  return messengerText(messengerLocale(this.locale), key, values)
+}
+function direction(): 'rtl' | 'ltr' {
+  return messengerDirection(messengerLocale(this.locale))
+}
+function date(timestamp: string): string {
+  return messengerDate(messengerLocale(this.locale), timestamp)
+}
+async function boot(options: { url?: string, project?: string, token?: string, locale?: string } = {}): Promise<void> {
+  this.locale = messengerLocale(options.locale || this.locale)
   const wasOpened = this.opened
   const suppliedToken = options.token || this.sessionToken
   this.shutdown()
@@ -99,7 +111,11 @@ function close(): void {
   this.stopTyping()
   this.emit('closed', {})
 }
-async function update(options: { url?: string, project?: string, token?: string } = {}): Promise<void> {
+async function update(options: { url?: string, project?: string, token?: string, locale?: string } = {}): Promise<void> {
+  if (options.locale && options.url === undefined && options.project === undefined && options.token === undefined) {
+    this.locale = messengerLocale(options.locale)
+    return
+  }
   return this.boot({ url: this.apiUrl, project: this.projectId, ...options })
 }
 async function track(event: { event: string, attributes?: Record<string, unknown>, idempotencyKey?: string }): Promise<{ id: string, accepted: boolean }> {
@@ -198,7 +214,7 @@ function clearCsat(): void {
 }
 function editCsatScore(event: Event): void { if (event.target instanceof HTMLInputElement) this._csatScore = event.target.value }
 function editCsatComment(event: Event): void { if (event.target instanceof HTMLTextAreaElement) this._csatComment = event.target.value }
-function scoreLabel(score: number): string { return ['Very dissatisfied', 'Dissatisfied', 'Neither satisfied nor dissatisfied', 'Satisfied', 'Very satisfied'][score - 1] || '' }
+function scoreLabel(score: number): string { return Number.isInteger(score) && score >= 1 && score <= 5 ? this.text('score' + score) : '' }
 async function refreshCsat(review = false): Promise<void> {
   if (!this.sessionToken || !this.conversationId || this.csatPending || this._csatRefreshing) return
   if (this._csatConversation !== this.conversationId) { this.clearCsat(); this._csatConversation = this.conversationId }
@@ -318,37 +334,37 @@ async function send(event: Event) {
 </script>
 <template>
   @if(this.opened)
-    <section class="messenger" role="region" aria-label="Customer support">
-      <header><div><span class="brand">hq.support</span><h2>{{ this.heading }}</h2><p>Send a message to the team.</p></div><button id="support-close" class="close" type="button" @click="close" aria-label="Close support">×</button></header>
-      <div id="support-history" class="messages{{ this.thread.length === 0 ? ' is-empty' : '' }}" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions text" tabindex="{{ this.thread.length ? '0' : '-1' }}">
+    <section class="messenger" role="region" lang="{{ this.locale }}" dir="{{ this.direction() }}" aria-label="{{ this.text('region') }}">
+      <header><div><span class="brand">hq.support</span><h2>{{ this.heading || this.text('heading') }}</h2><p>{{ this.text('introduction') }}</p></div><button id="support-close" class="close" type="button" @click="close" aria-label="{{ this.text('close') }}">×</button></header>
+      <div id="support-history" class="messages{{ this.thread.length === 0 ? ' is-empty' : '' }}" role="log" aria-label="{{ this.text('conversation') }}" aria-live="polite" aria-relevant="additions text" tabindex="{{ this.thread.length ? '0' : '-1' }}">
         @if(this.thread.length === 0)
-          <div class="welcome"><strong>A little context goes a long way.</strong><p>Tell us what you are working on and where you got stuck.</p></div>
+          <div class="welcome"><strong>{{ this.text('welcome') }}</strong><p>{{ this.text('context') }}</p></div>
         @endif
         @foreach(this.thread as message)
-          <article class="message"><small>{{ ['contact', 'customer'].includes(message.author_type) ? 'You' : 'Support' }}</small><p>{{ message.body }}</p></article>
+          <article class="message"><small>{{ ['contact', 'customer'].includes(message.author_type) ? this.text('you') : this.text('support') }}</small>@if(message.created_at)<time datetime="{{ message.created_at }}">{{ this.date(message.created_at) }}</time>@endif<p dir="auto">{{ message.body }}</p></article>
         @endforeach
       </div>
-      <div class="typing-status" role="status" aria-atomic="true">@if(this.typing)<span>Support is typing…</span>@endif</div>
+      <div class="typing-status" role="status" aria-atomic="true">@if(this.typing)<span>{{ this.text('typing') }}</span>@endif</div>
       @if(this.notice)
         <p class="notice" role="alert">{{ this.notice }}</p>
       @endif
       @if(this.deliveryNotice)<p class="delivery-notice" role="status">{{ this.deliveryNotice }}</p>@endif
       @if(this.csat.response)
-        <section class="csat-answer" aria-label="Your satisfaction response"><h3>Feedback received</h3><p>{{ this.csat.response.question }}</p><p><strong>{{ this.csat.response.score }} / 5</strong> · Question revision {{ this.csat.response.revision }}</p>@if(this.csat.response.comment)<p class="csat-comment">{{ this.csat.response.comment }}</p>@endif</section>
+        <section class="csat-answer" aria-label="{{ this.text('feedbackResponse') }}"><h3>{{ this.text('feedbackReceived') }}</h3><p>{{ this.csat.response.question }}</p><p><strong>{{ this.csat.response.score }} / 5</strong> · {{ this.text('questionRevision', { revision: this.csat.response.revision }) }}</p>@if(this.csat.response.comment)<p class="csat-comment">{{ this.csat.response.comment }}</p>@endif</section>
       @elseif(this.csat.available && this.csatOffer.revision)
-        <form class="csat-form" @submit.prevent="submitCsat"><fieldset :disabled="this.csatPending"><legend>{{ this.csatOffer.question }}</legend><p class="csat-help">Rate this resolved conversation · Question revision {{ this.csatOffer.revision }}</p><div class="csat-scores">@foreach([1,2,3,4,5] as score)<label class="csat-score">@if(String(this._csatScore || '') === String(score))<input type="radio" name="score" value="{{ score }}" @change="editCsatScore" checked required>@else<input type="radio" name="score" value="{{ score }}" @change="editCsatScore" required>@endif<span>{{ score }}</span><span class="sr-only">: {{ this.scoreLabel(score) }}</span></label>@endforeach</div><p class="csat-help">1 = very dissatisfied · 5 = very satisfied</p><label for="csat-comment">Optional comment</label><textarea id="csat-comment" name="comment" @input="editCsatComment" maxlength="2000" rows="3" placeholder="What worked, or what could improve?">{{ this._csatComment || '' }}</textarea></fieldset>@if(this.csatChanged)<p class="notice" role="alert">The question changed. Your original question and draft are preserved. Review the current question before sending.</p><button type="button" class="csat-review" @click="reviewCsatQuestion" :disabled="this.csatPending">Review current question</button>@endif @if(this.csatNotice)<p class="notice" role="alert">{{ this.csatNotice }}</p>@endif @if(this.csatChanged)<button type="submit" disabled>Send feedback</button>@else<button type="submit" :disabled="this.csatPending">{{ this.csatPending ? 'Saving feedback...' : 'Send feedback' }}</button>@endif</form>
+        <form class="csat-form" @submit.prevent="submitCsat"><fieldset :disabled="this.csatPending"><legend>{{ this.csatOffer.question }}</legend><p class="csat-help">{{ this.text('rateConversation', { revision: this.csatOffer.revision }) }}</p><div class="csat-scores">@foreach([1,2,3,4,5] as score)<label class="csat-score">@if(String(this._csatScore || '') === String(score))<input type="radio" name="score" value="{{ score }}" @change="editCsatScore" checked required>@else<input type="radio" name="score" value="{{ score }}" @change="editCsatScore" required>@endif<span>{{ score }}</span><span class="sr-only">: {{ this.scoreLabel(score) }}</span></label>@endforeach</div><p class="csat-help">{{ this.text('ratingScale') }}</p><label for="csat-comment">{{ this.text('feedbackComment') }}</label><textarea id="csat-comment" name="comment" @input="editCsatComment" maxlength="2000" rows="3" dir="auto" placeholder="{{ this.text('feedbackPlaceholder') }}">{{ this._csatComment || '' }}</textarea></fieldset>@if(this.csatChanged)<p class="notice" role="alert">{{ this.text('questionChanged') }}</p><button type="button" class="csat-review" @click="reviewCsatQuestion" :disabled="this.csatPending">{{ this.text('reviewQuestion') }}</button>@endif @if(this.csatNotice)<p class="notice" role="alert">{{ this.csatNotice }}</p>@endif @if(this.csatChanged)<button type="submit" disabled>{{ this.text('sendFeedback') }}</button>@else<button type="submit" :disabled="this.csatPending">{{ this.csatPending ? this.text('savingFeedback') : this.text('sendFeedback') }}</button>@endif</form>
       @elseif(this.csatOffer.revision && this.csatNotice)
-        <section class="csat-answer" aria-label="Satisfaction feedback"><p>{{ this.csatOffer.question }}</p><p role="status">{{ this.csatNotice }}</p><button type="button" class="csat-review" @click="reviewCsatQuestion">Check feedback availability</button></section>
+        <section class="csat-answer" aria-label="{{ this.text('feedback') }}"><p>{{ this.csatOffer.question }}</p><p role="status">{{ this.csatNotice }}</p><button type="button" class="csat-review" @click="reviewCsatQuestion">{{ this.text('checkFeedback') }}</button></section>
       @endif
       <form @submit.prevent="send">
-        <label for="support-body">Your message</label>
-        <textarea id="support-body" name="body" @input="editDraft" required maxlength="10000" placeholder="Write your message..." rows="3" :readonly="this.pending">{{ this._draft || '' }}</textarea>
+        <label for="support-body">{{ this.text('message') }}</label>
+        <textarea id="support-body" name="body" @input="editDraft" required maxlength="10000" dir="auto" placeholder="{{ this.text('placeholder') }}" rows="3" :readonly="this.pending">{{ this._draft || '' }}</textarea>
         <div class="send-row">
           <span>
-            <span>{{ this.pending ? '' : 'Powered by HQ.support' }}</span>
-            <span role="status">{{ this.pending ? (this.sessionToken ? 'Sending…' : 'Connecting…') : '' }}</span>
+            <span>{{ this.pending ? '' : this.text('powered') }}</span>
+            <span role="status">{{ this.pending ? (this.sessionToken ? this.text('sending') : this.text('connecting')) : '' }}</span>
           </span>
-          <button id="support-send" type="submit" aria-disabled="{{ this.pending ? 'true' : 'false' }}">Send message</button>
+          <button id="support-send" type="submit" aria-disabled="{{ this.pending ? 'true' : 'false' }}">{{ this.text('send') }}</button>
         </div>
       </form>
     </section>
@@ -356,6 +372,8 @@ async function send(event: Event) {
 </template>
 <style>
 header > div{align-self:center}
+.message time{display:inline-block;margin-inline-start:8px;color:var(--hq-support-muted,#526760);font-size:11px}
+.messenger{text-align:start}
 .brand,header p,.messages.is-empty{display:var(--support-intro-display,revert)}
 .messages:focus-visible{outline:3px solid var(--hq-support-focus,#68bcab);outline-offset:-3px}
 textarea::placeholder{color:var(--hq-support-muted,#526760);opacity:1}
@@ -382,7 +400,7 @@ textarea::placeholder{color:var(--hq-support-muted,#526760);opacity:1}
   header, .message, .csat-answer {
     background: var(--hq-support-secondary-surface,#26312e);
   }
-  header p, .close, .welcome, .message small, .send-row span, .csat-help, .typing-status span {
+  header p, .close, .welcome, .message small, .message time, .send-row span, .csat-help, .typing-status span {
     color: var(--support-dark-muted);
   }
   .brand, .delivery-notice, .csat-review {

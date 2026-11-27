@@ -67,8 +67,12 @@ to retain the conversation across reloads in the same tab. The anonymous token
 is stored in the embedding site's session storage under the endpoint and project.
 Explicit customer tokens remain in memory. Each embedded API request still
 requires the site's exact origin on the project's allowlist.
-It does not install globals. The current messenger supports English (`en`) only;
-other locale requests fail explicitly. Use `createSupport({ container: HTMLElement, inline?: boolean })` for independent
+The Messenger supports English (`en`, the default), German (`de`), and Arabic (`ar`, right-to-left).
+Set `locale` in `boot`, or call `support.update({ locale: 'ar' })` to switch language
+without resetting the customer session, conversation, draft or focus. The same options
+are available on the direct Messenger element. Each controller uses its own locale.
+Custom launcher labels and customer or agent messages keep their original text.
+Use `createSupport({ container: HTMLElement, inline?: boolean })` for independent
 instances owned by a component. A supplied container defaults to inline positioning.
 Boot options `mount: HTMLElement` and `inline: boolean` can override those defaults.
 Do not mount multiple fixed instances over one another. Reboot or shutdown while
@@ -87,8 +91,8 @@ instances, token handling, identity updates and complete shutdown.
 
 `hq-support-messenger` supports:
 
-- `boot({ url, project, token? })`, where token is a server-issued customer session.
-- `open()`, `close()`, `update({ token? })`, `track({ event, attributes? })`, and `shutdown()`.
+- `boot({ url, project, token?, locale? })`, where token is a server-issued customer session.
+- `open()`, `close()`, `update({ token?, locale? })`, `track({ event, attributes? })`, and `shutdown()`.
 - `ready`, `opened`, `closed`, `unread`, `delivery`, and `error` events.
 
 API credentials are server only. Set a customer session token as a JavaScript

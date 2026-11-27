@@ -19,6 +19,7 @@
         "@stacksjs/error-handling": "0.75.699",
         "@stacksjs/events": "0.75.699",
         "@stacksjs/hq": "0.75.699",
+        "@stacksjs/i18n": "0.75.699",
         "@stacksjs/logging": "0.75.699",
         "@stacksjs/orm": "0.75.699",
         "@stacksjs/path": "0.75.699",

@@ -46,6 +46,7 @@ const manifest = {
   appVersion: pkg.version,
   version,
   entrypoint: '/support.js',
+  locales: ['en', 'de', 'ar'],
   immutableEntrypoint: `/widgets/${version}/support.js`,
   files: [describe(`/widgets/${version}/bundle.js`, bundle), describe(`/widgets/${version}/custom-elements.json`, elements), describe(`/widgets/${version}/support.js`, loader), describe('/support.js', entrypoint)],
   csp: { styleSrc: css.map(value => `'sha256-${digest(new TextEncoder().encode(value), 'sha256', 'base64')}'`) },

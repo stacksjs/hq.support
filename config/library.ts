@@ -9,7 +9,7 @@ export default {
   contributors: ['Chris Breuer <chris@stacksjs.com>'],
   packages: [{
     name: '@stacksjs/support-elements',
-    version: '0.1.0-alpha.2',
+    version: '0.1.0-alpha.3',
     kind: 'web-components',
     description: 'Framework independent HQ.support messenger and support elements compiled from stx.',
     prefix: 'hq-support',

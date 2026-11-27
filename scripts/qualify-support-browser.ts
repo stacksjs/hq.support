@@ -56,13 +56,14 @@ async function build() {
   }
   finally { clearTimeout(timer) }
 }
-interface Manifest { version: string, csp: { styleSrc: string[] }, files: { path: string, sha256: string }[] }
+interface Manifest { version: string, locales?: string[], csp: { styleSrc: string[] }, files: { path: string, sha256: string }[] }
 async function snapshotAssets() {
   temporary = await mkdtemp(resolve(tmpdir(), 'hq-support-browser-'))
   const source = resolve(process.env.SUPPORT_BROWSER_ASSETS || resolve(root, 'public'))
   assert.ok(!process.env.SUPPORT_BROWSER_ASSETS || args.includes('--skip-build'), 'Reviewed hosted artifacts require --skip-build, never a rebuild')
   const assets = resolve(temporary, 'public'), manifest: Manifest = await Bun.file(resolve(source, 'widgets/manifest.json')).json()
   assert.match(manifest.version, /^[a-zA-Z0-9.+-]+$/)
+  if (!process.env.SUPPORT_BROWSER_ASSETS) assert.deepEqual(manifest.locales, ['en', 'de', 'ar'], 'Current hosted artifact must declare its supported locales')
   assert.ok(manifest.files.length >= 4, 'Manifest must describe the compiled publication')
   const paths = new Set(['/widgets/manifest.json', '/widgets/bundle.js', ...manifest.files.map(file => file.path)])
   for (const path of paths) {
@@ -79,10 +80,10 @@ async function snapshotAssets() {
 }
 interface RequestRecord { url: string, method: string, postData?: string }
 interface LogEntry { text: string, source?: string, url?: string, networkRequestId?: string }
-async function qualify(assets: string, path: '/proof' | '/loader-proof', viewport: { width: number, height: number }, label: string, scheme: 'light' | 'dark') {
+async function qualify(assets: string, path: '/proof' | '/loader-proof', viewport: { width: number, height: number }, label: string, scheme: 'light' | 'dark', localization: boolean) {
   if (stopping) throw new Error('Browser qualification interrupted')
   preview = await createWidgetPreview({ port: 0, assetsDirectory: assets, native: false })
-  const origin = preview.server.url.origin, url = origin + path, policy = (await fetch(url)).headers.get('content-security-policy') || ''
+  const origin = preview.server.url.origin, url = origin + path + (localization && path === '/loader-proof' ? '?localization=1' : ''), policy = (await fetch(url)).headers.get('content-security-policy') || ''
   assert.ok(policy.includes("script-src 'self'") && !/unsafe-inline|unsafe-eval/.test(policy), 'Proof must run under a strict script CSP')
   const requests = new Map<string, RequestRecord>(), failures: string[] = [], forbidden: string[] = [], expectedFailures = new Set<string>(), logs: LogEntry[] = []
   browser = await launch({ headless: true, shared: false, viewport, chromePath: process.env.CHROME_PATH || process.env.BROWSE_BROWSER, args: process.platform === 'linux' ? ['--disable-dev-shm-usage', ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])] : [], startTimeoutMs: 60000, commandTimeoutMs: 20000 })
@@ -115,7 +116,7 @@ async function qualify(assets: string, path: '/proof' | '/loader-proof', viewpor
       const state = await cdp.evaluate<{ title: string, checks: string[], violations: unknown[] }>(`({title:document.title,checks:[...document.querySelectorAll('#checks > *')].map(node=>node.textContent),violations:globalThis.__hqCompilerCsp})`)
       const failed = state.checks.filter(check => check.startsWith('FAIL'))
       if (failed.length) throw new Error(failed.join('\n'))
-      return state.title === expectedTitle && state.checks.filter(check => check.startsWith('PASS')).length >= (path === '/proof' ? 25 : 19) ? state : undefined
+      return state.title === expectedTitle && state.checks.filter(check => check.startsWith('PASS')).length >= (path === '/proof' ? 25 : localization ? 29 : 19) ? state : undefined
     }, 30000, { label: `${label} ${path} rendered checks`, intervalMs: 50 })
     assert.ok(await settle(cdp, { quietMs: 150, timeoutMs: 5000 }))
     assert.deepEqual(proof.violations, [], 'No CSP violation may be hidden by proof completion')
@@ -153,7 +154,7 @@ try {
     { label: 'mobile', viewport: { width: 390, height: 844 }, scheme: 'dark' },
   ] as const
   for (const { label, viewport, scheme } of appearances) {
-    for (const path of ['/proof', '/loader-proof'] as const) await qualify(assets, path, viewport, label, scheme)
+    for (const path of ['/proof', '/loader-proof'] as const) await qualify(assets, path, viewport, label, scheme, manifest.locales?.includes('ar') === true)
   }
   await Bun.write(resolve(output, 'report.json'), JSON.stringify({ passed: true, built: !args.includes('--skip-build'), version: manifest.version, results }, null, 2))
   console.info(`PASS support browser qualification: ${results.length} Chromium journeys. Artifacts: ${output}`)

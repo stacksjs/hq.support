@@ -1,17 +1,26 @@
 <script component type="application/json">
-{"tag":"hq-support-launcher","shadowDOM":"open","properties":{"label":{"type":"string","default":"Contact support"},"unread":{"type":"number","default":0}},"events":{"opened":{"description":"Customer requests the messenger"}}}
+{"tag":"hq-support-launcher","shadowDOM":"open","properties":{"label":{"type":"string","default":"Contact support"},"unread":{"type":"number","default":0},"locale":{"type":"string","attribute":false,"reflect":false,"default":"en"},"textDirection":{"type":"string","attribute":false,"reflect":false,"default":"ltr"},"unreadLabel":{"type":"string","attribute":false,"reflect":false,"default":"Unread messages"}},"events":{"opened":{"description":"Customer requests the messenger"}}}
 </script>
 <script client>
+import { messengerDirection, messengerLocale, messengerText } from '../../functions/support/messenger-locale'
+
+function setLocale(language: string, label?: string): void {
+  const locale = messengerLocale(language)
+  this.locale = locale
+  this.textDirection = messengerDirection(locale)
+  this.label = label || messengerText(locale, 'launcher')
+  this.unreadLabel = messengerText(locale, 'unread')
+}
 function open() {
   this.emit('opened', { source: 'launcher' })
 }
 </script>
 <template>
-  <button id="support-launcher" type="button" @click="open" aria-label="{{ this.label }}">
+  <button id="support-launcher" type="button" @click="open" lang="{{ this.locale }}" dir="{{ this.textDirection }}" aria-label="{{ this.label }}">
     <span class="mark" aria-hidden="true">h</span>
     <span>{{ this.label }}</span>
     @if(this.unread > 0)
-      <strong aria-label="Unread messages">{{ this.unread }}</strong>
+      <strong aria-label="{{ this.unreadLabel }}">{{ this.unread }}</strong>
     @endif
   </button>
 </template>

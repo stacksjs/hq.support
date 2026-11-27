@@ -1,3 +1,5 @@
+import { messengerLocale } from './messenger-locale'
+
 /** Hosted ESM entry. DOM access stays in this module, outside stx page scripts. */
 export interface SupportBootOptions {
   endpoint?: string
@@ -15,14 +17,14 @@ export interface SupportUpdateOptions { sessionToken?: string, locale?: string }
 export interface SupportControllerOptions { container?: HTMLElement, inline?: boolean }
 interface MessengerElement extends HTMLElement {
   sessionToken: string
-  boot(options: { url: string, project: string, token?: string }): Promise<void>
-  update(options: { token?: string }): Promise<void>
+  boot(options: { url: string, project: string, token?: string, locale?: string }): Promise<void>
+  update(options: { token?: string, locale?: string }): Promise<void>
   open(): void
   close(): void
   track(event: { event: string, attributes?: Record<string, unknown> }): Promise<{ id: string, accepted: boolean }>
   shutdown(): void
 }
-interface LauncherElement extends HTMLElement { label: string, unread: number }
+interface LauncherElement extends HTMLElement { unread: number, setLocale(locale: string, label?: string): void }
 
 // Replaced by the artifact builder, relative to this hosted ESM entry.
 declare const SUPPORT_ELEMENT_MODULE: string
@@ -44,6 +46,7 @@ export function createSupport(controllerOptions: SupportControllerOptions = {}) 
   const events = new EventTarget()
   let host: HTMLElement | undefined
   let messenger: MessengerElement | undefined
+  let updateLauncherLocale: ((locale: string) => void) | undefined
   let openMessenger: ((trigger?: HTMLElement) => void) | undefined
   let generation = 0
   let cleanups: (() => void)[] = []
@@ -55,12 +58,13 @@ export function createSupport(controllerOptions: SupportControllerOptions = {}) 
     messenger?.shutdown()
     host?.remove()
     messenger = undefined
+    updateLauncherLocale = undefined
     openMessenger = undefined
     host = undefined
   }
   async function boot(options: SupportBootOptions) {
     if (!options?.project?.trim()) throw new Error('A public project ID is required.')
-    assertLocale(options.locale)
+    const locale = messengerLocale(options.locale)
     const api = new URL(options.endpoint || new URL(import.meta.url).origin)
     if (!['http:', 'https:'].includes(api.protocol)) throw new Error('Support URL must use HTTP or HTTPS.')
     shutdown()
@@ -85,7 +89,8 @@ export function createSupport(controllerOptions: SupportControllerOptions = {}) 
     panel.append(instance)
     root.append(style, panel)
     if (button) {
-      button.label = options.launcherLabel || 'Contact support'
+      updateLauncherLocale = language => button.setLocale(language, options.launcherLabel)
+      updateLauncherLocale(locale)
       root.append(button)
     }
     let opener: HTMLElement | undefined
@@ -127,7 +132,7 @@ export function createSupport(controllerOptions: SupportControllerOptions = {}) 
     const parent = options.mount || controllerOptions.container || document.body
     parent.append(mounted)
     // Customer identity goes straight to the method. It is never serialized into markup.
-    const connection = { url: api.href.replace(/\/$/, ''), project: options.project }
+    const connection = { url: api.href.replace(/\/$/, ''), project: options.project, locale }
     const resume = options.resumeAnonymousSession && !options.sessionToken
     if (!resume) {
       await instance.boot({ ...connection, token: options.sessionToken })
@@ -148,11 +153,15 @@ export function createSupport(controllerOptions: SupportControllerOptions = {}) 
       try { sessionStorage.setItem(key, instance.sessionToken) } catch { /* Storage is optional. */ }
     }
   }
-  function assertLocale(locale?: string) { if (locale && locale !== 'en') throw new Error('This messenger currently supports English (en) only.') }
   function active() { if (!messenger) throw new Error('Boot support before using this method.'); return messenger }
   function open(trigger?: HTMLElement) { active(); openMessenger?.(trigger) }
   function close() { active().close() }
-  async function update(options: SupportUpdateOptions) { assertLocale(options.locale); await active().update({ token: options.sessionToken }) }
+  async function update(options: SupportUpdateOptions) {
+    const instance = active()
+    const locale = options.locale ? messengerLocale(options.locale) : undefined
+    if (locale) updateLauncherLocale?.(locale)
+    await instance.update({ token: options.sessionToken, locale })
+  }
   async function track(event: string, attributes?: Record<string, unknown>) { if (!event?.trim()) throw new Error('Tracking requires an event name.'); return active().track({ event, attributes }) }
   function on(name: string, listener: EventListener) { events.addEventListener(name, listener); return () => events.removeEventListener(name, listener) }
   return { boot, open, close, update, track, shutdown, on, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) }

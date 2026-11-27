@@ -422,10 +422,10 @@ export function createInbox() {
     finally { creating.set(false) }
   }
 
-  function formatDate(value?: string) {
+  function formatDate(value?: string, locale?: string) {
     if (!value) return ''
     const date = new Date(value)
-    return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(locale, { month: 'short', day: 'numeric' })
   }
   function setupPresence() { detailsCleanup.push(presence.listen()) }
   function destroy() { presence.stop(); disposed = true; cancelList(); selection++; clearPrivateState(); user.set(null); workspaces.set([]); projects.set([]); project.set(''); activeProject = '';  for (const cleanup of detailsCleanup.splice(0)) cleanup(); detailsScroll?.set(false); detailsOpener = null }

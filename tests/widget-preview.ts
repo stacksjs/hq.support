@@ -65,14 +65,14 @@ export async function createWidgetPreview(options: { port?: number, assetsDirect
         if (request.headers.get('Authorization') !== 'Bearer fixture-session') return Response.json({ message: 'Forbidden' }, { status: 403 })
         if (resource === '/conversations' && request.method === 'GET') return Response.json({ conversations: messages.length ? [{ id: '1' }] : [] })
         if (resource === '/conversations/1/csat' && request.method === 'GET') return Response.json({ available: false, reason: 'disabled' })
-        if (resource === '/conversations/1/typing' && request.method === 'GET') return Response.json({ typing: false })
+        if (resource === '/conversations/1/typing' && request.method === 'GET') return Response.json({ typing: messages.some(message => message.body === 'مرحبا بالدعم') })
         if (resource === '/ticket-types' && request.method === 'GET') return Response.json({ types: [{ id: '1', name: 'Compiler qualification', fields: [{ key: 'quantity', label: 'Quantity', type: 'number', visibility: 'customer' }, { key: 'reply_email', label: 'Reply email', type: 'email', visibility: 'customer' }, { key: 'incident_date', label: 'Incident date', type: 'date', visibility: 'customer' }] }] })
         if (resource === '/events') return Response.json({ accepted: true })
         if ((resource === '/conversations' || resource.endsWith('/messages')) && request.method === 'POST') {
           const body = await request.json()
           if (body.body === 'FAIL') return Response.json({ message: 'Fixture delivery error. Retry the message.' }, { status: 503 })
           if (!seen.has(body.idempotencyKey)) {
-            const message = { id: String(messages.length + 1), conversation_id: '1', author_type: 'customer', body: body.body, delivery_status: 'stored' }
+            const message = { id: String(messages.length + 1), conversation_id: '1', author_type: 'customer', body: body.body, delivery_status: 'stored', created_at: '2026-01-15T17:45:00.000Z' }
             messages.push(message)
             seen.set(body.idempotencyKey, resource === '/conversations' ? { conversation: { id: '1' } } : { message })
           }
