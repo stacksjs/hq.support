@@ -160,6 +160,10 @@ exact operation and attachment; unsigned, expired or substituted paths fail.
 GET and HEAD serve the verified MIME type and length. Arbitrary public media
 URLs and incompatible template/image combinations are refused.
 
+Choose **Attach image** in the public SMS, WhatsApp, or Discord inbox composer.
+The draft retains the selected image if you write an internal note or retry an
+uncertain upload. The file is uploaded when you send the public reply.
+
 Discord accepts the same single JPEG or PNG selection on an agent reply, with
 optional text. The worker verifies the stored bytes and checksum before uploading
 them directly with the bot message. It stores the provider receipt on acceptance.

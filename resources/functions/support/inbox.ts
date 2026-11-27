@@ -8,7 +8,8 @@ import { routingReasonLabel } from './team-routing'
 import { createInboxPresence } from './inbox-presence'
 
 interface Project { id: string | number, public_id: string, name: string, workspace_id: string | number }
-interface Conversation { id: string | number, subject: string, status: string, customer_id?: string | number, updated_at?: string, unread_count?: number, assignee_id?: string | number, team_id?: string | number, inbox_id?: string | number, routing_reason?: string, resolved_at?: number, continued_from_id?: string | null, continuation_id?: string | null }
+interface Conversation { id: string | number, subject: string, status: string, channel?: string, customer_id?: string | number, updated_at?: string, unread_count?: number, assignee_id?: string | number, team_id?: string | number, inbox_id?: string | number, routing_reason?: string, resolved_at?: number, continued_from_id?: string | null, continuation_id?: string | null }
+interface ReplyImage { file: File, key: string, id?: string }
 interface Message { id: string | number, body: string, visibility: string, author_type: string, created_at: string }
 interface Contact { id?: string | number, name?: string, email?: string, company?: string }
 interface ThreadAttachment { id: string, fileName: string }
@@ -32,6 +33,10 @@ export function createInbox() {
   const filter = state('open')
   const draft = state('')
   const visibility = state('public')
+  const replyImage = state<ReplyImage | null>(null)
+  const replyImageError = state('')
+  const canAttachReplyImage = derived(() => visibility() === 'public' && ['sms', 'whatsapp', 'discord'].includes(current()?.channel || ''))
+  const hasReply = derived(() => Boolean(draft().trim() || (canAttachReplyImage() && replyImage())))
   const loading = state(true)
   const threadLoading = state(false)
   const sending = state(false)
@@ -86,24 +91,51 @@ export function createInbox() {
     const selected = inboxes().find(row => String(row.id) === routingInbox())
     return identities().filter(row => !selected || teamMembers().some(item => String(item.team_id) === String(selected.team_id) && String(item.user_id) === String(row.id) && item.active && item.workspace_status === 'active'))
   })
-  const drafts = new Map<string, { body: string, visibility: string, key: string, fingerprint: string, cursor: string | undefined, replyAtStart: string | null }>()
+  const drafts = new Map<string, { body: string, visibility: string, image: ReplyImage | null, key: string, fingerprint: string, cursor: string | undefined, replyAtStart: string | null }>()
   let retryFingerprint = '', retryCursor: string | undefined, routingKey = '', routingFingerprint = '', messageRefresh = 0
   const seenReply = state('0'), replyAtStart = state<string | null>(null)
   const presence = createInboxPresence(request, async () => { await refreshConversation() }, conversationAccessLost)
   const viewerNames = derived(() => presence.viewers().map(viewer => person(viewer.userId)).join(', '))
   const composingNames = derived(() => presence.viewers().filter(viewer => viewer.composing).map(viewer => person(viewer.userId)).join(', '))
-  const replyChanged = derived(() => visibility() === 'public' && !!draft().trim() && replyAtStart() !== null && Number(presence.latestReply()) > Number(replyAtStart()))
-  const collision = derived(() => visibility() === 'public' && !!draft().trim() && (replyChanged() || !!composingNames()))
+  const replyChanged = derived(() => visibility() === 'public' && hasReply() && replyAtStart() !== null && Number(presence.latestReply()) > Number(replyAtStart()))
+  const collision = derived(() => visibility() === 'public' && hasReply() && (replyChanged() || !!composingNames()))
   function trackReplyDraft(value: string, mode: string, editing = false) {
-    if (!value.trim()) replyAtStart.set(null)
+    if (!value.trim() && !(mode === 'public' && replyImage())) replyAtStart.set(null)
     else if (replyAtStart() === null) replyAtStart.set(seenReply())
     presence.update(editing && mode === 'public' && !!value.trim())
   }
   function draftActivity(event: Event) { trackReplyDraft((event.target as HTMLTextAreaElement).value, visibility(), true) }
-  function visibilityActivity(event: Event) { trackReplyDraft(draft(), (event.target as HTMLSelectElement).value) }
+  function visibilityActivity(event: Event) {
+    const mode = (event.target as HTMLSelectElement).value
+    replyImageError.set('')
+    trackReplyDraft(draft(), mode)
+  }
+  function selectReplyImage(event: Event) {
+    const input = event.target as HTMLInputElement
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file || !canAttachReplyImage()) return
+    if (!['image/jpeg', 'image/png'].includes(file.type)) { replyImageError.set('replyImageType'); return }
+    if (!file.size || file.size >= 5000000) { replyImageError.set('replyImageSize'); return }
+    replyImage.set({ file, key: crypto.randomUUID() })
+    replyImageError.set('')
+    trackReplyDraft(draft(), visibility())
+  }
+  function removeReplyImage() {
+    replyImage.set(null)
+    replyImageError.set('')
+    trackReplyDraft(draft(), visibility())
+    document.getElementById('reply-image')?.focus()
+  }
   function draftId(selectedProject: string, item: Conversation) { return `${selectedProject}:${item.id}` }
-  function stashDraft(selectedProject = project()) { const item = current(); if (!item) return; const key = draftId(selectedProject, item); if (draft()) drafts.set(key, { body: draft(), visibility: visibility(), key: retryKey, fingerprint: retryFingerprint, cursor: retryCursor, replyAtStart: replyAtStart() }); else drafts.delete(key) }
-  function restoreDraft(item: Conversation) { const saved = drafts.get(draftId(project(), item)); draft.set(saved?.body || ''); visibility.set(saved?.visibility || 'public'); retryKey = saved?.key || ''; retryFingerprint = saved?.fingerprint || ''; retryCursor = saved?.cursor; replyAtStart.set(saved?.replyAtStart ?? null) }
+  function stashDraft(selectedProject = project()) {
+    const item = current()
+    if (!item) return
+    const key = draftId(selectedProject, item)
+    if (draft() || replyImage()) drafts.set(key, { body: draft(), visibility: visibility(), image: replyImage(), key: retryKey, fingerprint: retryFingerprint, cursor: retryCursor, replyAtStart: replyAtStart() })
+    else drafts.delete(key)
+  }
+  function restoreDraft(item: Conversation) { const saved = drafts.get(draftId(project(), item)); draft.set(saved?.body || ''); visibility.set(saved?.visibility || 'public'); replyImage.set(saved?.image || null); replyImageError.set(''); retryKey = saved?.key || ''; retryFingerprint = saved?.fingerprint || ''; retryCursor = saved?.cursor; replyAtStart.set(saved?.replyAtStart ?? null) }
   function person(id?: string | number) { return Number(id) ? identities().find(row => String(row.id) === String(id))?.name || `User #${id}` : 'Unassigned' }
   function inboxName(id?: string | number) { const row = inboxes().find(item => String(item.id) === String(id)); return row ? row.name + (row.active ? '' : ' (inactive)') : Number(id) ? `Inbox #${id}` : 'Without team inbox' }
   function candidateDisabled(id: string | number) { const row = agents().find(item => String(item.user_id) === String(id)); return !!row && (row.availability !== 'available' || (current()?.status === 'open' && Number(row.open_count) >= Number(row.capacity) && String(current()?.assignee_id) !== String(id))) }
@@ -126,12 +158,12 @@ export function createInbox() {
     if (!search().trim()) void refresh()
     else debouncedSearch()
   }
-  function clearPrivateState() { presence.stop(!disposed); drafts.clear(); conversations.set([]); current.set(null); messages.set([]); resetAttachments(); contact.set(null); draft.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = '' }
+  function clearPrivateState() { presence.stop(!disposed); drafts.clear(); conversations.set([]); current.set(null); messages.set([]); resetAttachments(); contact.set(null); draft.set(''); replyImage.set(null); replyImageError.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = '' }
   function conversationAccessLost() {
     selection++
     const item = current()
     if (item) drafts.delete(draftId(project(), item))
-    current.set(null); contact.set(null); messages.set([]); resetAttachments(); assignments.set([]); draft.set(''); replyAtStart.set(null); seenReply.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined
+    current.set(null); contact.set(null); messages.set([]); resetAttachments(); assignments.set([]); draft.set(''); replyImage.set(null); replyImageError.set(''); replyAtStart.set(null); seenReply.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined
     threadLoading.set(false); sending.set(false); routingBusy.set(false)
     error.set('This conversation is no longer available to your account.')
   }
@@ -197,7 +229,7 @@ export function createInbox() {
       const data = await response.json()
       csrf = data.token || data.csrf_token || data.csrfToken || ''
     }
-    const response = await fetch(path, { ...options, cache: 'no-store', credentials: 'include', headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(csrf ? { 'X-CSRF-TOKEN': csrf } : {}), ...options.headers } })
+    const response = await fetch(path, { ...options, cache: 'no-store', credentials: 'include', headers: { ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), Accept: 'application/json', ...(csrf ? { 'X-CSRF-TOKEN': csrf } : {}), ...options.headers } })
     const data = await response.json().catch(() => { if (response.ok) throw new Error('The server response could not be read. Retry the same operation; your draft is unchanged.'); return {} })
     if (response.status === 401) {
       if (!disposed) sessionExpired()
@@ -258,6 +290,8 @@ export function createInbox() {
     messages.set([])
     resetAttachments()
     draft.set('')
+    replyImage.set(null)
+    replyImageError.set('')
     retryKey = ''; retryFingerprint = ''; retryCursor = undefined; seenReply.set('0'); replyAtStart.set(null); inboxFilter.set(''); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); activeProject = project()
     await refresh()
   }
@@ -379,16 +413,21 @@ export function createInbox() {
   async function send(confirmed = false) {
     const body = draft().trim()
     const item = current()
-    if (!item || !body || !contact() || threadLoading() || sending() || routingBusy()) return
-    const selectedProject = project()
-    const mode = visibility(), isPublic = mode === 'public'
-    const fingerprint = JSON.stringify({ project: selectedProject, id: item.id, body, visibility: mode })
+    if (!item || !hasReply() || !contact() || threadLoading() || sending() || routingBusy()) return
+    const selectedProject = project(), path = conversationPath(selectedProject, item.id)
+    const mode = visibility(), isPublic = mode === 'public', image = canAttachReplyImage() ? replyImage() : null
+    if (image && image.file.size + new TextEncoder().encode(body).byteLength >= 5000000) {
+      replyImageError.set('replyImageSize')
+      return
+    }
+    const fingerprint = JSON.stringify({ project: selectedProject, id: item.id, body, visibility: mode, imageKey: image?.key })
     const retrying = !!retryKey && retryFingerprint === fingerprint
     if (!retrying && !confirmed && collision()) return
     const acknowledged = Number(presence.latestReply()) > Number(seenReply()) ? presence.latestReply() : seenReply()
     sending.set(true)
     if (isPublic) presence.update(false)
     error.set('')
+    replyImageError.set('')
     try {
       if (isPublic && confirmed && !retrying && acknowledged !== seenReply()) {
         await refreshConversation()
@@ -396,12 +435,23 @@ export function createInbox() {
       }
       if (disposed || selectedProject !== project() || current()?.id !== item.id) return
       if (!retrying) { retryKey = crypto.randomUUID(); retryFingerprint = fingerprint; retryCursor = isPublic ? confirmed ? acknowledged : replyAtStart() ?? seenReply() : undefined }
-      const result = await request(conversationPath(selectedProject, item.id) + '/messages', { method: 'POST', body: JSON.stringify({ body, visibility: mode, idempotencyKey: retryKey, afterAgentReplyId: retryCursor }) })
+      if (image && !image.id) {
+        const form = new FormData()
+        form.set('file', image.file)
+        form.set('idempotencyKey', image.key)
+        const result = await request(path + '/attachments', { method: 'POST', body: form })
+        if (!result.attachment?.id) throw new Error('Image upload could not be confirmed. Retry with the same image.')
+        image.id = String(result.attachment.id)
+      }
+      if (disposed || selectedProject !== project() || current()?.id !== item.id) return
+      const result = await request(path + '/messages', { method: 'POST', body: JSON.stringify({ body, visibility: mode, idempotencyKey: retryKey, afterAgentReplyId: retryCursor, ...(image ? { attachmentIds: [image.id] } : {}) }) })
       if (!result.message?.id) throw new Error('Reply could not be confirmed. Retry without changing the draft to recover the same message.')
       if (disposed || selectedProject !== project()) return
-      notice.set(visibility() === 'internal' ? 'Internal note saved.' : 'Reply saved.')
-      draft.set(''); drafts.delete(draftId(selectedProject, item))
-      retryKey = ''; retryFingerprint = ''; retryCursor = undefined; trackReplyDraft('', visibility())
+      notice.set(!isPublic ? 'Internal note saved.' : result.delivery ? 'Reply queued.' : 'Reply saved.')
+      draft.set('')
+      if (image) replyImage.set(null)
+      retryKey = ''; retryFingerprint = ''; retryCursor = undefined; trackReplyDraft('', mode)
+      stashDraft(selectedProject)
       await selectAfterSend(item, selectedProject)
     }
     catch (failure) {
@@ -423,7 +473,6 @@ export function createInbox() {
     if (disposed || selectedProject !== project() || selected !== selection) return
     if (messageRefresh === refresh) showMessages(data)
     current.set(data.conversation)
-    notice.set(visibility() === 'internal' ? 'Internal note saved.' : 'Reply saved.')
   }
 
   async function changeStatus() {
@@ -475,5 +524,5 @@ export function createInbox() {
   }
   function setupPresence() { detailsCleanup.push(presence.listen()) }
   function destroy() { presence.stop(); disposed = true; cancelList(); selection++; clearPrivateState(); user.set(null); workspaces.set([]); projects.set([]); project.set(''); activeProject = '';  for (const cleanup of detailsCleanup.splice(0)) cleanup(); detailsScroll?.set(false); detailsOpener = null }
-  return { attachments, attachmentsNext, attachmentsLoading, attachmentsError, attachmentDownloadPath, loadOlderAttachments, searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy, setupPresence, viewerNames, composingNames, replyChanged, collision, draftActivity, visibilityActivity, reviewReply }
+  return { attachments, attachmentsNext, attachmentsLoading, attachmentsError, attachmentDownloadPath, loadOlderAttachments, canAttachReplyImage, hasReply, replyImage, replyImageError, selectReplyImage, removeReplyImage, searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy, setupPresence, viewerNames, composingNames, replyChanged, collision, draftActivity, visibilityActivity, reviewReply }
 }

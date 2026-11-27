@@ -11,6 +11,8 @@ import { generateStaticSite } from '@stacksjs/stx/ssg'
 import { launch, navigate, waitFor, closeSharedBrowsers } from '@stacksjs/testing/browser'
 import { Storage } from '@stacksjs/storage'
 import { upload } from '../../app/Support/attachments'
+import { markChannelReady, saveChannel } from '../../app/Support/channels'
+import { applyChannelInbound, retainChannelInbound } from '../../app/Support/managed-channels'
 import { one, query } from '../../app/Support/database'
 import { usage } from '../../app/Support/service'
 
@@ -25,7 +27,7 @@ await mkdir(artifacts, { recursive: true })
 for (const file of ['report.json', 'failure.json', 'failure.png', 'messenger-375.png', 'inbox-1440.png']) await rm(resolve(artifacts, file), { force: true })
 Storage.init({ default: 'local', disks: { local: { driver: 'local', root: resolve(temporary, 'private') } } })
 let host: ReturnType<typeof Bun.serve> | undefined, boundary: ReturnType<typeof Bun.serve> | undefined, browser: Awaited<ReturnType<typeof launch>> | undefined
-let cookie = '', csrf = '', lostAck = false, failHistory = false, attachNext = false
+let cookie = '', csrf = '', lostAck = false, failHistory = false, attachNext = false, lostImageAck = false
 const submissions: { path: string, payload: any, status: number, destination?: string }[] = [], assertions: string[] = [], runtimeErrors: string[] = [], requests: string[] = []
 let held: { id: string, release: ReturnType<typeof Promise.withResolvers<void>>, used: boolean } | undefined
 const check = (condition: unknown, message: string) => { assert.ok(condition, message); assertions.push(message) }
@@ -56,6 +58,14 @@ try {
   const settings = (await http(prefix + '/csat-settings', 'GET', undefined, owner)).data.settings
   assert.equal((await http(prefix + '/csat-settings', 'PATCH', { enabled: true, question: 'Original resolved request question', expectedRevision: settings.revision }, owner)).status, 200)
   const projectRow = (await one('SELECT * FROM support_projects WHERE id = ?', [project.id]))!
+  const discordSubject = 'Discord browser image reply'
+  const fixtureActor = (await http('/support/me', 'GET', undefined, owner)).data.user
+  const channel = await saveChannel(projectRow, { provider: 'discord', configuration: { botToken: 'fixture-discord-bot', channelId: '456' } }, Number(fixtureActor.id))
+  const ready = await markChannelReady(projectRow, channel.id, { externalId: '456', receipt: 'local browser provider fixture', expectedConfiguration: channel.configuration })
+  await retainChannelInbound(projectRow, ready, 'discord-browser-event', { sender: '789', remoteKey: '456:789', body: 'Original Discord request', subject: discordSubject, timestamp: Date.now() }, {})
+  await applyChannelInbound((await one('SELECT id FROM support_inbound WHERE project_id = ? AND provider = ?', [project.id, `channel:${ready.id}`]))!.id)
+  const discordThread = (await one('SELECT id FROM support_conversations WHERE project_id = ? AND subject = ?', [project.id, discordSubject]))!
+  const fixtureImage = resolve(output, 'fixture-image.png')
   const contact = (await one('SELECT * FROM support_contacts WHERE project_id = ? AND external_id = ?', [project.id, 'late']))!
   await upload(projectRow, late.id, new File(['predecessor attachment'], 'original-only.txt', { type: 'text/plain' }), 'original-file', contact)
   const agentFile = (await upload(projectRow, late.id, new File(['team-only attachment'], 'operator-only.txt', { type: 'text/plain' }), 'private-agent-file')).attachment
@@ -65,20 +75,26 @@ try {
   const ownerCookie = browserSessionCookie((await startBrowserSession(browserLogin.data.access_token ?? browserLogin.data.token))!)
   const compiled = await generateStaticSite({ pagesDir: resolve(root, 'resources/views'), outputDir: output, publicDir: resolve(root, 'public'), partialsDir: resolve(root, 'resources/partials'), componentsDir: resolve(root, 'resources/components'), router: { enabled: false }, minify: false, cache: false, sitemap: false, robots: false }); assert.equal(compiled.failedCount, 0)
   const manifest = await Bun.file(resolve(root, 'public/widgets/manifest.json')).json()
+  await Bun.write(fixtureImage, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVgAAAABJRU5ErkJggg==', 'base64'))
   const handler = async (request: Request): Promise<Response> => {
     const url = new URL(request.url)
     if (url.pathname === '/_fixture/owner') return new Response(null, { status: 303, headers: { location: '/app', 'set-cookie': ownerCookie } })
     if (url.pathname.startsWith('/api/')) {
       const headers = new Headers(request.headers); headers.delete('host')
-      const body = ['GET', 'HEAD'].includes(request.method) ? undefined : await request.clone().text()
+      const body = ['GET', 'HEAD'].includes(request.method) ? undefined : await request.arrayBuffer()
       requests.push(`${request.method} ${url.pathname}`)
       const response = await fetch(new URL(url.pathname + url.search, apiOrigin), { method: request.method, headers, ...(body === undefined ? {} : { body }) })
       const outgoing = new Headers(response.headers); outgoing.delete('content-encoding'); outgoing.delete('content-length')
       const pending = held
       if (request.method === 'GET' && pending && !pending.used && url.pathname.endsWith(`/conversations/${pending.id}`)) { pending.used = true; const saved = await response.arrayBuffer(); await pending.release.promise; return new Response(saved, { status: response.status, headers: outgoing }) }
+      if (request.method === 'POST' && response.ok && lostImageAck && url.pathname.endsWith(`/conversations/${discordThread.id}/attachments`)) {
+        lostImageAck = false
+        await response.arrayBuffer()
+        return Response.json({ message: 'Image stored; acknowledgement lost.' }, { status: 503, headers: outgoing })
+      }
       if (request.method === 'POST' && url.pathname.includes('/widget/') && url.pathname.endsWith('/messages')) {
         const result = await response.clone().json() as any
-        submissions.push({ path: url.pathname, payload: JSON.parse(body!), status: response.status, destination: result.message?.conversation_id })
+        submissions.push({ path: url.pathname, payload: JSON.parse(new TextDecoder().decode(body)), status: response.status, destination: result.message?.conversation_id })
         if (response.ok && attachNext) { attachNext = false; await upload(projectRow, result.message.conversation_id, new File(['successor attachment'], 'successor-only.txt', { type: 'text/plain' }), 'successor-file', contact) }
         if (response.ok && lostAck) { lostAck = false; await response.arrayBuffer(); return Response.json({ message: 'Native reply committed; acknowledgement lost.' }, { status: 503, headers: outgoing }) }
       }
@@ -204,6 +220,44 @@ try {
   check((await (await fetch(boundary.url.origin + `/api/widget/projects/${project.public_id}/conversations/${destination}`, { headers: { origin, authorization: `Bearer ${late.token}` } })).json() as { messages?: { body: string }[] }).messages?.some(message => message.body === 'تمت مراجعة طلبك'), 'Arabic keyboard reply is visible through the existing customer route')
   await input('#inbox-language', 'en')
   await wait(`document.querySelector('#main').dir === 'ltr' && document.querySelector('h1').textContent === 'Inbox'`, 'Inbox switches back to English')
+
+  check(await evaluate(`!document.querySelector('#reply-image')`), 'the Messenger composer retains its normal text controls')
+  const selectDiscord = () => evaluate(`Array.from(document.querySelectorAll('.conversation-row')).find(el=>el.textContent.includes(${JSON.stringify(discordSubject)})).click()`)
+  await selectDiscord()
+  await wait(`document.querySelector('#reply-image') && !document.querySelector('#reply-image').disabled`, 'Managed image picker appears in the Discord composer')
+  const { root: { nodeId } } = await cdp.send('DOM.getDocument')
+  const setImage = async () => {
+    const input = await cdp.send('DOM.querySelector', { nodeId, selector: '#reply-image' })
+    await cdp.send('DOM.setFileInputFiles', { nodeId: input.nodeId, files: [fixtureImage] })
+    await wait(`document.querySelector('.reply-composer').textContent.includes('fixture-image.png')`, 'PNG selected as a private draft')
+  }
+  await setImage()
+  check(await evaluate(`!document.querySelector('.reply-composer button[type=submit]').disabled && !document.querySelector('#reply').value`), 'an image can be sent without a text caption')
+  await click('Remove image')
+  check(await evaluate(`document.activeElement.id === 'reply-image' && document.querySelector('.reply-composer button[type=submit]').disabled`), 'removing an image returns keyboard focus and disables an empty reply')
+  await setImage()
+  await evaluate(`Array.from(document.querySelectorAll('.conversation-row')).find(el=>el.textContent.includes('Late original request') && el.textContent.includes('Resolved')).click()`)
+  await wait(`document.querySelector('#reply').value === 'Staff draft on predecessor' && !document.querySelector('#reply').disabled`, 'Switch from Discord to the isolated text draft')
+  check(await evaluate(`!document.querySelector('#reply-image') && !document.querySelector('.reply-composer').textContent.includes('fixture-image.png')`), 'the selected image stays scoped to its original conversation')
+  await selectDiscord()
+  await wait(`document.querySelector('.reply-composer').textContent.includes('fixture-image.png') && !document.querySelector('#reply').disabled`, 'Returning to Discord restores its private image draft')
+  await input('#reply-mode', 'internal'); await input('#reply', 'Private managed channel note')
+  await wait(`!document.querySelector('#reply-image')`, 'Internal note hides the public image picker')
+  await click('Add note')
+  await wait(`document.querySelector('.thread-scroll').textContent.includes('Private managed channel note') && !document.querySelector('#reply').value`, 'Internal note saved independently')
+  check(Number((await one('SELECT COUNT(*) AS count FROM support_attachments WHERE conversation_id = ?', [discordThread.id]))!.count) === 0, 'switching to an internal note never uploads or shares the pending image')
+  await input('#reply-mode', 'public')
+  await wait(`document.querySelector('.reply-composer').textContent.includes('fixture-image.png')`, 'Public image draft survives sending a note')
+  lostImageAck = true
+  await click('Send reply')
+  await wait(`document.querySelector('.inbox-error')?.textContent.includes('Image stored; acknowledgement lost.')`, 'Native upload acknowledgement dropped')
+  check(await evaluate(`document.querySelector('.reply-composer').textContent.includes('fixture-image.png')`), 'an uncertain upload preserves the selected image and retry key')
+  await click('Send reply')
+  await wait(`document.querySelector('.thread-notice')?.textContent.includes('Reply queued.') && !document.querySelector('.reply-composer').textContent.includes('fixture-image.png') && document.querySelector('.thread-scroll').textContent.includes('Attachment')`, 'The exact browser retry queues one image reply')
+  const imageRows = await query('SELECT id, visibility, status FROM support_attachments WHERE conversation_id = ?', [discordThread.id])
+  const deliveries = await query('SELECT payload, status FROM support_channel_deliveries WHERE project_id = ? AND channel_id = ?', [project.id, ready.id])
+  const payload = JSON.parse(String(deliveries[0]?.payload))
+  check(imageRows.length === 1 && imageRows[0]?.visibility === 'private' && imageRows[0]?.status === 'stored' && deliveries.length === 1 && deliveries[0]?.status === 'pending' && payload.attachmentIds[0] === String(imageRows[0]!.id) && payload.body === '', 'native upload replay keeps one private file and one exact file-only delivery')
 
   await input('#project', other.public_id); await wait(`document.querySelector('.welcome-pane') && !document.querySelector('#reply')`, 'Other workspace selected')
   check(await evaluate(`!document.querySelector('.thread-scroll') && !document.body.textContent.includes('Late continuation from browser') && !document.body.textContent.includes('Staff draft on successor')`), 'changing workspace clears displayed private thread, linked controls and draft')

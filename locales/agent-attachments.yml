@@ -1,16 +1,31 @@
 en:
+  attachmentMessage: "Attachment"
+  attachReplyImage: "Attach image"
+  removeReplyImage: "Remove image"
+  replyImageType: "Choose a JPEG or PNG image."
+  replyImageSize: "The image and reply together must be under 5 MB."
   conversationAttachments: "Attachments"
   loadOlderAttachments: "Load older attachments"
   attachmentsLoading: "Loading attachments…"
   attachmentsFailed: "Could not load older attachments."
 
 de:
+  attachmentMessage: "Anhang"
+  attachReplyImage: "Bild anhängen"
+  removeReplyImage: "Bild entfernen"
+  replyImageType: "Wähle ein JPEG- oder PNG-Bild."
+  replyImageSize: "Bild und Antwort müssen zusammen kleiner als 5 MB sein."
   conversationAttachments: "Anhänge"
   loadOlderAttachments: "Ältere Anhänge laden"
   attachmentsLoading: "Anhänge werden geladen…"
   attachmentsFailed: "Ältere Anhänge konnten nicht geladen werden."
 
 ar:
+  attachmentMessage: "مرفق"
+  attachReplyImage: "إرفاق صورة"
+  removeReplyImage: "إزالة الصورة"
+  replyImageType: "اختر صورة بتنسيق JPEG أو PNG."
+  replyImageSize: "يجب أن يقل حجم الصورة والرد معًا عن 5 ميغابايت."
   conversationAttachments: "المرفقات"
   loadOlderAttachments: "تحميل المرفقات الأقدم"
   attachmentsLoading: "جارٍ تحميل المرفقات…"
