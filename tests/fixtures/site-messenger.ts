@@ -18,6 +18,8 @@ await route.importRoutes()
 const api = await route.serve({ port: 0, hostname: '127.0.0.1' })
 const dist = resolve(import.meta.dir, '../../dist')
 let sessions = 0
+let newRequests = 0
+const releaseSend = Promise.withResolvers<void>()
 let agentCookie = ''
 const traffic: string[] = []
 const host = Bun.serve({
@@ -28,6 +30,10 @@ const host = Bun.serve({
     if (url.pathname === '/_fixture/agent') return new Response(null, { status: 303, headers: { location: '/app', 'set-cookie': agentCookie } })
     if (url.pathname.startsWith('/api/')) {
       if (request.method === 'POST' && url.pathname.endsWith('/session')) sessions++
+      if (request.method === 'POST' && /^\/api\/widget\/projects\/[^/]+\/conversations$/.test(url.pathname)) {
+        newRequests++
+        await releaseSend.promise
+      }
       const headers = new Headers(request.headers)
       headers.delete('host')
       const response = await fetch(new URL(url.pathname + url.search, api.url), {
@@ -127,13 +133,39 @@ try {
   await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] })
   assert.equal(await cdp.evaluate(`getComputedStyle(${widget}.parentNode).transitionDuration`), '0s')
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: false })
-  await cdp.evaluate(`(() => {
-    const input = ${shadow}.querySelector('#support-body')
-    input.value = 'A real homepage support request'
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    input.form.requestSubmit()
-  })()`)
+  const press = async (key: string, code: number) => {
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: code, ...(key === 'Enter' ? { text: '\r' } : {}) })
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: code })
+  }
+  const composer = `${shadow}.querySelector('#support-body')`
+  const sendButton = `${shadow}.querySelector('.send-row button')`
+  const sendFocused = `${shadow}.activeElement === ${sendButton}`
+  await press('Tab', 9)
+  assert.equal(await cdp.evaluate(`${shadow}.activeElement?.id`), 'support-body')
+  await cdp.send('Input.insertText', { text: 'A real homepage support request' })
+  assert.equal(await cdp.evaluate(`${composer}.value`), 'A real homepage support request')
+  await press('Tab', 9)
+  assert.equal(await cdp.evaluate(sendFocused), true)
+  try {
+    await press('Enter', 13)
+    await waitFor(() => newRequests > 0, 5000, { label: 'Keyboard sends the support request' })
+    assert.equal(await cdp.evaluate(sendFocused), true, 'Send retains focus while waiting for the response')
+    assert.equal(await cdp.evaluate(`${sendButton}.getAttribute('aria-disabled')`), 'true')
+    assert.equal(await cdp.evaluate(`${composer}.readOnly`), true)
+    assert.equal(await cdp.evaluate(`${sendButton}.getAttribute('aria-disabled')`), 'true')
+    assert.equal(await cdp.evaluate(`${composer}.readOnly`), true)
+    assert.equal(await cdp.evaluate(`${shadow}.querySelector('.send-row [role=status]').textContent.trim()`), 'Sending…')
+    await press('Enter', 13)
+  }
+  finally {
+    releaseSend.resolve()
+  }
   await wait(`${shadow}?.querySelector('.messages')?.textContent.includes('A real homepage support request')`, 'saved customer message')
+  await wait(`!${widget}.pending`, 'Support send completes')
+  assert.equal(newRequests, 1, 'Repeated keyboard activation sends exactly one request')
+  assert.equal(await cdp.evaluate(sendFocused), true, 'Send retains focus after the response')
+  assert.equal(await cdp.evaluate(`${sendButton}.getAttribute('aria-disabled')`), 'false')
+  assert.equal(await cdp.evaluate(`${composer}.readOnly`), false)
 
   const inbox = await request(prefix + '/inbox', 'GET', 200, undefined, owner)
   assert.equal(inbox.conversations.length, 1)
@@ -191,15 +223,14 @@ try {
   await agent.evaluate(`document.querySelector('#reply').form.requestSubmit()`)
   await wait(typingHidden, 'Sending clears the typing indicator')
   await wait(`${shadow}?.querySelector('.messages')?.textContent.includes('Reply from the team inbox')`, 'agent reply arrives in browser')
-  await wait(`${shadow}?.activeElement?.id === 'support-close'`, 'incoming replies preserve keyboard focus')
+  await wait(sendFocused, 'incoming replies preserve keyboard focus')
   const artifacts = resolve(import.meta.dir, '../../storage/framework/runtime/site-messenger-browser')
   await mkdir(artifacts, { recursive: true })
   const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' })
   await Bun.write(resolve(artifacts, 'homepage-chat-375.png'), Buffer.from(screenshot.data, 'base64'))
   await typeReply('Another unsent draft')
   await wait(typingShown, 'Typing indicator is visible before closing Messenger')
-  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
-  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await press('Escape', 27)
   await wait("document.activeElement?.id === 'site-chat'", 'closing restores focus to the homepage')
   assert.equal(await cdp.evaluate("document.querySelector('#site-chat').getAttribute('aria-expanded')"), 'false')
   await Bun.sleep(2250)
