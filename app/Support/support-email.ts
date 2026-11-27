@@ -41,7 +41,7 @@ export async function emailAws(options: AWSRequestOptions, dependencies: EmailDe
 }
 export async function emailPrivateBucket(bucket: string, region: string, dependencies: EmailDependencies = {}): Promise<void> {
   const privacy = await emailAws({ service: 's3', region, bucket, method: 'GET', path: '/', queryParams: { publicAccessBlock: '' }, retries: 0, timeoutMs: 15000 }, dependencies)
-  const block = object(privacy.PublicAccessBlockConfiguration)
+  const block = object(privacy.PublicAccessBlockConfiguration ?? privacy)
   if (!['BlockPublicAcls', 'IgnorePublicAcls', 'BlockPublicPolicy', 'RestrictPublicBuckets'].every(key => block[key] === true || block[key] === 'true')) fail(403, 'email_storage_not_private', 'Email bucket must enforce all S3 public-access blocks.')
 }
 function replyTag(channel: Row, thread: Row, expiry: string): string {
