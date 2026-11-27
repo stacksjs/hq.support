@@ -6,6 +6,7 @@ import { useDebounce } from '@stacksjs/stx/composables/use-timer'
 import type { AgentIdentity, Assignment, RoutingAgent, SupportTeamMember, SupportTeam, TeamInbox } from './team-routing'
 import { routingReasonLabel } from './team-routing'
 import { createInboxPresence } from './inbox-presence'
+import { createSavedReplyList } from './saved-replies'
 
 interface Project { id: string | number, public_id: string, name: string, workspace_id: string | number }
 interface Conversation { id: string | number, subject: string, status: string, channel?: string, customer_id?: string | number, updated_at?: string, unread_count?: number, assignee_id?: string | number, team_id?: string | number, inbox_id?: string | number, routing_reason?: string, resolved_at?: number, continued_from_id?: string | null, continuation_id?: string | null }
@@ -68,6 +69,9 @@ export function createInbox() {
   const filter = state('open')
   const draft = state('')
   const visibility = state('public')
+  const savedRepliesOpen = state(false)
+  const savedReplyTooLong = state(false)
+  const savedReplies = createSavedReplyList(project, () => savedRepliesOpen() && !disposed && !!current(), request)
   const replyImage = state<ReplyImage | null>(null)
   const replyImageError = state('')
   const canAttachReplyImage = derived(() => visibility() === 'public' && ['sms', 'whatsapp', 'discord'].includes(current()?.channel || ''))
@@ -144,6 +148,52 @@ export function createInbox() {
     presence.update(editing && mode === 'public' && !!value.trim())
   }
   function draftActivity(event: Event) { trackReplyDraft((event.target as HTMLTextAreaElement).value, visibility(), true) }
+  function closeSavedReplies() {
+    savedRepliesOpen.set(false)
+    savedReplyTooLong.set(false)
+    savedReplies.reset()
+  }
+  async function toggleSavedReplies() {
+    if (savedRepliesOpen()) { closeSavedReplies(); return }
+    if (!current() || threadLoading() || sending() || routingBusy()) return
+    const selected = selection
+    savedRepliesOpen.set(true)
+    void savedReplies.load()
+    await nextTick()
+    if (!disposed && selected === selection && savedRepliesOpen()) document.getElementById('saved-reply-search')?.focus()
+  }
+  async function dismissSavedReplies() {
+    const selected = selection
+    closeSavedReplies()
+    await nextTick()
+    if (!disposed && selected === selection) document.getElementById('saved-reply-toggle')?.focus()
+  }
+  function savedReplyPickerKey(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      void dismissSavedReplies()
+    }
+  }
+  function savedReplySearchKey(event: KeyboardEvent) {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      void savedReplies.load()
+    }
+  }
+  async function insertSavedReply(id: string) {
+    if (!savedRepliesOpen() || !current() || threadLoading() || sending() || routingBusy()) return
+    const reply = savedReplies.items().find(item => item.id === id)
+    if (!reply) return
+    const value = draft() ? `${draft()}\n\n${reply.body}` : reply.body
+    if (value.length > 10000) { savedReplyTooLong.set(true); return }
+    const selected = selection
+    draft.set(value)
+    trackReplyDraft(value, visibility(), true)
+    closeSavedReplies()
+    await nextTick()
+    if (!disposed && selected === selection) document.getElementById('reply')?.focus()
+  }
   function visibilityActivity(event: Event) {
     const mode = (event.target as HTMLSelectElement).value
     replyImageError.set('')
@@ -197,8 +247,9 @@ export function createInbox() {
     if (!search().trim()) void refresh()
     else debouncedSearch()
   }
-  function clearPrivateState() { presence.stop(!disposed); drafts.clear(); conversations.set([]); current.set(null); clearRetentionEvidence(); resetTranscript(); resetAttachments(); contact.set(null); draft.set(''); replyImage.set(null); replyImageError.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = '' }
+  function clearPrivateState() { presence.stop(!disposed); closeSavedReplies(); drafts.clear(); conversations.set([]); current.set(null); clearRetentionEvidence(); resetTranscript(); resetAttachments(); contact.set(null); draft.set(''); replyImage.set(null); replyImageError.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = '' }
   function conversationAccessLost() {
+    closeSavedReplies()
     selection++
     clearRetentionEvidence()
     const item = current()
@@ -368,6 +419,7 @@ export function createInbox() {
     presence.stop()
     cancelList(); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); conversations.set([]); threadLoading.set(false)
     selection++
+    closeSavedReplies()
     clearRetentionEvidence()
     current.set(null)
     contact.set(null)
@@ -521,6 +573,7 @@ export function createInbox() {
   async function select(item: Conversation, loaded?: ThreadDetail) {
     if (sending() || routingBusy()) return
     stashDraft()
+    closeSavedReplies()
     presence.stop()
     const version = ++selection
     const selectedProject = project()
@@ -739,5 +792,5 @@ export function createInbox() {
   }
   function setupPresence() { detailsCleanup.push(presence.listen()) }
   function destroy() { presence.stop(); disposed = true; cancelList(); selection++; clearPrivateState(); user.set(null); workspaces.set([]); projects.set([]); project.set(''); activeProject = '';  for (const cleanup of detailsCleanup.splice(0)) cleanup(); detailsScroll?.set(false); detailsOpener = null }
-  return { retentionEvidence, retentionLoading, retentionError, loadRetentionEvidence, messagesNext, messagesLoading, messagesError, newerMessagesAvailable, pendingAgentReply, replyTimelineBlocked, loadOlderMessages, attachments, attachmentsNext, attachmentsLoading, attachmentsError, attachmentDownloadPath, loadOlderAttachments, canAttachReplyImage, hasReply, replyImage, replyImageError, selectReplyImage, removeReplyImage, searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy, setupPresence, viewerNames, composingNames, customerTyping: presence.customerTyping, replyChanged, collision, draftActivity, visibilityActivity, reviewReply }
+  return { savedReplies, savedRepliesOpen, savedReplyTooLong, toggleSavedReplies, savedReplyPickerKey, savedReplySearchKey, insertSavedReply, retentionEvidence, retentionLoading, retentionError, loadRetentionEvidence, messagesNext, messagesLoading, messagesError, newerMessagesAvailable, pendingAgentReply, replyTimelineBlocked, loadOlderMessages, attachments, attachmentsNext, attachmentsLoading, attachmentsError, attachmentDownloadPath, loadOlderAttachments, canAttachReplyImage, hasReply, replyImage, replyImageError, selectReplyImage, removeReplyImage, searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy, setupPresence, viewerNames, composingNames, customerTyping: presence.customerTyping, replyChanged, collision, draftActivity, visibilityActivity, reviewReply }
 }

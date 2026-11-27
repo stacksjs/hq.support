@@ -14,7 +14,9 @@ import { confirmationCode } from '@stacksjs/hq/service'
 import { requireWidgetOrigin } from './widget-origin'
 import { projectReports } from './reports'
 
-export type Operation = 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'agent.presence' | 'agent.typing' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.session.revoke' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.typing' | 'widget.presence' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.create' | 'widget.tickets.detail' | 'widget.ticket-types' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
+type SavedReplyOperation = 'saved-replies.list' | 'saved-replies.create' | 'saved-replies.update' | 'saved-replies.archive'
+
+export type Operation = SavedReplyOperation | 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'agent.presence' | 'agent.typing' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.session.revoke' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.typing' | 'widget.presence' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.create' | 'widget.tickets.detail' | 'widget.ticket-types' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
 
 const response = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } })
 function bearer(request: RequestInstance): string { return /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') || '')?.[1] ?? '' }
@@ -160,6 +162,13 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
     }
     else if (operation === 'articles.create') { body = { article: await createArticle(project, data, account!.id) }; status = 201 }
     else if (operation === 'articles.update') body = { article: await updateArticle(project, params.id, data, account!.id) }
+    else if (operation === 'saved-replies.list') body = await (await import('./saved-replies')).listSavedReplies(project, account!.id, new URL(request.url).searchParams)
+    else if (operation === 'saved-replies.create') {
+      body = await (await import('./saved-replies')).changeSavedReply(project, account!.id, { type: 'create', input: data })
+      status = 201
+    }
+    else if (operation === 'saved-replies.update') body = await (await import('./saved-replies')).changeSavedReply(project, account!.id, { type: 'update', id: params.id, input: data })
+    else if (operation === 'saved-replies.archive') body = await (await import('./saved-replies')).changeSavedReply(project, account!.id, { type: 'archive', id: params.id })
     else if (operation === 'billing') {
       const owner = await support.workspace(Number(project.workspace_id))
       body = { workspace: { id: owner.id, plan: owner.plan, trialEndsAt: Number(owner.trial_ends_at), overagesEnabled: Boolean(owner.overages_enabled), spendingCapCents: Number(owner.spending_cap_cents), walletCents: Number(owner.wallet_cents) }, limits: limitsFor(owner.plan as Plan), plans, policy: billingPolicy, checkoutAvailable: false, usage: { conversations: await support.usage(Number(owner.id), 'conversations'), ai: await support.usage(Number(owner.id), 'ai'), storageBytes: Number(owner.storage_bytes) } }

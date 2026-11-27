@@ -36,6 +36,8 @@ declare global {
   const messengerDate: typeof autoImports.messengerDate
   const createPhone: typeof autoImports.createPhone
   const createReports: typeof autoImports.createReports
+  const createSavedReplyList: typeof autoImports.createSavedReplyList
+  const createSavedReplyEditor: typeof autoImports.createSavedReplyEditor
   const createSupportSettings: typeof autoImports.createSupportSettings
   const connectSiteMessenger: typeof autoImports.connectSiteMessenger
   const routingReasonLabel: typeof autoImports.routingReasonLabel

@@ -8,6 +8,10 @@ const settings = createSupportSettings()
 const project = settings.project
 const origins = settings.origins
 const anonymous = settings.anonymous
+const savedReplyEditor = settings.savedReplyEditor
+const savedReplyName = savedReplyEditor.name
+const savedReplyBody = savedReplyEditor.body
+const savedReplySearch = savedReplyEditor.list.search
 onMount(() => settings.load())
 onDestroy(() => settings.destroy())
 async function signOut() {
@@ -17,7 +21,43 @@ async function signOut() {
 </script>
 @extends('default')
 @section('content')
-<div class="mx-auto px-6 max-w-7xl settings-layout"><header class="page-heading"><a class="text-xs muted" href="/app">Inbox / Settings</a><h1 class="mt-6">Make it your own.</h1><p>Connect your app, choose which origins can load the messenger, and keep your server credentials private.</p></header><div class="grid gap-12 grid-cols-1 lg:grid-cols-2 settings-grid"><section><h2 class="text-2xl">Customer messenger</h2><p class="settings-help">Workspace owners and admins can change project settings. Use one exact HTTPS origin per line. Localhost is allowed for development.</p><p :if="settings.error()" role="alert" class="auth-error">{{ settings.error() }}</p><p :if="settings.signingOut()" role="status" class="availability">Credentials are cleared from this page. If sign out fails, try Sign out again or reload before managing keys.</p><p :if="settings.notice()" role="status" class="availability">{{ settings.notice() }}</p><form class="settings-form" @submit.prevent="settings.save()"><label for="settings-project">Project</label><select id="settings-project" x-model="project" @change="settings.select()" :disabled="settings.pending()"><option value="">Select a project</option><option :for="item in settings.projects()" :value="item.public_id">{{ item.name }}</option></select><label for="public-id">Public project ID</label><input id="public-id" :value="project()" readonly aria-describedby="public-id-help"><p id="public-id-help" class="settings-help">This ID is safe to include in your browser bundle.</p><label for="origins">Allowed origins</label><textarea id="origins" x-model="origins" rows="4" placeholder="https://your-app.com" :disabled="settings.pending()"></textarea><label class="settings-checkbox"><input type="checkbox" x-model="anonymous" :disabled="settings.pending()">Allow anonymous customer sessions</label><p class="settings-help">When disabled, your server must issue a trusted customer session before the messenger can connect.</p><button class="button button-teal" type="submit" :disabled="settings.pending() || !project()">Save messenger settings</button></form><section :if="settings.canAdmin()" class="mt-10 pt-7 border-[#dce5dd] border-t" aria-labelledby="migration-heading">
+<div class="mx-auto px-6 max-w-7xl settings-layout"><header class="page-heading"><a class="text-xs muted" href="/app">Inbox / Settings</a><h1 class="mt-6">Make it your own.</h1><p>Connect your app, choose which origins can load the messenger, and keep your server credentials private.</p></header><div class="grid gap-12 grid-cols-1 lg:grid-cols-2 settings-grid"><section><h2 class="text-2xl">Customer messenger</h2><p class="settings-help">Workspace owners and admins can change project settings. Use one exact HTTPS origin per line. Localhost is allowed for development.</p><p :if="settings.error()" role="alert" class="auth-error">{{ settings.error() }}</p><p :if="settings.signingOut()" role="status" class="availability">Credentials are cleared from this page. If sign out fails, try Sign out again or reload before managing keys.</p><p :if="settings.notice()" role="status" class="availability">{{ settings.notice() }}</p><form class="settings-form" @submit.prevent="settings.save()"><label for="settings-project">Project</label><select id="settings-project" x-model="project" @change="settings.select()" :disabled="settings.pending()"><option value="">Select a project</option><option :for="item in settings.projects()" :value="item.public_id">{{ item.name }}</option></select><label for="public-id">Public project ID</label><input id="public-id" :value="project()" readonly aria-describedby="public-id-help"><p id="public-id-help" class="settings-help">This ID is safe to include in your browser bundle.</p><label for="origins">Allowed origins</label><textarea id="origins" x-model="origins" rows="4" placeholder="https://your-app.com" :disabled="settings.pending()"></textarea><label class="settings-checkbox"><input type="checkbox" x-model="anonymous" :disabled="settings.pending()">Allow anonymous customer sessions</label><p class="settings-help">When disabled, your server must issue a trusted customer session before the messenger can connect.</p><button class="button button-teal" type="submit" :disabled="settings.pending() || !project()">Save messenger settings</button></form>
+<section id="saved-replies-settings" :if="settings.canAdmin()" class="mt-10 pt-7 border-[#dce5dd] border-t" aria-labelledby="saved-replies-heading">
+  <h2 id="saved-replies-heading" class="text-2xl">Saved replies</h2>
+  <p class="settings-help">Share reusable reply text with agents on this project.</p>
+  <form class="settings-form" @submit.prevent="savedReplyEditor.list.load()">
+    <label for="settings-saved-reply-search">Find a saved reply</label>
+    <input id="settings-saved-reply-search" type="search" dir="auto" maxlength="120" x-model="savedReplySearch">
+    <button type="submit" class="button button-outline">Search</button>
+  </form>
+  <p :if="savedReplyEditor.list.error()" class="auth-error" role="alert">{{ savedReplyEditor.list.error() }}</p>
+  <p class="settings-help" role="status">{{ savedReplyEditor.list.loading() ? 'Loading saved replies…' : savedReplyEditor.list.items().length || savedReplyEditor.list.error() ? '' : 'No saved replies found.' }}</p>
+  <ul class="overflow-y-auto max-h-72">
+    <li :for="reply in savedReplyEditor.list.items()" :key="reply.id" class="py-3 border-[#dce5dd] border-b">
+      <p class="font-medium" dir="auto">{{ reply.name }}</p>
+      <p class="line-clamp-2 settings-help" dir="auto">{{ reply.body }}</p>
+      <div class="flex flex-wrap gap-3">
+        <button type="button" class="text-button" :aria-label="'Edit ' + reply.name" :disabled="savedReplyEditor.busy()" @click="savedReplyEditor.edit(reply.id)">Edit</button>
+        <button type="button" class="text-button" :aria-label="'Archive ' + reply.name" :disabled="savedReplyEditor.busy()" @click="savedReplyEditor.submit(reply.id)">Archive</button>
+      </div>
+    </li>
+  </ul>
+  <button :if="savedReplyEditor.list.cursor()" type="button" class="mt-3 text-button" :disabled="savedReplyEditor.list.loading()" @click="savedReplyEditor.list.load(true)">Load more saved replies</button>
+  <form class="settings-form" @submit.prevent="savedReplyEditor.submit()">
+    <h3 class="font-medium text-lg">{{ savedReplyEditor.editing() ? 'Edit saved reply' : 'Create saved reply' }}</h3>
+    <label for="settings-saved-reply-name">Name</label>
+    <input id="settings-saved-reply-name" type="text" dir="auto" maxlength="120" required x-model="savedReplyName" :disabled="savedReplyEditor.busy()">
+    <label for="settings-saved-reply-body">Reply text</label>
+    <textarea id="settings-saved-reply-body" dir="auto" rows="4" maxlength="10000" required x-model="savedReplyBody" :disabled="savedReplyEditor.busy()"></textarea>
+    <div class="flex flex-wrap gap-3">
+      <button type="submit" class="button button-teal" :disabled="savedReplyEditor.busy()">Save reply</button>
+      <button :if="savedReplyEditor.editing()" type="button" class="button button-outline" :disabled="savedReplyEditor.busy()" @click="savedReplyEditor.clearDraft()">Cancel edit</button>
+    </div>
+    <p :if="savedReplyEditor.error()" class="auth-error" role="alert">{{ savedReplyEditor.error() }}</p>
+    <p class="settings-help" role="status">{{ savedReplyEditor.notice() }}</p>
+  </form>
+</section>
+<section :if="settings.canAdmin()" class="mt-10 pt-7 border-[#dce5dd] border-t" aria-labelledby="migration-heading">
   <h2 id="migration-heading" class="text-2xl">Preview an Intercom migration</h2>
   <p id="migration-help" class="settings-help">Choose a JSON bundle up to 10 MB for the selected project. A preview checks the source records without importing them.</p>
   <form class="settings-form" @submit.prevent="settings.previewMigration()">

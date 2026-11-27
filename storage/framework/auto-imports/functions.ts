@@ -20,6 +20,7 @@ export { messengerLocale, messengerText, messengerDirection, messengerDate } fro
 export type { MessengerLocale } from '../../../resources/functions/support/messenger-locale'
 export { createPhone } from '../../../resources/functions/support/phone'
 export { createReports } from '../../../resources/functions/support/reports'
+export { createSavedReplyList, createSavedReplyEditor } from '../../../resources/functions/support/saved-replies'
 export { createSupportSettings } from '../../../resources/functions/support/settings'
 export { connectSiteMessenger } from '../../../resources/functions/support/site-messenger'
 export { routingReasonLabel } from '../../../resources/functions/support/team-routing'

@@ -166,6 +166,7 @@
     "RunSupportImport": true,
     "RunSupportWorkflows": true,
     "RunTicketSla": true,
+    "SavedReply": true,
     "SendCampaignJob": true,
     "SendEmailJob": true,
     "SendPasswordResetEmailJob": true,

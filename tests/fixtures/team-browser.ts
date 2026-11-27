@@ -28,6 +28,7 @@ let retentionGate: { path: string, entered: ReturnType<typeof Promise.withResolv
 let incompleteRetentionPath: string | undefined
 let inconsistentMigrationTotals = false
 let migrationGate: { entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>> } | undefined
+let savedReplyGate: { entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>> } | undefined
 const presenceTiming: Record<string, number> = {}
 const assertions: string[] = [], runtimeErrors: string[] = []
 const searchTraffic: Array<{ q: string | null, inboxId: string | null, status: string | null, cursor: string | null, path: string }> = []
@@ -97,6 +98,11 @@ try {
       if (heldMigration && request.method === 'POST' && url.pathname.endsWith('/imports/intercom')) {
         heldMigration.entered.resolve()
         await heldMigration.release.promise
+      }
+      const heldSavedReplies = savedReplyGate
+      if (heldSavedReplies && request.method === 'GET' && url.pathname.endsWith('/saved-replies')) {
+        heldSavedReplies.entered.resolve()
+        await heldSavedReplies.release.promise
       }
       const heldRetention = retentionGate
       if (heldRetention && request.method === 'GET' && url.pathname === heldRetention.path) {
@@ -515,6 +521,112 @@ try {
   await waitFor(() => evaluate(`location.pathname === '/login' && !document.querySelector('#migration-result')`), 15000, { label: 'Signed-out settings clear the preview' })
   check(true, 'sign-out clears the migration file and visible preview')
 
+  await openMigrationSettings('owner')
+  await input('#settings-project', String(project.public_id))
+  await input('#settings-saved-reply-name', 'Refund outline')
+  await input('#settings-saved-reply-body', 'Your refund has started.')
+  await click('Save reply')
+  await text('Saved reply saved.')
+  await waitFor(() => evaluate(`!!document.querySelector('[aria-label="Edit Refund outline"]')`), 5000, { label: 'Created saved reply is listed' })
+  await evaluate(`document.querySelector('[aria-label="Edit Refund outline"]').click()`)
+  await input('#settings-saved-reply-body', 'Your refund will post within five business days.')
+  await click('Save reply')
+  await text('Your refund will post within five business days.')
+  await input('#settings-project', String(secondProject.public_id))
+  await text('No saved replies found.')
+  check(await evaluate(`!document.querySelector('[aria-label="Edit Refund outline"]') && document.querySelector('#settings-saved-reply-body').value === ''`), 'project settings never retain another project’s reply or editor draft')
+
+  const customerIdentity = { externalId: 'saved-reply-customer' }
+  const createCasePath = `/v1/projects/${project.public_id}/conversations`
+  const savedCase = await http(createCasePath, 'POST', { ...customerIdentity, subject: 'Question about a refund', body: 'When will it post?', idempotencyKey: 'saved-reply-browser-case' }, keys.ingestKey)
+  const otherCase = await http(createCasePath, 'POST', { ...customerIdentity, subject: 'Another saved reply case', body: 'Another question', idempotencyKey: 'saved-reply-browser-other' }, keys.ingestKey)
+  assert.equal(savedCase.status, 201)
+  assert.equal(otherCase.status, 201)
+  await openMigrationSettings('agent')
+  check(await evaluate(`!document.querySelector('#saved-replies-settings')`), 'ordinary agents use saved replies without seeing project management')
+  await navigate(cdp, origin + '/app', { quietMs: 100, timeoutMs: 20000 })
+  await selectConversation('Question about a refund')
+  await input('#reply', 'I checked your order.')
+  async function pressEnter() {
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' })
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+  }
+  await evaluate(`document.querySelector('#saved-reply-toggle').focus()`)
+  await pressEnter()
+  await waitFor(() => evaluate(`document.activeElement?.id === 'saved-reply-search'`), 5000, { label: 'Keyboard opens and focuses the saved reply search' })
+  await input('#saved-reply-search', 'Refund')
+  await pressEnter()
+  await text('Refund outline')
+  check(Number((await one("SELECT COUNT(*) AS total FROM support_messages WHERE conversation_id = ? AND author_type = 'agent'", [savedCase.data.conversation.id]))?.total) === 0, 'Enter in the saved reply search never submits the composer')
+  await evaluate(`document.querySelector('#saved-reply-picker li button').focus()`)
+  await pressEnter()
+  await waitFor(() => evaluate(`document.activeElement?.id === 'reply'`), 5000, { label: 'Focus returns to the edited draft' })
+  check(await evaluate(`document.querySelector('#reply').value === 'I checked your order.\\n\\nYour refund will post within five business days.'`), 'keyboard insertion preserves the existing draft and appends the selected text')
+  check(Number((await one("SELECT COUNT(*) AS total FROM support_messages WHERE conversation_id = ? AND author_type = 'agent'", [savedCase.data.conversation.id]))?.total) === 0, 'inserting a reply changes the draft without sending it')
+  const editedReply = 'I checked your order. Your refund should post by Friday.'
+  await input('#reply', editedReply)
+  await click('Send reply')
+  await text(editedReply)
+  assert.equal((await http(prefix, 'PATCH', { allowedOrigins: [origin] }, owner.token)).status, 200)
+  const customer = (await http(`/v1/projects/${project.public_id}/sessions`, 'POST', customerIdentity, keys.ingestKey)).data.token
+  const visible = await fetch(apiOrigin + `/api/widget/projects/${project.public_id}/conversations/${savedCase.data.conversation.id}`, { headers: { origin, authorization: `Bearer ${customer}` } })
+  const visibleDetail = await visible.json() as { messages?: Array<{ body: string }> }
+  check(visible.status === 200 && visibleDetail.messages?.some(message => message.body === editedReply), 'the customer sees the edited reply through the public transcript')
+
+  await selectConversation('Another saved reply case')
+  await input('#reply', 'Draft for the other case.')
+  await selectConversation('Question about a refund')
+  const delayedSavedReplies = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() }
+  const nextSavedReplies = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() }
+  await evaluate(`(() => {
+    const original = window.fetch
+    window.fixtureSavedReplyFetch = original
+    window.fixtureOldSavedReplyRead = false
+    let holdFirst = true
+    window.fetch = (url, options) => {
+      if (!holdFirst || !String(url).includes('/saved-replies?')) return original.call(window, url, options)
+      holdFirst = false
+      // Deliver the old body even after the picker aborts its request.
+      return original.call(window, url, { ...options, signal: undefined }).then(response => {
+        const json = response.json.bind(response)
+        response.json = async () => {
+          const result = await json()
+          setTimeout(() => { window.fixtureOldSavedReplyRead = true }, 0)
+          return result
+        }
+        return response
+      })
+    }
+  })()`)
+  savedReplyGate = delayedSavedReplies
+  try {
+    await click('Saved replies')
+    await Promise.race([delayedSavedReplies.entered.promise, Bun.sleep(10_000).then(() => { throw new Error('Saved replies did not reach the native endpoint') })])
+    await selectConversation('Another saved reply case')
+    await waitFor(() => evaluate(`!document.querySelector('#saved-reply-picker')`), 5000, { label: 'Switching conversations closes the saved reply picker' })
+    savedReplyGate = nextSavedReplies
+    await click('Saved replies')
+    await Promise.race([nextSavedReplies.entered.promise, Bun.sleep(10_000).then(() => { throw new Error('The second saved reply search did not reach the native endpoint') })])
+    delayedSavedReplies.release.resolve()
+    await waitFor(() => evaluate(`window.fixtureOldSavedReplyRead === true`), 5000, { label: 'The old saved reply response reached the browser' })
+    check(await evaluate(`document.querySelector('#saved-reply-picker li button') === null && document.querySelector('#reply').value === 'Draft for the other case.'`), 'a late saved reply list cannot populate the next conversation picker or alter its draft')
+  }
+  finally {
+    savedReplyGate = undefined
+    delayedSavedReplies.release.resolve()
+    nextSavedReplies.release.resolve()
+    await evaluate(`window.fetch = window.fixtureSavedReplyFetch; delete window.fixtureSavedReplyFetch; delete window.fixtureOldSavedReplyRead`)
+  }
+  await text('Refund outline')
+
+  await openMigrationSettings('owner')
+  await input('#settings-project', String(project.public_id))
+  await waitFor(() => evaluate(`!!document.querySelector('[aria-label="Archive Refund outline"]')`), 5000, { label: 'Saved reply archive control' })
+  await evaluate(`document.querySelector('[aria-label="Archive Refund outline"]').click()`)
+  await text('Saved reply archived.')
+  await text('No saved replies found.')
+  check(await evaluate(`!document.querySelector('[aria-label="Archive Refund outline"]')`), 'archived replies disappear from the active settings list')
+
   console.info(`PASS team UI functional (${assertions.length} checks)`)
   await Bun.write(resolve(artifacts, 'report.json'), JSON.stringify({ passed: runtimeErrors.length === 0, functionalPassed: true, assertions, runtimeErrors, presenceTiming, cacheDriver: config.cache.driver, browser: (await cdp.send('Browser.getVersion')).product }, null, 2))
   assert.deepEqual(runtimeErrors, [], 'No browser runtime errors: retain this gate until the native compiler fix is published')
@@ -527,6 +639,6 @@ finally {
     await Bun.write(resolve(artifacts, 'diagnostic.json'), JSON.stringify({ assertions, runtimeErrors, body: captured[0].status === 'fulfilled' ? captured[0].value : 'Browser closed' }, null, 2))
     if (captured[1].status === 'fulfilled') await Bun.write(resolve(artifacts, 'latest.png'), Buffer.from(captured[1].value.data, 'base64'))
   }
-  migrationGate?.release.resolve(); searchGate?.release.resolve(); host?.stop(true); api.stop(true); await peer?.close(); await browser?.close(); await closeSharedBrowsers(); await rm(output, { recursive: true, force: true })
+  migrationGate?.release.resolve(); savedReplyGate?.release.resolve(); searchGate?.release.resolve(); host?.stop(true); api.stop(true); await peer?.close(); await browser?.close(); await closeSharedBrowsers(); await rm(output, { recursive: true, force: true })
 }
 process.exit(0)

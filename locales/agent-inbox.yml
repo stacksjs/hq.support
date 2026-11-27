@@ -1,5 +1,12 @@
 en:
   customerTyping: "Customer is typing…"
+  savedReplies: "Saved replies"
+  savedReplySearch: "Search saved replies"
+  savedReplySearchButton: "Search"
+  savedReplyLoading: "Loading saved replies…"
+  savedReplyEmpty: "No saved replies found."
+  savedReplyMore: "Load more saved replies"
+  savedReplyTooLong: "This reply would exceed the 10,000-character draft limit."
   loadOlderMessages: "Load older messages"
   olderMessagesLoading: "Loading older messages…"
   olderMessagesFailed: "Could not load older messages. Try again."
@@ -37,6 +44,13 @@ en:
 
 de:
   customerTyping: "Der Kunde schreibt…"
+  savedReplies: "Gespeicherte Antworten"
+  savedReplySearch: "Gespeicherte Antworten durchsuchen"
+  savedReplySearchButton: "Suchen"
+  savedReplyLoading: "Gespeicherte Antworten werden geladen…"
+  savedReplyEmpty: "Keine gespeicherten Antworten gefunden."
+  savedReplyMore: "Weitere gespeicherte Antworten laden"
+  savedReplyTooLong: "Diese Antwort würde das Limit von 10.000 Zeichen für den Entwurf überschreiten."
   loadOlderMessages: "Ältere Nachrichten laden"
   olderMessagesLoading: "Ältere Nachrichten werden geladen…"
   olderMessagesFailed: "Ältere Nachrichten konnten nicht geladen werden. Erneut versuchen."
@@ -74,6 +88,13 @@ de:
 
 ar:
   customerTyping: "العميل يكتب…"
+  savedReplies: "الردود المحفوظة"
+  savedReplySearch: "البحث في الردود المحفوظة"
+  savedReplySearchButton: "بحث"
+  savedReplyLoading: "جارٍ تحميل الردود المحفوظة…"
+  savedReplyEmpty: "لم يتم العثور على ردود محفوظة."
+  savedReplyMore: "تحميل المزيد من الردود المحفوظة"
+  savedReplyTooLong: "سيؤدي هذا الرد إلى تجاوز حد المسودة البالغ 10,000 حرف."
   loadOlderMessages: "تحميل الرسائل الأقدم"
   olderMessagesLoading: "جارٍ تحميل الرسائل الأقدم…"
   olderMessagesFailed: "تعذّر تحميل الرسائل الأقدم. حاول مرة أخرى."

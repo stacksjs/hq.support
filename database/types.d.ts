@@ -2438,6 +2438,19 @@ declare module '@stacksjs/database' {
       availability: string
       capacity: number | bigint
     }
+    support_saved_replies: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      name: string
+      search_name: string
+      body: string
+      revision: number | bigint
+      archived: number
+    }
     support_ses_invoice_pools: {
       // columns
       id: number

@@ -59,6 +59,25 @@ async function selectConversation(item: Parameters<typeof inbox.select>[0]) {
     <article :for="message in inbox.messages()" :id="`thread-message-${message.id}`" tabindex="-1" class="thread-message" :class="message.visibility === 'internal' ? 'internal-message' : ''"><header class="message-heading"><span class="message-avatar">{{ ['contact', 'customer'].includes(message.author_type) ? inbox.customerInitial() : 'h' }}</span><strong>{{ ['contact', 'customer'].includes(message.author_type) ? inbox.customerName() : words()('team') }}</strong><span :if="message.visibility === 'internal'" class="note-label"><i class="i-hugeicons-lock-key" aria-hidden="true"></i> {{ words()('note') }}</span><time :datetime="message.created_at">{{ openDate(message.created_at) }}</time></header><p><span dir="auto">{{ message.body || words()('attachmentMessage') }}</span></p></article></div><form :if="inbox.current()" class="reply-composer" :class="visibility() === 'internal' ? 'note-composer' : ''" @submit.prevent="inbox.send()"><div class="composer-heading"><label for="reply-mode" class="sr-only">{{ words()('messageVisibility') }}</label><select id="reply-mode" x-model="visibility" @change="inbox.visibilityActivity($event)" :disabled="inbox.threadLoading() || inbox.sending() || inbox.routingBusy()"><option value="public">{{ words()('publicReply') }}</option><option value="internal">{{ words()('note') }}</option></select><span>{{ visibility() === 'internal' ? words()('teamOnly') : words()('visibleToCustomer') }}</span></div>
   <p id="customer-typing" role="status" aria-atomic="true"><span :if="inbox.customerTyping()" class="block px-4 pb-2 text-sm">{{ words()('customerTyping') }}</span></p>
   <label for="reply" class="sr-only">{{ words()('writeReply') }}</label><textarea id="reply" dir="auto" x-model="draft" @input="inbox.draftActivity($event)" :aria-describedby="inbox.collision() ? 'reply-collision' : undefined" :required="!inbox.hasReply()" maxlength="10000" rows="4" :placeholder="visibility() === 'internal' ? words()('notePlaceholder') : words()('replyPlaceholder')" :disabled="inbox.threadLoading() || inbox.sending() || inbox.routingBusy()"></textarea>
+  <div class="pb-3 px-4">
+    <button id="saved-reply-toggle" type="button" class="button button-outline" aria-controls="saved-reply-picker" :aria-expanded="inbox.savedRepliesOpen()" :disabled="inbox.threadLoading() || inbox.sending() || inbox.routingBusy()" @click="inbox.toggleSavedReplies()">{{ words()('savedReplies') }}</button>
+    <section id="saved-reply-picker" :if="inbox.savedRepliesOpen()" class="mt-2 p-3 border rounded" :aria-label="words()('savedReplies')" @keydown="inbox.savedReplyPickerKey($event)">
+      <div class="flex flex-wrap gap-2">
+        <label for="saved-reply-search" class="sr-only">{{ words()('savedReplySearch') }}</label>
+        <input id="saved-reply-search" type="search" dir="auto" class="flex-1 px-2 min-w-0 border rounded" maxlength="120" :placeholder="words()('savedReplySearch')" :value="inbox.savedReplies.search()" @input="inbox.savedReplies.search.set($event.target.value)" @keydown="inbox.savedReplySearchKey($event)">
+        <button type="button" class="button button-outline" @click="inbox.savedReplies.load()">{{ words()('savedReplySearchButton') }}</button>
+      </div>
+      <p :if="inbox.savedReplies.error()" class="auth-error" role="alert">{{ inbox.savedReplies.error() }}</p>
+      <p :if="inbox.savedReplyTooLong()" class="auth-error" role="alert">{{ words()('savedReplyTooLong') }}</p>
+      <p class="mt-2 text-sm" role="status">{{ inbox.savedReplies.loading() ? words()('savedReplyLoading') : inbox.savedReplies.items().length || inbox.savedReplies.error() ? '' : words()('savedReplyEmpty') }}</p>
+      <ul class="overflow-y-auto max-h-48">
+        <li :for="reply in inbox.savedReplies.items()" :key="reply.id" class="py-1">
+          <button type="button" class="text-button" dir="auto" :disabled="inbox.threadLoading() || inbox.sending() || inbox.routingBusy()" @click="inbox.insertSavedReply(reply.id)">{{ reply.name }}</button>
+        </li>
+      </ul>
+      <button :if="inbox.savedReplies.cursor()" type="button" class="text-button" :disabled="inbox.savedReplies.loading()" @click="inbox.savedReplies.load(true)">{{ words()('savedReplyMore') }}</button>
+    </section>
+  </div>
   <div :if="inbox.canAttachReplyImage()" class="flex flex-wrap gap-2 items-center pb-3 px-4 text-xs">
     <span class="rounded focus-within:outline focus-within:outline-2 focus-within:outline-offset-2">
       <input id="reply-image" type="file" class="sr-only" accept="image/jpeg,image/png" @change="inbox.selectReplyImage($event)" :disabled="inbox.threadLoading() || inbox.sending() || inbox.routingBusy()">

@@ -115,6 +115,7 @@ declare global {
   const Project: typeof import('../../../app/Models/Project')['default']
   const ProviderCostBucket: typeof import('../../../app/Models/ProviderCostBucket')['default']
   const QueueWorker: typeof import('../../../app/Models/QueueWorker')['default']
+  const SavedReply: typeof import('../../../app/Models/SavedReply')['default']
   const SesInvoicePool: typeof import('../../../app/Models/SesInvoicePool')['default']
   const SesInvoiceRevision: typeof import('../../../app/Models/SesInvoiceRevision')['default']
   const SesSendEvidence: typeof import('../../../app/Models/SesSendEvidence')['default']

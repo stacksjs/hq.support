@@ -1,4 +1,5 @@
 import { derived, state } from '@stacksjs/stx'
+import { createSavedReplyEditor } from './saved-replies'
 
 interface Project { workspace_id: number, public_id: string, name: string, allowed_origins: string, anonymous_enabled: boolean }
 interface KeyMetadata { id: string, scope: string, status: 'active' | 'revoked', createdAt: string, revokedAt: number }
@@ -69,10 +70,12 @@ export function createSupportSettings() {
   let generation = 0, keyRequest = 0, destroyed = false
   let logoutRequest: Promise<void> | undefined
   const available = (current = generation) => !destroyed && !signingOut() && current === generation
+  const savedReplyEditor = createSavedReplyEditor(project, canAdmin, (path, options) => request(path, options, generation))
   function clearCredentials() {
     generation++
     keyRequest++
     operation = undefined
+    savedReplyEditor.reset()
     resetMigrationResult()
     if (migrationInput) migrationInput.value = ''
     migrationInput = undefined
@@ -174,7 +177,10 @@ export function createSupportSettings() {
     catch { allowed = [] }
     origins.set(allowed.join('\n'))
     anonymous.set(!!selected?.anonymous_enabled)
-    if (selected && canAdmin()) void loadKeys()
+    if (selected && canAdmin()) {
+      void loadKeys()
+      void savedReplyEditor.list.load()
+    }
   }
   async function load() {
     if (!available() || pending()) return
@@ -290,7 +296,7 @@ export function createSupportSettings() {
     finally { logoutRequest = undefined }
   }
   function destroy() { destroyed = true; clearCredentials(); pending.set(false) }
-  return { migrationPreview, migrationFile, migrationError, migrationBusy, migrationReviewOnly, migrationPage, migrationPageCount, migrationRecords,
+  return { savedReplyEditor, migrationPreview, migrationFile, migrationError, migrationBusy, migrationReviewOnly, migrationPage, migrationPageCount, migrationRecords,
     migrationStatusLabel: (status: PreviewStatus) => previewStatusLabels[status], chooseMigrationFile, previewMigration, moveMigrationPage, jumpToMigrationPage, filterMigrationRecords,
     projects, workspaces, project, origins, anonymous, pending, signingOut, error, notice, keys, keyList, keyCursor, keyRetry, canAdmin, loadKeys, rotateKey, revokeKey, retryKeys, discardRetry, load, select, save, issueKeys, signOut, destroy }
 }
