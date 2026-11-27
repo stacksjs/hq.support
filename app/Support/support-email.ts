@@ -11,7 +11,7 @@ import { one } from './database'
 import { registerChannelProvider } from './channel-providers'
 
 export interface EmailDependencies { awsRequest?: (options: AWSRequestOptions) => Promise<unknown>, fetchCert?: (url: string) => Promise<string> }
-export interface EmailPolicy { workspaceId: number, region: string, accountId: string, topicArn: string, bucket: string, prefix: string, fromAddresses: string[], inboundAddresses: string[], replyDomain: string, maxMicrosPerMessage: number }
+export interface EmailPolicy { workspaceId: number, region: string, accountId: string, topicArn: string, bucket: string, prefix: string, fromAddresses: string[], inboundAddresses: string[], replyDomain: string, maxMicrosPerMessage: number, outbound?: { configurationSet: string, topicArn: string } }
 export function emailAddress(input: unknown): string {
   const value = String(input || '').trim().toLowerCase()
   if (value.length > 254 || !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,63}$/.test(value) || value.includes('..') || value.split('@')[0]!.length > 64) fail(422, 'email_address_invalid', 'Use one canonical email address without display names.')
@@ -22,6 +22,9 @@ export function emailPolicy(channel: Row, config: Row): EmailPolicy {
   try { all = object(JSON.parse(process.env.SUPPORT_EMAIL_POLICIES || '{}')) } catch { fail(503, 'email_unconfigured', 'Configure operator email policies.') }
   const value = object(all[String(channel.workspace_id)]), region = String(value.region || ''), accountId = String(value.accountId || ''), topicArn = String(value.topicArn || ''), bucket = String(value.bucket || ''), prefix = String(value.prefix || ''), replyDomain = String(value.replyDomain || '')
   if (!/^[a-z]{2}-[a-z]+-\d$/.test(region) || !/^\d{12}$/.test(accountId) || !topicArn.startsWith(`arn:aws:sns:${region}:${accountId}:`) || !/^arn:aws:sns:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]{1,256}$/.test(topicArn) || !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket) || !/^[a-zA-Z0-9/_-]{1,150}\/$/.test(prefix) || !/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,63}$/.test(replyDomain)) fail(503, 'email_unconfigured', 'Configure the exact operator SES/SNS/S3 account, region, private prefix and reply domain.')
+  const configurationSet = String(value.configurationSet || ''), outboundTopicArn = String(value.outboundTopicArn || '')
+  const outbound = configurationSet || outboundTopicArn ? { configurationSet, topicArn: outboundTopicArn } : undefined
+  if (outbound && (!/^[A-Za-z0-9_-]{1,64}$/.test(configurationSet) || !outboundTopicArn.startsWith(`arn:aws:sns:${region}:${accountId}:`) || !/^arn:aws:sns:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]{1,256}$/.test(outboundTopicArn) || outboundTopicArn === topicArn)) fail(503, 'email_unconfigured', 'Configure an SES configuration set and a separate outbound SNS topic in the same AWS account and region.')
   const fromAddresses = Array.isArray(value.fromAddresses) ? value.fromAddresses.map(emailAddress) : [], inboundAddresses = Array.isArray(value.inboundAddresses) ? value.inboundAddresses.map(emailAddress) : []
   const maxMicrosPerMessage = Number(value.maxMicrosPerMessage)
   if (!fromAddresses.length || !inboundAddresses.length || !Number.isSafeInteger(maxMicrosPerMessage) || maxMicrosPerMessage <= 0 || maxMicrosPerMessage > 1000000000 || !String(value.rateVersion || '').trim() || (process.env.SUPPORT_EMAIL_REPLY_KEY || '').length < 32) fail(503, 'email_unconfigured', 'Configure scoped sender/recipient addresses, a versioned maximum USD reserve and reply signing key.')
@@ -31,7 +34,7 @@ export function emailPolicy(channel: Row, config: Row): EmailPolicy {
     if ([...fromAddresses, ...inboundAddresses].some(address => [...(Array.isArray(row.fromAddresses) ? row.fromAddresses : []), ...(Array.isArray(row.inboundAddresses) ? row.inboundAddresses : [])].map(item => String(item).toLowerCase()).includes(address))) fail(503, 'email_policy_overlap', 'Operator email addresses must belong to one workspace.')
   }
   if (!fromAddresses.includes(emailAddress(config.fromAddress)) || !inboundAddresses.includes(emailAddress(config.inboundAddress))) fail(403, 'email_identity_not_owned', 'This workspace is not authorized for these exact email identities.')
-  return { workspaceId: Number(channel.workspace_id), region, accountId, topicArn, bucket, prefix, fromAddresses, inboundAddresses, replyDomain, maxMicrosPerMessage }
+  return { workspaceId: Number(channel.workspace_id), region, accountId, topicArn, bucket, prefix, fromAddresses, inboundAddresses, replyDomain, maxMicrosPerMessage, outbound }
 }
 export async function emailAws(options: AWSRequestOptions, dependencies: EmailDependencies = {}): Promise<Row> {
   if (dependencies.awsRequest) return await dependencies.awsRequest(options) as Row
@@ -60,6 +63,19 @@ export async function emailReplyThread(channel: Row, config: Row, address: strin
   if (!thread || emailAddress(thread.recipient) !== sender || !timingSafeEqual(Buffer.from(match[3]!), Buffer.from(replyTag(channel, thread, match[2]!)))) fail(403, 'email_reply_invalid', 'Reply capability does not authorize this sender and thread.')
   return thread
 }
+export const emailDispatchTagName = 'hq-dispatch'
+const deliveryIdPattern = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
+function emailDispatchTag(channel: Row, deliveryId: string, recipient: string): string {
+  const signature = createHmac('sha256', process.env.SUPPORT_EMAIL_REPLY_KEY!)
+    .update(JSON.stringify(['delivery', String(channel.workspace_id), String(channel.project_id), String(channel.id), deliveryId, recipient]))
+    .digest('hex').slice(0, 32)
+  return `${deliveryId}_${signature}`
+}
+export function emailDispatchId(channel: Row, tag: unknown, recipient: string): string {
+  const match = typeof tag === 'string' && new RegExp(`^(${deliveryIdPattern})_[a-f0-9]{32}$`).exec(tag)
+  if (!match || !timingSafeEqual(Buffer.from(match[0]), Buffer.from(emailDispatchTag(channel, match[1]!, recipient)))) fail(403, 'email_dispatch_mismatch', 'SES send evidence does not authorize this delivery.')
+  return match[1]!
+}
 export function supportEmailProvider(dependencies: EmailDependencies = {}): ChannelProvider {
   return {
     async probe(channel, config) {
@@ -71,6 +87,12 @@ export function supportEmailProvider(dependencies: EmailDependencies = {}): Chan
       const identity = await emailAws({ service: 'ses', region: policy.region, method: 'GET', path: `/v2/email/identities/${encodeURIComponent(emailAddress(config.fromAddress).split('@')[1]!)}`, retries: 0, timeoutMs: 15000 }, dependencies)
       const dkim = object(identity.DkimAttributes)
       if (identity.VerificationStatus !== 'SUCCESS' || !(identity.SendingEnabled === true || identity.VerifiedForSendingStatus === true) || dkim.SigningEnabled !== true || dkim.Status !== 'SUCCESS') fail(403, 'email_identity_unverified', 'SES domain identity must be verified for sending with successful DKIM.')
+      if (policy.outbound) {
+        const { configurationSet, topicArn } = policy.outbound
+        const result = await emailAws({ service: 'ses', region: policy.region, method: 'GET', path: `/v2/email/configuration-sets/${configurationSet}/event-destinations`, retries: 0, timeoutMs: 15000 }, dependencies)
+        const destinations = Array.isArray(result.EventDestinations) ? result.EventDestinations.map(object) : []
+        if (!destinations.some(destination => destination.Enabled === true && Array.isArray(destination.MatchingEventTypes) && destination.MatchingEventTypes.includes('SEND') && object(destination.SnsDestination).TopicArn === topicArn)) fail(403, 'email_send_destination_unverified', 'Enable SEND events for the exact outbound SNS topic in this SES configuration set.')
+      }
       await emailPrivateBucket(policy.bucket, policy.region, dependencies)
       return { externalId: emailAddress(config.inboundAddress), receipt: `ses:${policy.accountId}:${policy.region}:${emailAddress(config.fromAddress)}` }
     },
@@ -97,9 +119,14 @@ export function supportEmailProvider(dependencies: EmailDependencies = {}): Chan
       const conversation = await one('SELECT subject FROM support_conversations WHERE id = ? AND project_id = ?', [thread.conversation_id, channel.project_id])
       const subject = String(conversation?.subject || 'Support').replace(/[\r\n]/g, ' ').slice(0, 200)
       const raw = buildMimeMessage({ from: emailAddress(config.fromAddress), to: recipient, replyTo: emailReplyAddress(channel, config, thread), subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`, text: String(payload.body) })
-      const body = new URLSearchParams({ Action: 'SendRawEmail', Version: '2010-12-01', Source: emailAddress(config.fromAddress), 'RawMessage.Data': Buffer.from(raw).toString('base64'), 'Destinations.member.1': recipient }).toString()
+      const body = new URLSearchParams({ Action: 'SendRawEmail', Version: '2010-12-01', Source: emailAddress(config.fromAddress), 'RawMessage.Data': Buffer.from(raw).toString('base64'), 'Destinations.member.1': recipient })
+      if (policy.outbound) {
+        body.set('ConfigurationSetName', policy.outbound.configurationSet)
+        body.set('Tags.member.1.Name', emailDispatchTagName)
+        body.set('Tags.member.1.Value', emailDispatchTag(channel, String(payload._deliveryPublicId), recipient))
+      }
       try {
-        const result = await emailAws({ service: 'ses', region: policy.region, method: 'POST', path: '/', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body, retries: 0, timeoutMs: 15000 }, dependencies)
+        const result = await emailAws({ service: 'ses', region: policy.region, method: 'POST', path: '/', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString(), retries: 0, timeoutMs: 15000 }, dependencies)
         const id = object(object(result.SendRawEmailResponse).SendRawEmailResult).MessageId ?? object(result.SendRawEmailResult).MessageId
         return typeof id === 'string' && /^[a-zA-Z0-9_-]{1,200}$/.test(id) ? { outcome: 'accepted', messageId: id } : { outcome: 'unknown', error: 'SES acknowledgement had no message identity. Do not resend.' }
       }
