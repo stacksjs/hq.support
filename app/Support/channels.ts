@@ -29,6 +29,9 @@ export async function requireReadyChannel(project: Row, id: unknown, provider?: 
   if (row.status !== 'ready' || Number(row.verified_at) <= 0) fail(409, 'channel_not_ready', 'Verify this provider connection before using it.')
   return row
 }
+function assertDiscordRoomUnchanged(row: Row, roomId: unknown) {
+  if (row.provider === 'discord' && row.external_id && row.external_id !== roomId) fail(409, 'channel_room_immutable', 'Create a new Discord connection for a different room.')
+}
 export async function saveChannel(project: Row, input: Row, userId: number): Promise<Row> {
   await member(userId, Number(project.workspace_id), ['owner', 'admin'])
   const provider = text(input.provider, 'provider', 50)
@@ -42,6 +45,7 @@ export async function saveChannel(project: Row, input: Row, userId: number): Pro
     if (input.id !== undefined) {
       const row = await loadChannel(project, input.id)
       if (row.provider !== provider) fail(409, 'channel_provider_immutable', 'Create a new connection to change its provider.')
+      assertDiscordRoomUnchanged(row, configuration.channelId)
       await query("UPDATE support_channels SET label = ?, configuration = ?, status = 'pending', verified_at = 0, last_error = '', updated_at = ? WHERE id = ?", [input.label === undefined ? row.label : text(input.label, 'label', 100), sealed, new Date().toISOString(), row.id])
       return await loadChannel(project, row.id)
     }
@@ -55,6 +59,8 @@ export async function markChannelReady(project: Row, id: unknown, evidence: { ex
     const row = await loadChannel(project, id)
     if (row.status === 'disabled' || row.configuration !== evidence.expectedConfiguration) fail(409, 'channel_configuration_changed', 'The channel changed during provider verification. Probe its current configuration again.')
     const configuration = await channelConfig(row)
+    assertDiscordRoomUnchanged(row, externalId)
+    if (row.provider === 'discord' && configuration.channelId !== externalId) fail(409, 'discord_room_mismatch', 'The verified Discord room does not match this connection.')
     const verifiedAt = Date.now(), sealed = await encrypt(JSON.stringify({ ...configuration, _verification: { receipt, verifiedAt } }))
     await query("UPDATE support_channels SET status = 'ready', external_id = ?, verified_at = ?, configuration = ?, last_error = '', updated_at = ? WHERE id = ?", [externalId, verifiedAt, sealed, new Date(verifiedAt).toISOString(), row.id])
     return await loadChannel(project, id)

@@ -118,6 +118,9 @@ const discordProvider: ChannelProvider = {
     if (!identity.bot || room.id !== config.channelId || ![0, 1, 3, 5, 10, 11, 12].includes(Number(room.type))) fail(403, 'discord_channel_unavailable', 'Use a bot with access to this exact text channel.')
     return { externalId: String(config.channelId), receipt: `discord-bot:${identity.id}`, cursor: String(room.last_message_id || '0') }
   },
+  async validate(channel, config, thread) {
+    if (channel.external_id !== config.channelId || thread.remote_key !== `${config.channelId}:${thread.recipient}`) fail(409, 'discord_room_mismatch', 'This conversation belongs to a different Discord room.')
+  },
   estimate: () => 0,
   async send(channel, config, thread, payload, callbackUrl, dependencies) {
     const { discord } = await import('@stacksjs/chat')

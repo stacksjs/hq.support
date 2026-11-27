@@ -120,6 +120,11 @@ scheduler. RunChannelDelivery dispatches queued operations and periodically
 recovers pending ingress, uncertain expired leases, quoted costs and Discord
 polls. Unknown sends without a signed receipt stay held for operator review.
 
+A verified Discord connection keeps its room. Rotate the bot token on that
+connection and verify it again to retain the inbox cursor. Create a separate
+connection for a different room. Queued replies recheck their original room
+before submitting to Discord.
+
 ## Qualification and remaining work
 
 On 2026-11-14 the Discord text path passed 39 live assertions in an isolated

@@ -76,7 +76,8 @@ const provider = Bun.serve({ port: 0, hostname: '127.0.0.1', async fetch(request
     if (original.pathname.endsWith('/chat.postMessage')) { providerPosts++; return Response.json({ ok: true, ts: `${Date.now()}.1` }) }
   }
   if (original.hostname === 'discord.com') {
-    assert.equal(auth, 'Bot tenant-discord')
+    assert.ok(auth === 'Bot tenant-discord' || auth === 'Bot rotated-discord')
+    if (original.pathname.endsWith('/messages') && request.method === 'POST') { providerPosts++; return Response.json({ id: '103' }) }
     if (original.pathname.endsWith('/users/@me')) return Response.json({ id: '123', bot: true })
     if (original.pathname === '/api/v10/channels/456') return Response.json({ id: '456', type: 0, last_message_id: '100' })
     if (original.pathname.endsWith('/messages') && request.method === 'GET') return Response.json(original.searchParams.get('after') === '100' ? [{ id: '101', channel_id: '456', type: 0, content: 'Discord customer', timestamp: new Date().toISOString(), edited_timestamp: null, author: { id: '789', username: 'Customer' }, attachments: [] }, { id: '102', channel_id: '456', type: 0, content: 'Own bot echo', timestamp: new Date().toISOString(), edited_timestamp: null, author: { id: '123', username: 'Bot', bot: true }, attachments: [] }] : [])
@@ -257,6 +258,28 @@ try {
   check((await pollDiscordChannel(project, discord.id, dependencies)).retained === 1, 'native Discord poll retains customer traffic and ignores own bot echo')
   await processLastInbound()
   check((await pollDiscordChannel(project, discord.id, dependencies)).retained === 0, 'durable Discord cursor resumes after retained page')
+  const discordThread = (await one('SELECT * FROM support_channel_threads WHERE channel_id = ?', [discord.id]))!
+  const discordSettings = `/support/projects/${project.public_id}/channels/${discord.id}`
+  const drift = await http(discordSettings, 'POST', { provider: 'discord', configuration: { botToken: 'tenant-discord', channelId: '654' } }, token)
+  check(drift.status === 409 && drift.data.error?.code === 'channel_room_immutable', 'a verified Discord connection cannot move existing conversations and its cursor to another room')
+  const sameRoom = await http(discordSettings, 'POST', { provider: 'discord', configuration: { botToken: 'rotated-discord', channelId: '456' } }, token)
+  check(sameRoom.status === 201 && sameRoom.data.channel.status === 'pending', 'Discord token rotation preserves the verified destination and requires a fresh probe')
+  check((await http(`${scope}/channels/${discord.id}/verify`, 'POST', {}, token)).status === 200, 'a replacement Discord token can verify the same room')
+  check((await one('SELECT cursor FROM support_channel_cursors WHERE channel_id = ?', [discord.id]))?.cursor === '102', 'credential rotation keeps the precise Discord cursor')
+  const discordReply = `/support/projects/${project.public_id}/conversations/${discordThread.conversation_id}/messages`
+  const queued = await http(discordReply, 'POST', { body: 'Bound Discord reply', idempotencyKey: 'discord-room-queued' }, token)
+  check(queued.status === 201 && queued.data.delivery?.status === 'pending', 'the exact verified room still accepts a queued Discord reply')
+  await query('UPDATE support_channel_threads SET remote_key = ? WHERE id = ?', ['654:789', discordThread.id])
+  const staleThread = await http(discordReply, 'POST', { body: 'Legacy Discord room mismatch', idempotencyKey: 'discord-old-room' }, token)
+  check(staleThread.status === 409 && staleThread.data.error?.code === 'discord_room_mismatch', 'a legacy conversation from a different room cannot queue a reply')
+  const pendingRoom = (await one('SELECT id FROM support_channel_deliveries WHERE public_id = ?', [queued.data.delivery.id]))!
+  const postsBeforeRoomMismatch = providerPosts
+  check(!(await dispatchChannelDelivery(Number(pendingRoom.id), dependencies)).dispatched && providerPosts === postsBeforeRoomMismatch, 'a queued reply rechecks its room binding before requesting the provider')
+  await query('UPDATE support_channel_threads SET remote_key = ? WHERE id = ?', [discordThread.remote_key, discordThread.id])
+  const sameRoomReply = await http(discordReply, 'POST', { body: 'Reply after token rotation', idempotencyKey: 'discord-room-after-rotation' }, token)
+  const sameRoomDelivery = (await one('SELECT id FROM support_channel_deliveries WHERE public_id = ?', [sameRoomReply.data.delivery?.id]))!
+  const sameRoomOutcome = await dispatchChannelDelivery(Number(sameRoomDelivery.id), dependencies)
+  check(sameRoomOutcome.outcome === 'accepted' && providerPosts === postsBeforeRoomMismatch + 1, 'a valid original-room reply still submits exactly once after rotation')
   const meter = (await one("SELECT * FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [project.workspace_id]))!
   const priorUsed = Number(meter.used)
   await query('UPDATE support_usage SET used = 120 WHERE id = ?', [meter.id])
