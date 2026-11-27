@@ -6,6 +6,7 @@ import { route } from '@stacksjs/router'
 import { assertIsolatedOk, runIsolated } from '@stacksjs/testing/isolated'
 import { insert, one, query } from '../../app/Support/database'
 import { dispatchWorkflowEvent, executeWorkflowRun } from '../../app/Support/workflows'
+import drainInboxOverflow from '../../app/Jobs/DrainInboxOverflow'
 
 await overridesReady
 if (config.database.queryLogging) config.database.queryLogging.enabled = false
@@ -242,7 +243,34 @@ try {
     const retry = await http(agent + `/conversations/${ids[0]}/routing`, 'POST', { mode: 'auto', idempotencyKey: 'explicit-auto-once' }, owner.token)
     check(retry.status === 200 && retry.data.routing.assigneeId === round.data.routing.assigneeId && (await one('SELECT last_member_id FROM support_team_inboxes WHERE id = ?', [inboxId]))!.last_member_id === cursorBeforeRetry, 'explicit operation key replays assignment without advancing the cursor twice')
     check((await http(agent + `/conversations/${ids[0]}/routing`, 'POST', { mode: 'manual', assigneeId: 0, idempotencyKey: 'explicit-auto-once' }, owner.token)).status === 409, 'routing operation key cannot be reused for a changed decision')
-    const expectedUserId = round.data.routing.assigneeId === first.id ? second.id : first.id
+    const queueProject = (await http(`/support/workspaces/${workspace.id}/projects`, 'POST', { name: 'Overflow brand' }, owner.token)).data.project
+    const queueAgent = `/support/projects/${queueProject.public_id}`
+    const queueTeam = (await http(teams, 'POST', { name: 'Overflow team' }, owner.token)).data.team
+    assert.equal((await http(teams + `/${queueTeam.id}/members`, 'POST', { userId: unrouted.id }, owner.token)).status, 200)
+    assert.equal((await http(agents, 'POST', { userId: unrouted.id, capacity: 1, availability: 'available' }, owner.token)).status, 200)
+    assert.equal((await http(queueAgent + '/team-inboxes', 'POST', { teamId: queueTeam.id, name: 'Overflow queue', isDefault: true }, owner.token)).status, 201)
+    const queueKeys = (await http(queueAgent + '/keys', 'POST', {}, owner.token)).data
+    async function queueCase(description: string) {
+      const result = await http(`/v1/projects/${queueProject.public_id}/conversations`, 'POST', { externalId: 'overflow-customer', subject: description, body: description, idempotencyKey: crypto.randomUUID() }, queueKeys.ingestKey)
+      assert.equal(result.status, 201)
+      return Number(result.data.conversation.id)
+    }
+    const occupied = await queueCase('Occupied'), oldest = await queueCase('Oldest overflow'), later = await queueCase('Later overflow'), deliberatelyUnassigned = await queueCase('Deliberately unassigned')
+    assert.equal((await http(queueAgent + `/conversations/${deliberatelyUnassigned}`, 'PATCH', { assigneeId: 0 }, owner.token)).status, 200)
+    await drainInboxOverflow.handle!()
+    const queueCaseState = async (id: number) => (await http(queueAgent + `/conversations/${id}`, 'GET', undefined, owner.token)).data.conversation
+    check(Number((await queueCaseState(oldest)).assignee_id) === 0, 'full agent remains at capacity when the job runs')
+    assert.equal((await http(queueAgent + `/conversations/${occupied}`, 'PATCH', { status: 'closed' }, owner.token)).status, 200)
+    await Promise.all([drainInboxOverflow.handle!(), drainInboxOverflow.handle!()])
+    check(Number((await queueCaseState(oldest)).assignee_id) === unrouted.id && Number((await queueCaseState(later)).assignee_id) === 0, 'two overflow workers fill exactly one available capacity slot with the oldest eligible conversation')
+    const recoveredAudit = (await http(queueAgent + `/conversations/${oldest}/routing-audit`, 'GET', undefined, owner.token)).data.assignments
+    check(recoveredAudit.filter((decision: any) => decision.source === 'overflow').length === 1 && recoveredAudit[0].reason === 'round_robin', 'overflow replay records one audited assignment')
+    assert.equal((await http(queueAgent + `/conversations/${oldest}`, 'PATCH', { status: 'closed' }, owner.token)).status, 200)
+    await drainInboxOverflow.handle!()
+    check(Number((await queueCaseState(later)).assignee_id) === unrouted.id, 'the next oldest eligible conversation drains after another slot opens')
+    check(Number((await queueCaseState(deliberatelyUnassigned)).assignee_id) === 0 && (await queueCaseState(deliberatelyUnassigned)).routing_reason === 'unassigned', 'manual release stays unassigned across overflow job retries')
+    const currentTurn = await one('SELECT m.user_id FROM support_team_inboxes i JOIN support_team_members m ON m.id = i.last_member_id WHERE i.id = ?', [inboxId])
+    const expectedUserId = Number(currentTurn?.user_id) === first.id ? second.id : first.id
     await Bun.write(process.env.SUPPORT_TEST_ROUTING_STATE!, JSON.stringify({ agent, conversationId: ids[4], inboxId, token: owner.token, expectedUserId }))
     server.stop(true)
     const restarted = await runIsolated('tests/fixtures/team-routing.ts', { env: { ...process.env, SUPPORT_ROUTING_RESTART: '1', BUN_OPTIONS: undefined }, envFile: false, preload: [], timeoutMs: 45000 })

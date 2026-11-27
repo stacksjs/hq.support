@@ -57,6 +57,7 @@
     "Deployment": true,
     "DigitalDelivery": true,
     "Discount": true,
+    "DrainInboxOverflow": true,
     "EmailIdempotency": true,
     "EmailList": true,
     "EmailListSubscriber": true,

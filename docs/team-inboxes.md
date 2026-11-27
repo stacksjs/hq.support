@@ -38,7 +38,7 @@ The agent inbox supports `GET /api/support/projects/{project}/inbox?inboxId={id}
 
 `tests/feature/team-routing.test.ts` boots actual installed Stacks packages, native authentication and HTTP routes against disposable SQLite and PostgreSQL databases. It exercises tenant/project isolation, successful scoped lists, manual authorization and inboxes, default replacement, immutable inbox teams, malformed-input rollback, round robin, availability, workspace-wide load, concurrent last-slot admission from three independent native HTTP server processes, close/snooze/reopen, member removal, durable workflow assignment and status-based readmission, explicit-operation retries and a fresh server process resuming the saved cursor. The core HTTP fixture also refuses malformed contact IDs on existing ticket creation without adding a ticket or outbox work. Existing core HTTP and workflow suites provide regression coverage.
 
-This slice supplies backend routing APIs and native team/inbox controls. It does not claim live presence, automatic draining of old overflow, an operator capacity override, merge/split, provider delivery or a production load qualification. Overflow is retried explicitly; making an agent available does not silently redistribute work. PostgreSQL tests require the owned pgvector-capable test cluster because the complete app schema also includes knowledge vectors.
+`DrainInboxOverflow` runs every minute on the native `support-workflows` queue. It assigns open conversations that are still waiting for eligible capacity in an active round-robin inbox, oldest first. The worker loads up to 100 eligible cases per tick and rechecks membership, availability and workspace-wide capacity under the same lock as ordinary routing. Explicitly unassigned conversations and manual inboxes stay under operator control. Automatic assignments appear in the audit with source `overflow`. PostgreSQL tests require the owned pgvector-capable test cluster because the complete app schema also includes knowledge vectors.
 
 ## Native team and inbox UI
 
@@ -58,9 +58,8 @@ round-robin routing to owners/admins. Agents can claim unassigned team work or
 release their own assignment. Overflow and manual inboxes display the actual
 unassigned reason. The latest 100 audit decisions show the native actor or
 workflow run and before/after context. Rejected assignment requests display
-the backend error; they do not claim a reopen, unassignment or any other
-transition that did not happen. These controls do not change provider
-readiness or start a background overflow drain.
+the backend error. Manual routing and the scheduled overflow worker use the
+same assignment capacity rule.
 
 At tablet and phone widths (1250px and below), the customer and assignment
 pane opens as a labelled dialog drawer from the thread header. It keeps the

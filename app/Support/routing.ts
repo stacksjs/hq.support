@@ -3,7 +3,7 @@ import { insert, one, query, workspaceTransaction } from './database'
 import { fail, identifier, text } from './errors'
 import { conversation, conversationStatuses, member, summary } from './service'
 
-export type RoutingActor = { userId: number, source: 'manual' } | { source: 'workflow', workflowRunId: number } | { userId: number, source: 'configuration' } | { source: 'ingress' }
+export type RoutingActor = { userId: number, source: 'manual' } | { source: 'workflow', workflowRunId: number } | { userId: number, source: 'configuration' } | { source: 'ingress' | 'overflow' }
 const timestamp = () => new Date().toISOString()
 const bool = (value: unknown, fallback: boolean) => {
   if (value === undefined) return fallback
@@ -41,6 +41,16 @@ async function eligibility(project: Row, userId: number, teamId: number, convers
   if (needsCapacity && await activeLoad(Number(project.workspace_id), userId, conversationId) >= Number(agent?.capacity ?? 10)) return 'agent_capacity'
   return null
 }
+async function assignRoundRobin(project: Row, before: Row, selected: Row) {
+  const members = await query('SELECT id, user_id FROM support_team_members WHERE workspace_id = ? AND team_id = ? AND active = ? ORDER BY CASE WHEN id > ? THEN 0 ELSE 1 END, id', [project.workspace_id, selected.team_id, true, selected.last_member_id])
+  for (const candidate of members) {
+    const userId = Number(candidate.user_id)
+    if (await eligibility(project, userId, Number(selected.team_id), Number(before.id))) continue
+    await query('UPDATE support_team_inboxes SET last_member_id = ?, updated_at = ? WHERE id = ? AND project_id = ? AND workspace_id = ?', [candidate.id, timestamp(), selected.id, project.id, project.workspace_id])
+    return userId
+  }
+  return 0
+}
 async function writeRouting(project: Row, before: Row, values: { assigneeId: number, inboxId: number, teamId: number, status: string }, actor: RoutingActor, reason: string) {
   const resolvedAt = values.status === 'closed' ? before.status === 'closed' ? Number(before.resolved_at || 0) : Date.now() : 0
   await query('UPDATE support_conversations SET assignee_id = ?, team_id = ?, inbox_id = ?, status = ?, resolved_at = ?, routing_reason = ?, updated_at = ? WHERE id = ? AND project_id = ? AND workspace_id = ?', [values.assigneeId, values.teamId, values.inboxId, values.status, resolvedAt, reason, timestamp(), before.id, project.id, project.workspace_id])
@@ -70,14 +80,8 @@ export async function routeConversation(project: Row, id: unknown, input: Row, a
       if (selected.assignment_mode === 'manual') reason = 'manual_inbox'
       else if (status !== 'open') reason = 'not_open'
       else {
-        const members = await query('SELECT id, user_id FROM support_team_members WHERE workspace_id = ? AND team_id = ? AND active = ? ORDER BY id ASC', [project.workspace_id, teamId, true])
-        const ordered = [...members.filter(row => Number(row.id) > Number(selected.last_member_id)), ...members.filter(row => Number(row.id) <= Number(selected.last_member_id))]
-        reason = 'no_eligible_capacity'
-        for (const candidate of ordered) if (!await eligibility(project, Number(candidate.user_id), teamId, Number(before.id))) {
-          assigneeId = Number(candidate.user_id); reason = 'round_robin'
-          await query('UPDATE support_team_inboxes SET last_member_id = ?, updated_at = ? WHERE id = ? AND project_id = ?', [candidate.id, timestamp(), selected.id, project.id])
-          break
-        }
+        assigneeId = await assignRoundRobin(project, before, selected)
+        reason = assigneeId ? 'round_robin' : 'no_eligible_capacity'
       }
     }
     else {
@@ -101,6 +105,44 @@ export async function routeConversation(project: Row, id: unknown, input: Row, a
 export async function routeNewConversation(project: Row, conversationId: unknown) {
   const selected = await one('SELECT i.id FROM support_team_inboxes i JOIN support_teams t ON t.id = i.team_id AND t.workspace_id = i.workspace_id WHERE i.project_id = ? AND i.workspace_id = ? AND i.is_default = ? AND i.active = ? AND t.active = ? ORDER BY i.id ASC LIMIT 1', [project.id, project.workspace_id, true, true, true])
   return selected ? await routeConversation(project, conversationId, { inboxId: Number(selected.id), mode: 'auto' }, { source: 'ingress' }) : null
+}
+
+export async function drainInboxOverflow() {
+  // Skip inboxes that cannot take work so their older cases cannot starve other inboxes.
+  const pending = await query(`
+    SELECT c.id, c.workspace_id, c.project_id
+    FROM support_conversations c
+    JOIN support_team_inboxes i ON i.id = c.inbox_id AND i.project_id = c.project_id AND i.workspace_id = c.workspace_id
+    JOIN support_teams t ON t.id = i.team_id AND t.workspace_id = i.workspace_id
+    WHERE c.status = 'open' AND c.assignee_id = 0 AND c.routing_reason = 'no_eligible_capacity'
+      AND i.active = TRUE AND i.assignment_mode = 'round_robin' AND t.active = TRUE
+      AND EXISTS (
+        SELECT 1 FROM support_team_members tm
+        JOIN support_memberships m ON m.workspace_id = tm.workspace_id AND m.user_id = tm.user_id AND m.status = 'active'
+        LEFT JOIN support_routing_agents a ON a.workspace_id = tm.workspace_id AND a.user_id = tm.user_id
+        WHERE tm.workspace_id = i.workspace_id AND tm.team_id = i.team_id AND tm.active = TRUE
+          AND COALESCE(a.availability, 'available') = 'available'
+          AND (SELECT COUNT(*) FROM support_conversations load
+               WHERE load.workspace_id = tm.workspace_id AND load.assignee_id = tm.user_id AND load.status = 'open')
+              < COALESCE(a.capacity, 10)
+      )
+    ORDER BY c.id LIMIT 100
+  `)
+  let assigned = 0
+  for (const item of pending) {
+    const project = { id: item.project_id, workspace_id: item.workspace_id }
+    assigned += await workspaceTransaction(Number(item.workspace_id), async () => {
+      const current = await one("SELECT * FROM support_conversations WHERE id = ? AND project_id = ? AND workspace_id = ? AND status = 'open' AND assignee_id = 0 AND routing_reason = 'no_eligible_capacity'", [item.id, project.id, project.workspace_id])
+      if (!current) return 0
+      const selected = await one("SELECT i.* FROM support_team_inboxes i JOIN support_teams t ON t.id = i.team_id AND t.workspace_id = i.workspace_id WHERE i.id = ? AND i.project_id = ? AND i.workspace_id = ? AND i.active = TRUE AND i.assignment_mode = 'round_robin' AND t.active = TRUE", [current.inbox_id, project.id, project.workspace_id])
+      if (!selected) return 0
+      const assigneeId = await assignRoundRobin(project, current, selected)
+      if (!assigneeId) return 0
+      await writeRouting(project, current, { assigneeId, inboxId: Number(selected.id), teamId: Number(selected.team_id), status: 'open' }, { source: 'overflow' }, 'round_robin')
+      return 1
+    })
+  }
+  return { assigned }
 }
 export async function saveTeam(workspaceId: number, input: Row, userId: number, id?: unknown) {
   return await workspaceTransaction(workspaceId, async () => {

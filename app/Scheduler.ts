@@ -12,6 +12,7 @@ import { schedule } from '@stacksjs/scheduler'
 export default function (): void {
   schedule.job('ApplyEnterpriseRetention').hourly().onQueue('support-retention').withoutOverlapping().onOneServer()
   schedule.job('RunSupportWorkflows').everyMinute().onQueue('support-workflows').withoutOverlapping().onOneServer()
+  schedule.job('DrainInboxOverflow').everyMinute().onQueue('support-workflows').withoutOverlapping().onOneServer()
   schedule.job('RunSupportImport').everyMinute().onQueue('support-imports').withoutOverlapping().onOneServer()
   schedule.job('RunChannelDelivery').everyMinute().onQueue('support-channels').withoutOverlapping().onOneServer()
   schedule.job('RunTicketSla').everyMinute().onQueue('support-sla').withoutOverlapping().onOneServer()
