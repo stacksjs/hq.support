@@ -179,6 +179,25 @@ try {
   check((await request(endpoint, 'POST', { ...payload, idempotencyKey: 'turn-21' }, customer.token, origin)).data.error.code === 'ai_unit_limit', 'twenty-first AI turn denied')
   await query('UPDATE support_conversations SET ai_turns = 1, ai_tokens = 19900 WHERE id = ?', [Number(thread)])
   check((await request(endpoint, 'POST', { ...payload, idempotencyKey: 'token-cap' }, customer.token, origin)).data.error.code === 'ai_unit_limit', '20,000-token ceiling accounts for the next full provider reservation')
+
+  await query('UPDATE support_conversations SET ai_tokens = 0 WHERE id = ?', [Number(thread)])
+  config.ai.default = 'anthropic'
+  config.ai.drivers = { anthropic: { apiKey: 'test-provider', model: 'claude-haiku-5-5' } }
+  const realFetch = globalThis.fetch
+  globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input)
+    if (url !== 'https://api.anthropic.com/v1/messages') return realFetch(input, init)
+    const wire = await new Request(input, init).json() as Record<string, unknown>
+    if ('temperature' in wire) return Response.json({ error: { message: 'This model does not support temperature.' } }, { status: 400 })
+    const answer = JSON.stringify({ answer: 'Open account settings and select Reset password.', sourceIds: [String(article.id)], handoff: false })
+    return Response.json({ model: 'claude-haiku-5-5', content: [{ type: 'text', text: answer }], stop_reason: 'end_turn', usage: { input_tokens: 110, output_tokens: 40 } })
+  }, realFetch)
+  try {
+    const nativeClaude = await request(endpoint, 'POST', { ...payload, idempotencyKey: 'native-claude-grounding' }, customer.token, origin)
+    const reconciled = await one('SELECT ai_tokens FROM support_conversations WHERE id = ?', [Number(thread)])
+    check(nativeClaude.status === 200 && nativeClaude.data.sources?.[0]?.id === String(article.id) && Number(reconciled?.ai_tokens) === 150, 'native Claude grounds and reconciles a reply without unsupported sampling parameters')
+  }
+  finally { globalThis.fetch = realFetch }
   console.log(`PASS knowledge HTTP ${checks} checks`)
 }
 finally { releaseProvider?.(); await server.stop(true); await provider.stop(true) }
