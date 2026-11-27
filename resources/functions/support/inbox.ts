@@ -14,6 +14,34 @@ interface Message { id: string | number, body: string, visibility: string, autho
 interface Contact { id?: string | number, name?: string, email?: string, company?: string }
 interface ThreadAttachment { id: string, fileName: string }
 interface ThreadDetail { conversation: Conversation, messages: Message[], messagesNextCursor: string | null, attachments: ThreadAttachment[], attachmentsNextCursor: string | null, contact: Contact | null, lastAgentReplyId?: string }
+interface RetentionEvidence {
+  scope: 'closed_conversation_content'
+  conversationId: string
+  projectId: string
+  held: boolean
+  policy: { days: number, enabled: boolean } | null
+  content: { subjectPresent: boolean, messageBodies: number, attachmentRecords: number, attachmentsNotDeleted: number }
+  lastRedaction: { auditEventId: string, occurredAt: string } | null
+}
+
+function isRecordCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function isRetentionEvidence(value: unknown): value is RetentionEvidence {
+  if (!value || typeof value !== 'object') return false
+  const evidence = value as Partial<RetentionEvidence>
+  if (evidence.scope !== 'closed_conversation_content' || typeof evidence.conversationId !== 'string'
+    || typeof evidence.projectId !== 'string' || typeof evidence.held !== 'boolean') return false
+
+  const { content, policy, lastRedaction } = evidence
+  if (!content || typeof content.subjectPresent !== 'boolean' || !isRecordCount(content.messageBodies)
+    || !isRecordCount(content.attachmentRecords) || !isRecordCount(content.attachmentsNotDeleted)
+    || content.attachmentsNotDeleted > content.attachmentRecords) return false
+  if (policy !== null && (!policy || !isRecordCount(policy.days) || policy.days === 0 || typeof policy.enabled !== 'boolean')) return false
+  return lastRedaction === null || Boolean(lastRedaction && typeof lastRedaction.auditEventId === 'string'
+    && lastRedaction.auditEventId && typeof lastRedaction.occurredAt === 'string' && Number.isFinite(Date.parse(lastRedaction.occurredAt)))
+}
 
 export function createInbox() {
   const user = state<{ id: string | number, name: string, email: string } | null>(null)
@@ -93,6 +121,10 @@ export function createInbox() {
   const inboxFilter = state(''), nextCursor = state<string | null>(null), routingInbox = state('0'), routingAssignee = state('0'), routingBusy = state(false), routingError = state(''), routingNotice = state(''), assignments = state<Assignment[]>([])
   const selectedWorkspace = derived(() => workspaces().find(row => Number(row.id) === Number(projects().find(item => item.public_id === project())?.workspace_id)))
   const canManage = derived(() => ['owner', 'admin'].includes(selectedWorkspace()?.role || ''))
+  const retentionEvidence = state<RetentionEvidence | null>(null)
+  const retentionLoading = state(false)
+  const retentionError = state(false)
+  let retentionRequest: AbortController | undefined
   const canAutoRoute = derived(() => { const box = inboxes().find(row => String(row.id) === routingInbox()); return !!box && box.active && box.assignment_mode === 'round_robin' && !!teams().find(row => String(row.id) === String(box.team_id))?.active })
   const candidateAgents = derived(() => {
     const selected = inboxes().find(row => String(row.id) === routingInbox())
@@ -165,9 +197,10 @@ export function createInbox() {
     if (!search().trim()) void refresh()
     else debouncedSearch()
   }
-  function clearPrivateState() { presence.stop(!disposed); drafts.clear(); conversations.set([]); current.set(null); resetTranscript(); resetAttachments(); contact.set(null); draft.set(''); replyImage.set(null); replyImageError.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = '' }
+  function clearPrivateState() { presence.stop(!disposed); drafts.clear(); conversations.set([]); current.set(null); clearRetentionEvidence(); resetTranscript(); resetAttachments(); contact.set(null); draft.set(''); replyImage.set(null); replyImageError.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = '' }
   function conversationAccessLost() {
     selection++
+    clearRetentionEvidence()
     const item = current()
     if (item) drafts.delete(draftId(project(), item))
     current.set(null); contact.set(null); resetTranscript(); resetAttachments(); assignments.set([]); draft.set(''); replyImage.set(null); replyImageError.set(''); replyAtStart.set(null); seenReply.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined
@@ -192,6 +225,43 @@ export function createInbox() {
     if (!item) return
     try { const data = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${item.id}/routing-audit`); if (!disposed && selectedProject === project() && version === selection) assignments.set(data.assignments || []) }
     catch (failure) { if (!disposed && version === selection) routingError.set(failure instanceof Error ? failure.message : 'Assignment history could not be loaded.') }
+  }
+  function clearRetentionEvidence() {
+    retentionRequest?.abort()
+    retentionRequest = undefined
+    retentionEvidence.set(null)
+    retentionLoading.set(false)
+    retentionError.set(false)
+  }
+  async function loadRetentionEvidence() {
+    const item = current()
+    const workspace = selectedWorkspace()
+    const selectedProject = projects().find(entry => entry.public_id === project())
+    if (!item || !workspace || !selectedProject || !canManage() || threadLoading() || retentionLoading()) return
+
+    clearRetentionEvidence()
+    const controller = new AbortController()
+    retentionRequest = controller
+    retentionLoading.set(true)
+    const workspaceId = encodeURIComponent(String(workspace.id))
+    const conversationId = encodeURIComponent(String(item.id))
+    try {
+      const evidence: unknown = await request(`/api/support/workspaces/${workspaceId}/enterprise/retention/conversations/${conversationId}`, { signal: controller.signal })
+      if (retentionRequest !== controller) return
+      if (!isRetentionEvidence(evidence) || evidence.conversationId !== String(item.id)
+        || evidence.projectId !== String(selectedProject.id))
+        throw new Error('Invalid evidence for the selected conversation.')
+      retentionEvidence.set(evidence)
+    }
+    catch {
+      if (retentionRequest === controller) retentionError.set(true)
+    }
+    finally {
+      if (retentionRequest === controller) {
+        retentionRequest = undefined
+        retentionLoading.set(false)
+      }
+    }
   }
   async function changeFilter(value: string) { filter.set(value); await refresh() }
   async function loadMore() {
@@ -249,6 +319,7 @@ export function createInbox() {
   }
 
   async function load() {
+    clearRetentionEvidence()
     error.set('')
     loading.set(true)
     try {
@@ -292,6 +363,7 @@ export function createInbox() {
     presence.stop()
     cancelList(); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); conversations.set([]); threadLoading.set(false)
     selection++
+    clearRetentionEvidence()
     current.set(null)
     contact.set(null)
     resetTranscript()
@@ -447,6 +519,7 @@ export function createInbox() {
     presence.stop()
     const version = ++selection
     const selectedProject = project()
+    clearRetentionEvidence()
     current.set(item)
     resetTranscript()
     resetAttachments()
@@ -661,5 +734,5 @@ export function createInbox() {
   }
   function setupPresence() { detailsCleanup.push(presence.listen()) }
   function destroy() { presence.stop(); disposed = true; cancelList(); selection++; clearPrivateState(); user.set(null); workspaces.set([]); projects.set([]); project.set(''); activeProject = '';  for (const cleanup of detailsCleanup.splice(0)) cleanup(); detailsScroll?.set(false); detailsOpener = null }
-  return { messagesNext, messagesLoading, messagesError, newerMessagesAvailable, pendingAgentReply, replyTimelineBlocked, loadOlderMessages, attachments, attachmentsNext, attachmentsLoading, attachmentsError, attachmentDownloadPath, loadOlderAttachments, canAttachReplyImage, hasReply, replyImage, replyImageError, selectReplyImage, removeReplyImage, searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy, setupPresence, viewerNames, composingNames, replyChanged, collision, draftActivity, visibilityActivity, reviewReply }
+  return { retentionEvidence, retentionLoading, retentionError, loadRetentionEvidence, messagesNext, messagesLoading, messagesError, newerMessagesAvailable, pendingAgentReply, replyTimelineBlocked, loadOlderMessages, attachments, attachmentsNext, attachmentsLoading, attachmentsError, attachmentDownloadPath, loadOlderAttachments, canAttachReplyImage, hasReply, replyImage, replyImageError, selectReplyImage, removeReplyImage, searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy, setupPresence, viewerNames, composingNames, replyChanged, collision, draftActivity, visibilityActivity, reviewReply }
 }

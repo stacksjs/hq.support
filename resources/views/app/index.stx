@@ -20,6 +20,10 @@ const words = derived(() => {
   return (key: string, values?: Record<string, string | number>) => translation.t(key, values, language)
 })
 function openDate(value?: string) { return inbox.formatDate(value, locale()) }
+function auditDate(value?: string) {
+  const date = new Date(value || '')
+  return Number.isNaN(date.getTime()) ? '' : new Intl.DateTimeFormat(locale(), { dateStyle: 'short', timeStyle: 'short' }).format(date)
+}
 const displayNumber = (value: number) => value.toLocaleString(locale())
 const project = inbox.project
 const search = inbox.search
@@ -69,6 +73,28 @@ async function selectConversation(item: Parameters<typeof inbox.select>[0]) {
   </ul>
   <button id="load-older-attachments" :if="inbox.attachmentsNext()" type="button" class="text-button mt-3" @click="inbox.loadOlderAttachments()" :disabled="inbox.attachmentsLoading()">{{ words()(inbox.attachmentsLoading() ? 'attachmentsLoading' : 'loadOlderAttachments') }}</button>
   <p :if="inbox.attachmentsError()" class="mt-3 text-xs" role="alert">{{ words()('attachmentsFailed') }}</p>
+</section>
+<section :if="inbox.current() && inbox.canManage()" class="case-retention routing-panel" aria-labelledby="retention-evidence-title">
+  <h3 id="retention-evidence-title">{{ words()('retentionEvidence') }}</h3>
+  <p class="field-help">{{ words()('retentionScope') }}</p>
+  <button id="read-retention-evidence" type="button" class="mt-3 button button-outline" @click="inbox.loadRetentionEvidence()" :aria-disabled="inbox.retentionLoading() || inbox.threadLoading()" aria-controls="retention-evidence-result">{{ words()(inbox.retentionEvidence() ? 'retentionRefresh' : 'retentionRead') }}</button>
+  <p role="status" class="field-help">{{ inbox.retentionLoading() ? words()('retentionLoading') : inbox.retentionEvidence() ? words()('retentionLoaded') : '' }}</p>
+  <p :if="inbox.retentionError()" role="alert" class="routing-error">{{ words()('retentionFailed') }}</p>
+  <div id="retention-evidence-result">
+    <dl :if="inbox.retentionEvidence()">
+      <div><dt>{{ words()('retentionCaseId') }}</dt><dd><code dir="ltr">{{ inbox.retentionEvidence()?.conversationId }}</code></dd></div>
+      <div><dt>{{ words()('retentionPolicy') }}</dt><dd>{{ inbox.retentionEvidence()?.policy ? words()(inbox.retentionEvidence()?.policy?.enabled ? 'retentionWindow' : 'retentionWindowOff', { days: displayNumber(inbox.retentionEvidence()?.policy?.days ?? 0) }) : words()('retentionNone') }}</dd></div>
+      <div><dt>{{ words()('retentionHold') }}</dt><dd>{{ words()(inbox.retentionEvidence()?.held ? 'retentionHoldActive' : 'retentionNone') }}</dd></div>
+      <div><dt>{{ words()('retentionSubject') }}</dt><dd>{{ words()(inbox.retentionEvidence()?.content.subjectPresent ? 'retentionPresent' : 'retentionNone') }}</dd></div>
+      <div><dt>{{ words()('retentionMessageBodies') }}</dt><dd>{{ displayNumber(inbox.retentionEvidence()?.content.messageBodies ?? 0) }}</dd></div>
+      <div><dt>{{ words()('retentionAttachmentRecords') }}</dt><dd>{{ displayNumber(inbox.retentionEvidence()?.content.attachmentRecords ?? 0) }}</dd></div>
+      <div><dt>{{ words()('retentionActiveAttachments') }}</dt><dd>{{ displayNumber(inbox.retentionEvidence()?.content.attachmentsNotDeleted ?? 0) }}</dd></div>
+      <div><dt>{{ words()('retentionLastRedaction') }}</dt><dd>
+        <span :if="inbox.retentionEvidence()?.lastRedaction"><code dir="ltr">{{ inbox.retentionEvidence()?.lastRedaction?.auditEventId }}</code><time :datetime="inbox.retentionEvidence()?.lastRedaction?.occurredAt">{{ auditDate(inbox.retentionEvidence()?.lastRedaction?.occurredAt) }}</time></span>
+        <span :if="!inbox.retentionEvidence()?.lastRedaction">{{ words()('retentionNone') }}</span>
+      </dd></div>
+    </dl>
+  </div>
 </section>
 <section :if="inbox.current() && inbox.contact()" class="routing-panel" aria-labelledby="assignment-heading"><h3 id="assignment-heading">Assignment</h3><dl><div><dt>{{ words()('inbox') }}</dt><dd>{{ inbox.inboxName(inbox.current()?.inbox_id) }}</dd></div><div><dt>Assignee</dt><dd>{{ inbox.person(inbox.current()?.assignee_id) }}</dd></div></dl><p class="field-help" role="status">{{ inbox.routingNotice() || inbox.routingReasonLabel(inbox.current()?.routing_reason) }}</p><p :if="inbox.routingError()" class="routing-error" role="alert">{{ inbox.routingError() }}</p>
 <form :if="inbox.canManage()" @submit.prevent="inbox.route('manual')"><label for="assignment-inbox">{{ words()('teamInbox') }}</label><select id="assignment-inbox" x-model="routingInbox" :disabled="inbox.threadLoading() || inbox.routingBusy() || inbox.sending()"><option value="0">{{ words()('withoutInbox') }}</option><option :for="item in inbox.inboxes()" :value="String(item.id)" :disabled="!item.active">{{ item.name }}{{ item.active ? '' : ' (inactive)' }}</option></select><label for="assignment-agent">Assign to</label><select id="assignment-agent" x-model="routingAssignee" :disabled="inbox.threadLoading() || inbox.routingBusy() || inbox.sending()"><option value="0">Unassigned</option><option :for="item in inbox.candidateAgents()" :value="String(item.id)" :disabled="inbox.candidateDisabled(item.id)">{{ inbox.agentLabel(item.id) }}</option></select><button type="submit" class="button button-outline" :disabled="inbox.threadLoading() || inbox.routingBusy() || inbox.sending()">{{ inbox.routingBusy() ? 'Saving...' : 'Save assignment' }}</button><button type="button" class="text-button" @click="inbox.route('auto')" :disabled="inbox.threadLoading() || inbox.routingBusy() || inbox.sending() || !inbox.canAutoRoute()">Retry automatic routing</button></form>

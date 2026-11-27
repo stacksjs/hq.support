@@ -24,6 +24,8 @@ const api = await route.serve({ port: 0, hostname: '127.0.0.1' }), apiOrigin = `
 const root = resolve(import.meta.dir, '../..'), output = await mkdtemp(resolve(tmpdir(), 'hq-support-team-browser-')), artifacts = resolve(root, 'storage/framework/runtime/team-browser')
 let host: ReturnType<typeof Bun.serve> | undefined, browser: Awaited<ReturnType<typeof launch>> | undefined, peer: Awaited<ReturnType<typeof launch>> | undefined
 let cookie = '', csrf = '', peerCookie = '', failSend = false, failList = false, simulatePeerDisconnect = false
+let retentionGate: { path: string, entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>> } | undefined
+let incompleteRetentionPath: string | undefined
 const presenceTiming: Record<string, number> = {}
 const assertions: string[] = [], runtimeErrors: string[] = []
 const searchTraffic: Array<{ q: string | null, inboxId: string | null, status: string | null, cursor: string | null, path: string }> = []
@@ -42,9 +44,10 @@ async function account(name: string) {
 }
 try {
   const seed = await fetch(apiOrigin + '/api/csrf-token'); csrf = (await seed.json() as any).token; cookie = seed.headers.get('set-cookie')!.split(';')[0]!
-  const owner = await account('owner'), agent = await account('agent')
+  const owner = await account('owner'), agent = await account('agent'), admin = await account('admin')
   const workspace = (await http('/support/workspaces', 'POST', { name: 'Browser team' }, owner.token)).data.workspace
   await insert('support_memberships', { workspace_id: workspace.id, user_id: agent.id, email: 'agent@team-browser.example.test', role: 'agent', status: 'active' })
+  await insert('support_memberships', { workspace_id: workspace.id, user_id: admin.id, email: 'admin@team-browser.example.test', role: 'admin', status: 'active' })
   const project = (await http(`/support/workspaces/${workspace.id}/projects`, 'POST', { name: 'Browser brand' }, owner.token)).data.project, prefix = `/support/projects/${project.public_id}`
   const keys = (await http(prefix + '/keys', 'POST', {}, owner.token)).data
   const team = (await http(`/support/workspaces/${workspace.id}/support-teams`, 'POST', { name: 'First responders' }, owner.token)).data.team
@@ -53,13 +56,17 @@ try {
   const inbox = (await http(prefix + '/team-inboxes', 'POST', { teamId: Number(team.id), name: 'Customer care', isDefault: true }, owner.token)).data.inbox
   const conversations = []
   for (const name of ['First request', 'Second request', 'Waiting request']) { const result = await http(`/v1/projects/${project.public_id}/conversations`, 'POST', { externalId: 'browser-customer', subject: name, body: 'Please help me', idempotencyKey: name }, keys.ingestKey); assert.equal(result.status, 201); conversations.push(result.data.conversation) }
+  const retentionPath = (id: string) => `/support/workspaces/${workspace.id}/enterprise/retention/conversations/${id}`
+  await insert('support_enterprise_retention_policies', { workspace_id: workspace.id, days: 30, enabled: true, last_run_at: 0 })
+  await insert('support_enterprise_retention_holds', { workspace_id: workspace.id, conversation_id: conversations[2].id, active: true, reason: 'Protected fixture hold reason' })
+  const audit = await insert('support_enterprise_audit_events', { workspace_id: workspace.id, actor_id: owner.id, action: 'retention.conversation.redacted', target_id: String(conversations[2].id), detail: '{}' })
   async function browserCookie(name: string) { const login = await http('/login', 'POST', { email: `${name}@team-browser.example.test`, password: 'TeamBrowserFixture2026!' }); const session = await startBrowserSession(login.data.access_token ?? login.data.token); assert.ok(session); return browserSessionCookie(session!) }
-  const ownerCookie = await browserCookie('owner'), agentCookie = await browserCookie('agent')
+  const ownerCookie = await browserCookie('owner'), agentCookie = await browserCookie('agent'), adminCookie = await browserCookie('admin')
   const compiled = await generateStaticSite({ pagesDir: resolve(root, 'resources/views'), outputDir: output, publicDir: resolve(root, 'public'), partialsDir: resolve(root, 'resources/partials'), componentsDir: resolve(root, 'resources/components'), router: { enabled: false }, minify: false, cache: false, sitemap: false, robots: false })
   assert.equal(compiled.failedCount, 0)
   host = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const url = new URL(request.url)
-    if (url.pathname.startsWith('/_fixture/')) return new Response(null, { status: 303, headers: { location: '/app/team-settings', 'set-cookie': url.pathname.endsWith('/peer') ? peerCookie : url.pathname.endsWith('/agent') ? agentCookie : ownerCookie } })
+    if (url.pathname.startsWith('/_fixture/')) return new Response(null, { status: 303, headers: { location: '/app/team-settings', 'set-cookie': url.pathname.endsWith('/peer') ? peerCookie : url.pathname.endsWith('/agent') ? agentCookie : url.pathname.endsWith('/admin') ? adminCookie : ownerCookie } })
     if (url.pathname === '/case-fixture') return new Response('<!doctype html><html lang="en"><head><title>Support case fixture</title></head><body></body></html>', { headers: { 'content-type': 'text/html' } })
     if (url.pathname.startsWith('/api/')) {
       if (simulatePeerDisconnect && request.method === 'POST' && url.pathname.endsWith('/presence')) {
@@ -71,6 +78,17 @@ try {
       if (request.method === 'GET' && url.pathname.endsWith('/inbox')) searchTraffic.push({ q: url.searchParams.get('q'), inboxId: url.searchParams.get('inboxId'), status: url.searchParams.get('status'), cursor: url.searchParams.get('cursor'), path: url.pathname })
       const headers = new Headers(request.headers); headers.delete('host')
       const response = await fetch(new URL(url.pathname + url.search, apiOrigin), { method: request.method, headers, body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body })
+      if (response.ok && request.method === 'GET' && url.pathname === incompleteRetentionPath) {
+        incompleteRetentionPath = undefined
+        const evidence = await response.json() as { content: { messageBodies?: number } }
+        delete evidence.content.messageBodies
+        return Response.json(evidence)
+      }
+      const heldRetention = retentionGate
+      if (heldRetention && request.method === 'GET' && url.pathname === heldRetention.path) {
+        heldRetention.entered.resolve()
+        await heldRetention.release.promise
+      }
       const held = searchGate
       if (request.method === 'GET' && url.pathname.endsWith('/inbox') && held && !held.used && held.query === url.searchParams.get('q')) { held.used = true; held.entered.resolve(); await held.release.promise }
       const outgoing = new Headers(response.headers); outgoing.delete('content-encoding'); outgoing.delete('content-length')
@@ -92,9 +110,17 @@ try {
   const click = (text: string) => evaluate(`Array.from(document.querySelectorAll('button')).find(el=>el.textContent.trim()===${JSON.stringify(text)})?.click()`)
   async function selectConversation(subject: string) { await evaluate(`Array.from(document.querySelectorAll('.conversation-row strong')).find(el=>el.textContent.trim()===${JSON.stringify(subject)})?.closest('button').click()`); await waitFor(() => evaluate(`document.querySelector('.thread-heading h2')?.textContent === ${JSON.stringify(subject)} && !document.body.textContent.includes('Loading conversation...') && document.querySelector('#reply') !== null && document.querySelector('.resolve-button')?.disabled === false`), 15000, { label: `Open ${subject}` }) }
   const text = (value: string) => waitFor(() => evaluate(`document.body.textContent.includes(${JSON.stringify(value)})`), 15000, { label: value })
+  function readEvidence(id: string) {
+    return waitFor(() => evaluate(`document.querySelector('#retention-evidence-result code')?.textContent === ${JSON.stringify(String(id))}`), 15000, { label: 'Selected case evidence' })
+  }
   await navigate(cdp, origin + '/app/team-settings', { quietMs: 100, timeoutMs: 20000 })
   await text('Sign in')
   check(await evaluate(`!document.querySelector('#new-team-name')`), 'signed-out compiled settings expose no management forms')
+  await navigate(cdp, origin + '/_fixture/admin', { quietMs: 100, timeoutMs: 20000 })
+  await navigate(cdp, origin + '/app', { quietMs: 100, timeoutMs: 20000 })
+  await text('Waiting request'); await selectConversation('Waiting request')
+  await click('Read case evidence'); await readEvidence(conversations[2].id)
+  check(await evaluate(`document.querySelector('#retention-evidence-result dl')?.textContent.includes('30 days · Enabled')`), 'admin reads protected case evidence on the compiled inbox')
   await navigate(cdp, origin + '/_fixture/owner', { quietMs: 100, timeoutMs: 20000 })
   await waitFor(() => evaluate(`document.querySelector('#new-team-name') !== null && document.body.textContent.includes('First responders')`), 15000, { label: 'Owner routing settings' })
   await input('#new-team-name', 'Browser-created team'); await click('Create team'); await text('Support team created.')
@@ -120,6 +146,30 @@ try {
   await navigate(cdp, origin + '/app', { quietMs: 100, timeoutMs: 20000 }); await text('Waiting request')
   await input('#team-inbox', String(inbox.id)); await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 3`), 15000, { label: 'Scoped inbox filter' })
   await selectConversation('Waiting request'); await waitFor(() => evaluate(`document.querySelector('#reply') !== null`), 15000, { label: 'Selected conversation' })
+  await click('Read case evidence'); await readEvidence(conversations[2].id)
+  check(await evaluate(`Array.from(document.querySelectorAll('#retention-evidence-result code')).at(-1).textContent === ${JSON.stringify(String(audit.id))} && !document.querySelector('#retention-evidence-result').textContent.includes('Protected fixture hold reason')`), 'owner sees the audit reference without the hold reason')
+  await evaluate(`document.querySelector('.case-retention').scrollIntoView({ block: 'start' })`)
+  const desktopRetention = await cdp.send('Page.captureScreenshot', { format: 'png' })
+  await Bun.write(resolve(artifacts, 'desktop-retention.png'), Buffer.from(desktopRetention.data, 'base64'))
+  await input('#inbox-language', 'de'); await text('Aufbewahrungsnachweis')
+  await input('#inbox-language', 'ar'); await text('أدلة الاحتفاظ')
+  await input('#inbox-language', 'en'); await text('Retention evidence')
+  incompleteRetentionPath = '/api' + retentionPath(conversations[2].id)
+  await click('Refresh case evidence'); await text('Could not read case evidence. Try again.')
+  check(await evaluate(`!document.querySelector('#retention-evidence-result dl')`), 'missing counts show retry feedback without displaying incomplete evidence')
+  await click('Read case evidence'); await readEvidence(conversations[2].id)
+  const gate = { path: '/api' + retentionPath(conversations[2].id), entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() }
+  retentionGate = gate
+  try {
+    await click('Refresh case evidence')
+    await Promise.race([gate.entered.promise, Bun.sleep(10000).then(() => { throw new Error('Evidence request did not reach the fixture') })])
+    await selectConversation('First request')
+    await click('Read case evidence'); await readEvidence(conversations[0].id)
+  }
+  finally { retentionGate = undefined; gate.release.resolve() }
+  await readEvidence(conversations[0].id)
+  await selectConversation('Waiting request')
+  check(await evaluate(`!document.querySelector('#retention-evidence-result dl')`), 'changing conversation clears the previous evidence and invalidates an in-flight read')
   await text('No available team member has capacity.')
   await input('#reply', 'Unsent draft retained on refresh')
   await evaluate(`document.querySelector('[aria-label="Refresh inbox"]').click()`); await waitFor(() => evaluate(`document.querySelector('[aria-label="Refresh inbox"]').disabled === false`), 15000, { label: 'Inbox refresh complete' })
@@ -172,6 +222,10 @@ try {
   await evaluate(`document.querySelector('.customer-backdrop').click()`); await panelClosed()
   check(true, 'tablet backdrop closes the drawer and returns focus to its trigger')
   await resize(375, 812); await openPanel(true)
+  await click('Read case evidence'); await readEvidence(conversations[2].id)
+  await evaluate(`document.querySelector('.case-retention').scrollIntoView({ block: 'start' })`)
+  const retentionImage = await cdp.send('Page.captureScreenshot', { format: 'png' })
+  await Bun.write(resolve(artifacts, 'phone-retention.png'), Buffer.from(retentionImage.data, 'base64'))
   check(await evaluate(`document.querySelector('#customer-details').getBoundingClientRect().width <= 375 && document.querySelector('.conversation-pane').inert`), '375px phone opens the assignment drawer by keyboard within the viewport')
   const narrowImage = await cdp.send('Page.captureScreenshot', { format: 'png' }); await mkdir(artifacts, { recursive: true }); await Bun.write(resolve(artifacts, 'phone-drawer.png'), Buffer.from(narrowImage.data, 'base64'))
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await panelClosed()
@@ -185,6 +239,8 @@ try {
   await navigate(cdp, origin + '/app', { quietMs: 100, timeoutMs: 20000 }); await text('Waiting request'); await selectConversation('Waiting request'); await text('Assigned by round robin.')
   await openPanel(true)
   check(await evaluate(`!document.querySelector('#assignment-agent') && document.body.textContent.includes('Release my assignment')`), 'agent cannot render owner assignment controls and can release their own work')
+  check(await evaluate(`!document.querySelector('#read-retention-evidence')`), 'agent cannot open case evidence in the inbox')
+  check((await http(retentionPath(conversations[2].id), 'GET', undefined, agent.token)).status === 403, 'native API refuses a direct agent evidence request')
   await click('Release my assignment'); await waitFor(async () => Number((await one('SELECT assignee_id FROM support_conversations WHERE id = ?', [conversations[2].id]))!.assignee_id) === 0 && await evaluate(`Array.from(document.querySelectorAll('.routing-panel button')).some(button=>button.textContent.trim()==='Claim for myself' && !button.disabled)`), 10000, { label: 'Phone release completed' })
   await click('Claim for myself'); await waitFor(async () => Number((await one('SELECT assignee_id FROM support_conversations WHERE id = ?', [conversations[2].id]))!.assignee_id) === agent.id, 10000, { label: 'Phone claim persisted' })
   check(Number((await one('SELECT assignee_id FROM support_conversations WHERE id = ?', [conversations[2].id]))!.assignee_id) === agent.id, 'agent release and claim use native authorized routing mutations')

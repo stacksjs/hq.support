@@ -198,6 +198,11 @@ threads. PUT `/retention/holds/{conversationId}` with `{ "active": true,
 "reason": "..." }` protects a conversation. Hold placement and disabling the
 policy stay available after entitlement expiry; expired licenses stop deletion.
 
+In the inbox, owners and admins can open the conversation details and select
+**Read case evidence**. The panel shows the case ID and the latest redaction
+audit reference for the protected case record. **Refresh case evidence** reads
+the records again.
+
 Owners and admins can read `GET /retention/conversations/{conversationId}` for a
 single workspace case. The response gives the current policy, hold and
 conversation state, counts of remaining message bodies and attachment records,
