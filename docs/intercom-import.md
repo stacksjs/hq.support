@@ -21,6 +21,8 @@ Every response page must name the same conversation, contain at most 500 parts, 
 
 Explicit pagination supports up to 5,000 parts per conversation. An ambiguous unpaged 500-part response, unfinished chain, or missing full `conversation_parts` is held for review. The operator remains responsible for retrieving all parts without filters, including when an export omits its original request parameters.
 
+A standalone numbered response must be page one, end with `next:null`, and report a single page when it supplies a page count. An empty first page may report zero pages. A final page from a longer conversation remains incomplete even when it contains fewer than 500 parts.
+
 The administrative upload is multipart `file` at `POST /api/support/projects/{project}/imports/intercom`, with native owner/admin authentication and ordinary cookie CSRF protection. Limits are 10,000,000 bytes, 5,000 total supplied records, nesting depth 32 and 100,000 JSON values. The response is HTTP 202 with the actual persisted run state. Source bytes go to a private native Stacks storage disk with a SHA-256 digest. The same archive hash returns its existing run.
 
 ## Conversation attachments

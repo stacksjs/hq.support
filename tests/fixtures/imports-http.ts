@@ -151,10 +151,14 @@ try {
     ['pages-size-changed', 'size'],
     ['pages-filtered', 'filter'],
   ] as const
-  const inconsistentIds = inconsistentConversations.map(([id]) => id)
+  const standaloneLastPage = { ...lastPage, id: 'standalone-final-page' }
+  const standaloneFirstPage = conversation('standalone-unfinished-first-page', 'c1', [part('first-part-only')])
+  Object.assign(standaloneFirstPage.conversation_parts, { pages: { page: 1, per_page: 1, total_pages: 2, next: null } })
+  const incompleteStandalonePages = [standaloneLastPage, standaloneFirstPage]
+  const inconsistentIds = [...inconsistentConversations.map(([id]) => id), ...incompleteStandalonePages.map(page => page.id)]
   const inconsistentBundle = {
     version: 1, provider: 'intercom', contacts: [],
-    conversations: inconsistentConversations.map(([id, issue]) => inconsistentPages(id, issue)),
+    conversations: [...inconsistentConversations.map(([id, issue]) => inconsistentPages(id, issue)), ...incompleteStandalonePages],
   }
   const inconsistentPreview = await upload(inconsistentBundle, { integration: true, key: keys.ingestKey, dryRun: true })
   check(inconsistentPreview.status === 200 && inconsistentPreview.data.reviewRecords === inconsistentIds.length && inconsistentPreview.data.compatibleRecords === 0,
@@ -179,9 +183,12 @@ try {
       'inconsistent source pages cannot write partial conversation history')
   const emptyResponse = conversation('pages-no-parts', 'c1')
   Object.assign(emptyResponse.conversation_parts, { pages: { page: 1, per_page: 500, total_pages: 0, next: null } })
-  const emptyPreview = await upload({ version: 1, provider: 'intercom', contacts: [], conversations: [{ pages: [{ page: 1, response: emptyResponse }] }] },
+  const emptyPreview = await upload({ version: 1, provider: 'intercom', contacts: [], conversations: [
+    { pages: [{ page: 1, response: emptyResponse }] },
+    { ...emptyResponse, id: 'standalone-page-without-parts' },
+  ] },
     { integration: true, key: keys.ingestKey, dryRun: true })
-  check(emptyPreview.status === 200 && emptyPreview.data.compatibleRecords === 1, 'a source conversation with an initial message and zero parts is compatible')
+  check(emptyPreview.status === 200 && emptyPreview.data.compatibleRecords === 2, 'a source conversation with an initial message and zero parts is compatible as a page sequence or as a standalone first page')
   const attachmentSource = conversation('attachments', 'c1'); attachmentSource.source.attachments = [{ url: 'https://attachments.example/private.pdf' }] as never[]
   const attachments = await upload({ version: 1, provider: 'intercom', contacts: [], conversations: [attachmentSource] })
   await resumeInNewProcess(attachments.data.run.id, 'worker')

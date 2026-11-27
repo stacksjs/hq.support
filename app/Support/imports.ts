@@ -274,8 +274,15 @@ async function importConversation(project: Row, source: Row, bundle: IntercomBun
   source = completeConversation(source)
   const id = external(source.id), partsContainer = object(source.conversation_parts), parts = partsContainer.conversation_parts
   if (!Array.isArray(parts)) fail(422, 'full_conversation_required', 'List/search items omit message parts. Supply a full retrieve-conversation response.')
-  const paging = object(partsContainer.pages), completePages = paginated || (Number(paging.page) === 1 && Object.hasOwn(paging, 'next') && paging.next === null)
-  if ((!completePages && parts.length >= importLimits.maximumConversationParts) || (!paginated && parts.length > importLimits.maximumConversationParts) || Number(partsContainer.total_count ?? parts.length) > parts.length || (paging.next !== undefined && paging.next !== null)) fail(422, 'incomplete_source_history', 'Unpaged 500-part or unfinished response histories are retained for review. Supply every numbered source page through next:null.')
+  const paging = object(partsContainer.pages)
+  const numberedPage = paging.page !== undefined || paging.total_pages != null
+  const pageCount = paging.total_pages == null ? undefined : Number(paging.total_pages)
+  const singlePage = (paging.page === 1 || paging.page === '1') && paging.next === null
+    && (pageCount === undefined || pageCount === 1 || (pageCount === 0 && parts.length === 0))
+  const incompleteStandalone = !paginated && (parts.length > importLimits.maximumConversationParts
+    || ((numberedPage || parts.length === importLimits.maximumConversationParts) && !singlePage))
+  if (incompleteStandalone || Number(partsContainer.total_count ?? parts.length) > parts.length || (paging.next !== undefined && paging.next !== null))
+    fail(422, 'incomplete_source_history', 'The response does not establish complete conversation history. Supply every numbered source page through next:null.')
   const contacts = object(source.contacts).contacts ?? object(source.contacts).data
   if (!Array.isArray(contacts) || contacts.length !== 1) fail(422, 'group_conversation_review', 'This importer requires exactly one source contact. Group conversations are retained for review.')
   const { createdAt, updatedAt = createdAt } = conversationDates(source)
