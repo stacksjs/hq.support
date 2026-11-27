@@ -372,8 +372,16 @@ try {
   await waitFor(() => matchingRows(50), 15000, { label: 'Explicit refresh renders the first filtered page' })
   check(await evaluate(`document.querySelector('#team-inbox').value === ${JSON.stringify(String(archive.id))}
     && document.querySelector('.conversation-row strong')?.textContent === ${JSON.stringify(refreshArrival)}`), 'explicit refresh starts a new query page with the current filters and includes new arrivals')
-  await input(searchInput, ''); await waitFor(() => evaluate(`document.querySelector('[aria-label="Refresh inbox"]').disabled === false`), 15000, { label: 'Empty query refresh' })
-  check(searchTraffic.at(-1)?.q === null && searchTraffic.at(-1)?.inboxId === String(archive.id) && searchTraffic.at(-1)?.status === 'open', 'empty search omits q and preserves the status and inbox filters')
+  const beforeClearSearch = searchTraffic.length
+  await input(searchInput, '')
+  await waitFor(
+    () => searchTraffic.slice(beforeClearSearch).some(entry =>
+      entry.q === null && entry.inboxId === String(archive.id) && entry.status === 'open' && !entry.cursor && !entry.limit),
+    15000, { label: 'First-page request without a search query' },
+  )
+  await waitFor(() => matchingRows(50), 15000, { label: 'Cleared search renders the first inbox page' })
+  check(await evaluate(`document.querySelector(${JSON.stringify(searchInput)}).value === ''
+    && document.querySelector('#team-inbox').value === ${JSON.stringify(String(archive.id))}`), 'empty search omits q and preserves the status and inbox filters')
   const beforeLong = searchTraffic.length; await input(searchInput, 'a'.repeat(201)); await text('Search is limited to 200 characters.'); await Bun.sleep(400)
   check(searchTraffic.length === beforeLong, 'oversized programmatic input never sends an unbounded search request')
   const stale = holdSearch('stalequerytoken'); await input(searchInput, 'stalequerytoken'); await stale.entered.promise
