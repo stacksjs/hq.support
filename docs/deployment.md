@@ -88,6 +88,28 @@ configuration. Snapshot the full DNS zone before cutover. The existing apex ALIA
 and wildcard CNAME require explicit reconciliation: additive DNS synchronization
 does not replace existing records. Preserve unrelated NS, MX and TXT records.
 
+## Mail
+
+`config/email.ts` attaches the production mail tenant to the existing Stacks
+Hetzner server. Buddy reconciles the full-address mailboxes, the domain's DKIM
+signer, the mail certificate and the mail DNS records during production deploy.
+Staging and development skip mail reconciliation.
+
+The Bun lockfile pins the published Stacks 0.75.699 archives from Pantry.
+Install with `bun install --frozen-lockfile` before running Buddy.
+
+Use the same native reconcile to set up the mail tenant before launching the
+website. Run `APP_ENV=production ./buddy mail:provision --ip <verified-stacks-ip> --dry-run`
+to review the target first. The operator provides each `MAIL_PASSWORD_<LOCALPART>`
+through the encrypted production environment. Keep plaintext credentials out of Git. Human mailboxes
+require the owner to set a new password in HTTPS webmail before signing in or
+connecting a mail client. Later deploys preserve the new password. The application
+uses a managed credential for `hello@hq.support`. For production submission, configure
+`MAIL_MAILER=smtp`, `MAIL_HOST=mail.hq.support`, `MAIL_PORT=587`,
+`MAIL_ENCRYPTION=tls`, `MAIL_FROM_ADDRESS=hello@hq.support`,
+`MAIL_USERNAME=hello@hq.support` and the corresponding
+`MAIL_PASSWORD` through the encrypted production environment.
+
 ## Homepage chat
 
 Use a dedicated first-party workspace project and assign the team monitoring the

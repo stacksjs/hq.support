@@ -6,6 +6,7 @@ interface DeploymentProjection {
   main: { domain: string, port: number, preStart: string[], env: Record<string, string> },
   api: { domain: string, port: number, preStart: string[], env: Record<string, string> },
   www: { redirect: string }, dns: { domain: string },
+  mail: { domain: string, mailboxes: { email: string, passwordPolicy: string }[], enabled: boolean, attachTo: string, exactMailboxes: boolean },
   database: { name: string, username: string }, sslDomains: string[],
 }
 
@@ -37,6 +38,15 @@ test('deployment targets isolate domains, ports, database ownership and release 
     expect(api.env.SUPPORT_SITE_MESSENGER_PROJECT_ID).toBe(target === 'production' ? siteMessengerProject : undefined)
     expect(config.sslDomains).toContain(main.domain)
     expect(config.www.redirect).toBe(`https://${main.domain}`)
+    expect(config.mail.enabled).toBe(target === 'production')
+    expect(config.mail.attachTo).toBe('stacks')
+    expect(config.mail.exactMailboxes).toBe(true)
+    expect(config.mail.mailboxes.map(box => box.email)).toEqual(target === 'production' ? ['hello', 'chris', 'glenn', 'support', 'billing', 'privacy', 'security', 'abuse', 'postmaster'] : [])
+    if (target === 'production') {
+      expect(config.mail.domain).toBe('hq.support')
+      expect(config.mail.mailboxes[0]?.passwordPolicy).toBe('managed')
+      expect(config.mail.mailboxes.slice(1).every(box => box.passwordPolicy === 'initial-change')).toBe(true)
+    }
   }
   for (const value of [
     (config: DeploymentProjection) => config.project.slug,

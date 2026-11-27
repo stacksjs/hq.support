@@ -1,28 +1,32 @@
 import type { EmailConfig } from '@stacksjs/types'
 import { env } from '@stacksjs/env'
 
+const production = process.env.APP_ENV === 'production'
+const domain = production ? 'hq.support' : env.MAIL_DOMAIN || env.APP_DOMAIN || 'example.com'
+const teamMailboxes = ['chris', 'glenn', 'support', 'billing', 'privacy', 'security', 'abuse', 'postmaster']
+
 export default {
   default: (env.MAIL_MAILER || 'log') as EmailConfig['default'],
   from: {
-    name: env.MAIL_FROM_NAME || 'Hq Support',
-    address: env.MAIL_FROM_ADDRESS || 'hello@example.com',
+    name: env.MAIL_FROM_NAME || 'HQ Support',
+    address: env.MAIL_FROM_ADDRESS || `hello@${domain}`,
   },
 
-  domain: env.MAIL_DOMAIN || env.APP_DOMAIN || 'example.com',
-  mailboxes: [],
+  domain,
+  mailboxes: production ? [
+    { email: 'hello', passwordPolicy: 'managed' },
+    ...teamMailboxes.map(email => ({ email, passwordPolicy: 'initial-change' as const })),
+  ] : [],
   forwards: {},
   url: env.APP_URL || 'hq.support.localhost',
   charset: 'UTF-8',
 
   server: {
-    // Explicit opt-in: a generated application must never reconcile the
-    // framework repository's shared mail server or mailboxes.
-    enabled: false,
+    enabled: production,
+    attachTo: 'stacks',
+    exactMailboxes: true,
+    dmarc: { policy: 'none', reportTo: 'postmaster@hq.support' },
     scan: true,
     subdomain: 'mail',
-    // Gmail Postmaster Tools shows how Gmail receives your mail. Add your
-    // domain at https://postmaster.google.com, paste the TXT value it shows,
-    // and every deploy keeps it published.
-    // postmaster: { google: 'google-site-verification=...' },
   },
 } satisfies EmailConfig
