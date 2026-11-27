@@ -1,5 +1,6 @@
 import type { RequestInstance } from '@stacksjs/types'
 import { readJsonBody, RequestBodyError } from '@stacksjs/router/body'
+import { SQLiteError } from 'bun:sqlite'
 import type { Row } from './database'
 import { one, query, workspaceTransaction } from './database'
 import { SupportError, fail, identifier, text } from './errors'
@@ -171,7 +172,9 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
     if (error instanceof SupportError) return response({ error: { code: error.code, message: error.message } }, error.status)
     if (error instanceof RequestBodyError) return response({ error: { code: 'invalid_presence', message: 'Send a bounded JSON presence update.' } }, error.status)
     if (error instanceof TypeError || error instanceof SyntaxError) return response({ error: { code: 'invalid_input', message: 'Request could not be parsed.' } }, 422)
-    console.error('[support] request failed', error instanceof Error ? error.name : 'UnknownError')
+    const errorName = error instanceof Error ? error.name : 'UnknownError'
+    const sqliteDiagnostic = error instanceof SQLiteError && Number.isSafeInteger(error.errno) ? ` sqlite_errno=${error.errno}` : ''
+    console.error(`[support] request failed ${errorName} operation=${operation}${sqliteDiagnostic}`)
     if (process.env.APP_ENV === 'test') console.error(error)
     return response({ error: { code: 'internal_error', message: 'Request failed. Please retry with the same idempotency key.' } }, 500)
   }

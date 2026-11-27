@@ -65,6 +65,23 @@ try {
   check(widgetSession.status === 200 && widgetSession.headers.get('access-control-allow-origin') === 'https://customer.example', 'widget session with project origin CORS')
   check((await request(widget + '/session', 'POST', {}, undefined, 'https://evil.example')).status === 403, 'unlisted widget origin denied')
   const payload = { externalId: 'c1', subject: 'Need help', body: 'How do I sign in?', idempotencyKey: 'create-1' }
+  if (process.env.DB_CONNECTION === 'sqlite') {
+    await query("CREATE TRIGGER support_fixture_failure BEFORE INSERT ON support_conversations BEGIN SELECT RAISE(ABORT, 'fixture-private-sqlite-error'); END")
+    const previousEnvironment = process.env.APP_ENV
+    process.env.APP_ENV = 'staging'
+    try {
+      const failed = await request(widget + '/conversations', 'POST', payload, session.data.token, 'https://customer.example')
+      check(failed.status === 500 && failed.data.error.code === 'internal_error', 'failed SQLite write returns the generic support response')
+      check(failed.data.error.message === 'Request failed. Please retry with the same idempotency key.', 'failed SQLite write preserves the retry instruction')
+      check(failed.headers.get('access-control-allow-origin') === 'https://customer.example', 'failed SQLite write preserves approved widget CORS')
+      check(await usage(workspaceId, 'conversations') === 0, 'failed SQLite write rolls back the allowance reservation')
+      check(!await one('SELECT id FROM support_idempotency WHERE project_id = ? AND operation = ? AND key = ?', [project.id, `conversation:${session.data.contact.id}`, payload.idempotencyKey]), 'failed SQLite write leaves no widget idempotency receipt')
+    }
+    finally {
+      process.env.APP_ENV = previousEnvironment
+      await query('DROP TRIGGER support_fixture_failure')
+    }
+  }
   const created = await request(prefix + '/conversations', 'POST', payload, keys.ingestKey)
   check(created.status === 201, `conversation persisted ${JSON.stringify(created.data)}`)
   const conversation = created.data.conversation
