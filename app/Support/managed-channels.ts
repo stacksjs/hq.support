@@ -88,16 +88,22 @@ async function writeOutcome(row: Row, outcome: ChannelSendOutcome) {
     const knownAcceptance = outcome.outcome === 'accepted' && outcome.messageId
     if (knownAcceptance) {
       const project = (await one('SELECT * FROM support_projects WHERE id = ? AND workspace_id = ?', [row.project_id, row.workspace_id]))!
-      const thread = await deliveryChannelThread(project, current)
-      const payload = object(JSON.parse(String(current.payload)))
-      await shareAttachments(project, thread.conversation_id, payload.attachmentIds)
-      await (await import('./ticket-sla')).recordTicketFirstResponse(project, thread.conversation_id)
+      await recordChannelAcceptance(project, current)
     }
     const status = knownAcceptance ? (current.wallet_reservation_id ? 'cost_pending' : 'accepted') : outcome.outcome === 'rejected' ? 'rejected' : 'unknown'
     if (status === 'rejected' && current.wallet_reservation_id) await settleWallet(Number(row.workspace_id), String(current.wallet_reservation_id), 0, `rejected:${row.public_id}`)
-    await query('UPDATE support_channel_deliveries SET status = ?, provider_message_id = ?, lease_until = 0, last_error = ?, receipt = ?, updated_at = ? WHERE id = ?', [status, knownAcceptance ? outcome.messageId : '', (outcome.error || '').slice(0, 1000), JSON.stringify({ outcome: outcome.outcome, httpStatus: outcome.httpStatus }), new Date().toISOString(), row.id])
-    await query('UPDATE support_messages SET delivery_status = ? WHERE id = ?', [status, row.message_id])
+    await writeDeliveryStatus(current, status, knownAcceptance ? outcome.messageId! : '', { outcome: outcome.outcome, httpStatus: outcome.httpStatus }, outcome.error)
   })
+}
+export async function recordChannelAcceptance(project: Row, delivery: Row, at?: number) {
+  const thread = await deliveryChannelThread(project, delivery)
+  const payload = object(JSON.parse(String(delivery.payload)))
+  await shareAttachments(project, thread.conversation_id, payload.attachmentIds)
+  await (await import('./ticket-sla')).recordTicketFirstResponse(project, thread.conversation_id, at)
+}
+export async function writeDeliveryStatus(delivery: Row, status: string, providerMessageId: string, receipt: Row, error = '') {
+  await query('UPDATE support_channel_deliveries SET status = ?, provider_message_id = ?, lease_until = 0, last_error = ?, receipt = ?, updated_at = ? WHERE id = ?', [status, providerMessageId, error.slice(0, 1000), JSON.stringify(receipt), new Date().toISOString(), delivery.id])
+  await query('UPDATE support_messages SET delivery_status = ? WHERE id = ?', [status, delivery.message_id])
 }
 /** Commit dispatch ownership before HTTP. A crashed dispatch becomes unknown, never an automatic resend. */
 export async function dispatchChannelDelivery(id: number, dependencies: ChannelDependencies = {}) {
@@ -134,7 +140,7 @@ export async function dispatchChannelDelivery(id: number, dependencies: ChannelD
     return { dispatched: false }
   }
   let outcome: ChannelSendOutcome
-  try { outcome = await textProvider(String(channel.provider)).send(channel, config, thread, { ...payload, mediaUrls: await outboundMediaUrls(row, payload) }, `${channelOrigin()}/api/channels/${channel.public_id}/deliveries/${row.public_id}/status`, dependencies) }
+  try { outcome = await textProvider(String(channel.provider)).send(channel, config, thread, { ...payload, _deliveryPublicId: row.public_id, mediaUrls: await outboundMediaUrls(row, payload) }, `${channelOrigin()}/api/channels/${channel.public_id}/deliveries/${row.public_id}/status`, dependencies) }
   catch { outcome = { outcome: 'unknown', error: 'Provider acknowledgement unavailable. Reconcile before any resend.' } }
   await writeOutcome(row, outcome)
   if (outcome.outcome === 'accepted' && outcome.messageId) await reconcileChannelDelivery(project, row.public_id, dependencies).catch(() => undefined)

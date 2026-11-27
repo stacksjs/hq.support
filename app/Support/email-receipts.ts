@@ -41,9 +41,7 @@ async function boundedBytes(response: Response, maximum: number): Promise<Uint8A
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length }
   return bytes
 }
-export async function retainEmailNotification(channel: Row, envelope: Row, dependencies: EmailDependencies = {}) {
-  if (channel.provider !== 'email' || channel.status !== 'ready') fail(503, 'email_channel_unavailable', 'Verify an active email channel first.')
-  const config = await channelConfig(channel), policy = emailPolicy(channel, config)
+export async function verifyEmailNotification(envelope: Row, policy: { region: string, topicArn: string }, dependencies: EmailDependencies): Promise<Row> {
   if (JSON.stringify(envelope).length > 262144) fail(413, 'email_notification_bound', 'SNS notification exceeds the receipt bound.')
   let cert: URL
   try { cert = new URL(String(envelope.SigningCertURL)) } catch { fail(401, 'email_signature_invalid', 'SNS signing certificate URL is invalid.') }
@@ -57,8 +55,12 @@ export async function retainEmailNotification(channel: Row, envelope: Row, depen
   catch { /* Invalid provider signatures never reach storage or the queue. */ }
   if (!valid) fail(401, 'email_signature_invalid', 'SNS signature verification failed.')
   if (envelope.Type !== 'Notification') fail(409, 'email_subscription_setup', 'Confirm the exact SNS subscription through the operator setup flow.')
-  let notification: Row
-  try { notification = object(JSON.parse(String(envelope.Message))) } catch { fail(422, 'email_notification_invalid', 'SES notification is invalid.') }
+  try { return object(JSON.parse(String(envelope.Message))) } catch { fail(422, 'email_notification_invalid', 'SES notification is invalid.') }
+}
+export async function retainEmailNotification(channel: Row, envelope: Row, dependencies: EmailDependencies = {}) {
+  if (channel.provider !== 'email' || channel.status !== 'ready') fail(503, 'email_channel_unavailable', 'Verify an active email channel first.')
+  const config = await channelConfig(channel), policy = emailPolicy(channel, config)
+  const notification = await verifyEmailNotification(envelope, policy, dependencies)
   const mail = object(notification.mail), receipt = object(notification.receipt), action = object(receipt.action)
   if (notification.notificationType !== 'Received' || action.type !== 'S3' || action.bucketName !== policy.bucket || action.topicArn !== policy.topicArn || typeof action.objectKey !== 'string' || action.objectKey !== policy.prefix + String(mail.messageId) || action.objectKey.length > 1000 || /[\x00-\x1f]/.test(action.objectKey) || typeof mail.messageId !== 'string' || !/^[a-zA-Z0-9_-]{1,200}$/.test(mail.messageId)) fail(422, 'email_notification_invalid', 'SES receipt must identify the exact operator S3 source.')
   const destinations = Array.isArray(mail.destination) ? mail.destination.map(emailAddress) : []
