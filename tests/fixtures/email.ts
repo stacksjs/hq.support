@@ -35,7 +35,7 @@ const gateway = async (options: any) => {
   assert.equal(options.region, region); assert.equal(options.retries, 0); assert.equal(options.timeoutMs, 15000)
   if (options.service === 'sts') return { GetCallerIdentityResponse: { GetCallerIdentityResult: { Account: accountId } } }
   if (options.service === 'ses' && options.method === 'GET') return { VerificationStatus: 'SUCCESS', VerifiedForSendingStatus: true, DkimAttributes: { SigningEnabled: true, Status: 'SUCCESS' } }
-  if (options.service === 's3' && options.queryParams?.publicAccessBlock === '') return { PublicAccessBlockConfiguration: Object.fromEntries(['BlockPublicAcls', 'IgnorePublicAcls', 'BlockPublicPolicy', 'RestrictPublicBuckets'].map(key => [key, privateBucket])) }
+  if (options.service === 's3' && options.queryParams?.publicAccessBlock === '') return { BlockPublicAcls: true, IgnorePublicAcls: true, BlockPublicPolicy: true, RestrictPublicBuckets: privateBucket }
   if (options.service === 's3') { reads++; assert.equal(options.bucket, bucket); const raw = rawSources.get(options.path); assert.ok(raw); return new Response(raw, { headers: { 'Content-Length': String(Buffer.byteLength(raw)) } }) }
   assert.equal(options.service, 'ses'); assert.equal(options.method, 'POST'); sends++
   const form = new URLSearchParams(options.body)

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { startBrowserSession, browserSessionCookie } from '@stacksjs/auth'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { config, overridesReady } from '@stacksjs/config'
+import NativeSessionAction from '@stacksjs/defaults/app/Actions/Support/SessionAction.ts'
 import { injectGlobalAutoImports } from '@stacksjs/server'
 import { route } from '@stacksjs/router'
 import { generateStaticSite } from '@stacksjs/stx/ssg'
@@ -17,6 +18,7 @@ assert.equal((await migrateAuthTables()).success, true)
 assert.equal((await runDatabaseMigration()).isOk, true)
 assert.equal((await migrateAuthTables()).success, true)
 await injectGlobalAutoImports(); await route.importRoutes()
+route.post('/api/_native/support/session', NativeSessionAction).middleware('auth')
 const api = await route.serve({ port: 0, hostname: '127.0.0.1' }), apiOrigin = `http://127.0.0.1:${api.port}`
 const root = resolve(import.meta.dir, '../..'), output = await mkdtemp(resolve(tmpdir(), 'hq-support-team-browser-')), artifacts = resolve(root, 'storage/framework/runtime/team-browser')
 let host: ReturnType<typeof Bun.serve> | undefined, browser: Awaited<ReturnType<typeof launch>> | undefined
@@ -255,23 +257,31 @@ try {
   check(Number((await one('SELECT opens_conversation FROM support_ticket_types WHERE project_id = ? AND name = ?', [project.id, 'Private account help']))?.opens_conversation) === 1, 'owner enables private inbox admission through compiled ticket settings')
   await http(prefix, 'PATCH', { allowedOrigins: [origin], anonymousEnabled: true }, owner.token)
 
-  await navigate(cdp, origin + '/case-fixture', { quietMs: 100, timeoutMs: 20000 })
   const widget = `/api/widget/projects/${project.public_id}`
-  await evaluate(`(async()=>{
-    await import('/widgets/bundle.js');
-    const response = await fetch(${JSON.stringify(widget + '/session')}, { method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    if (!response.ok) throw new Error('Case fixture session ' + response.status);
-    const form = document.createElement('hq-support-ticket-form');
-    Object.assign(form, { apiUrl: location.origin, projectId: ${JSON.stringify(project.public_id)}, sessionToken: (await response.json()).token });
-    form.addEventListener('delivery', event => { form.dataset.conversation = event.detail.ticket.conversation_id });
-    document.body.append(form);
-  })()`)
+  ;(config.services as unknown as Record<string, unknown>).supporthq = { enabled: true, url: apiOrigin, key: keys.ingestKey, project: project.public_id }
   const formRoot = `document.querySelector('hq-support-ticket-form').shadowRoot`
-  await waitFor(() => evaluate(`${formRoot}.querySelector('#ticket-type')?.selectedOptions[0]?.textContent === 'Private account help' && !${formRoot}.querySelector('fieldset').disabled`), 15000, { label: 'Compiled guest case form ready' })
-  await evaluate(`(()=>{const root=${formRoot}; for (const [selector,value] of [['#ticket-subject','Private browser request'],['#ticket-body','Please answer in this private case.']]) { const field=root.querySelector(selector); field.value=value; field.dispatchEvent(new Event('input',{bubbles:true})); } root.querySelector('form').requestSubmit();})()`)
-  await waitFor(() => evaluate(`Boolean(document.querySelector('hq-support-ticket-form').dataset.conversation)`), 15000, { label: 'Guest form returns a linked conversation' })
-  const caseConversation = await evaluate(`document.querySelector('hq-support-ticket-form').dataset.conversation`)
-  check(Number((await one('SELECT inbox_id FROM support_conversations WHERE id = ? AND project_id = ?', [caseConversation, project.id]))?.inbox_id) === Number(inbox.id), 'native form submission reaches the default project inbox')
+  for (const signedIn of [false, true]) {
+    await navigate(cdp, origin + '/case-fixture', { quietMs: 100, timeoutMs: 20000 })
+    await evaluate(`(async()=>{
+      await import('/widgets/bundle.js');
+      const headers = { 'Content-Type': 'application/json' };
+      if (${signedIn}) headers['X-CSRF-Token'] = (await (await fetch('/api/csrf-token')).json()).token;
+      const response = await fetch(${JSON.stringify(signedIn ? '/api/_native/support/session' : widget + '/session')}, { method: 'POST', credentials: '${signedIn ? 'same-origin' : 'omit'}', headers, body: '{}' });
+      if (!response.ok) throw new Error('Case fixture session ' + response.status);
+      const form = document.createElement('hq-support-ticket-form');
+      Object.assign(form, { apiUrl: location.origin, projectId: ${JSON.stringify(project.public_id)}, sessionToken: (await response.json()).token });
+      form.addEventListener('delivery', event => { form.dataset.conversation = event.detail.ticket.conversation_id });
+      document.body.append(form);
+    })()`)
+    const audience = signedIn ? 'signed-in' : 'guest'
+    await waitFor(() => evaluate(`${formRoot}.querySelector('#ticket-type')?.selectedOptions[0]?.textContent === 'Private account help' && !${formRoot}.querySelector('fieldset').disabled`), 15000, { label: `Compiled ${audience} case form ready` })
+    await evaluate(`(()=>{const root=${formRoot}; for (const [selector,value] of [['#ticket-subject','Private ${audience} request'],['#ticket-body','Please answer in this private case.']]) { const field=root.querySelector(selector); field.value=value; field.dispatchEvent(new Event('input',{bubbles:true})); } root.querySelector('form').requestSubmit();})()`)
+    await waitFor(() => evaluate(`Boolean(document.querySelector('hq-support-ticket-form').dataset.conversation)`), 15000, { label: `${audience} form returns a linked conversation` })
+    const conversationId = await evaluate(`document.querySelector('hq-support-ticket-form').dataset.conversation`)
+    const record = await one('SELECT c.inbox_id, p.external_id FROM support_conversations c JOIN support_contacts p ON p.id = c.contact_id AND p.project_id = c.project_id WHERE c.id = ? AND c.project_id = ?', [conversationId, project.id])
+    check(Number(record?.inbox_id) === Number(inbox.id), `${audience} form submission reaches the default project inbox`)
+    check(signedIn ? record?.external_id === `user:${owner.id}` : String(record?.external_id).startsWith('anonymous:'), `${audience} form preserves the server-bound contact`)
+  }
   console.info(`PASS team UI functional (${assertions.length} checks)`)
   await Bun.write(resolve(artifacts, 'report.json'), JSON.stringify({ passed: runtimeErrors.length === 0, functionalPassed: true, assertions, runtimeErrors, browser: (await cdp.send('Browser.getVersion')).product }, null, 2))
   assert.deepEqual(runtimeErrors, [], 'No browser runtime errors: retain this gate until the native compiler fix is published')
