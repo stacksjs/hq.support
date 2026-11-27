@@ -11,6 +11,7 @@ export const emails = {
   'notification': '@stacksjs/defaults/resources/emails/notification.stx',
   'password-changed': '@stacksjs/defaults/resources/emails/password-changed.stx',
   'password-reset': '@stacksjs/defaults/resources/emails/password-reset.stx',
+  'subscription-confirm': '@stacksjs/defaults/resources/emails/subscription-confirm.stx',
   'subscription-confirmation': '@stacksjs/defaults/resources/emails/subscription-confirmation.stx',
   'team-invitation': '@stacksjs/defaults/resources/emails/team-invitation.stx',
   'welcome': '@stacksjs/defaults/resources/emails/welcome.stx',

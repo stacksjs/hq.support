@@ -3,6 +3,7 @@
 </script>
 <script client>
 import { messengerDate, messengerDirection, messengerLocale, messengerText } from '../../functions/support/messenger-locale'
+import { createCustomerTyping } from '../../functions/support/customer-typing'
 
 interface Message { id: string, body: string, author_type: string, created_at?: string, delivery_status?: string }
 interface Attachment { id: string, fileName: string, mimeType: string, bytes: number, visibility: string }
@@ -10,6 +11,11 @@ interface CsatOffer { question: string, revision: number }
 interface CsatAnswer { id: string, score: number, comment: string, question: string, revision: number, createdAt: string }
 type CsatStatus = { available?: boolean, reason?: string, survey?: CsatOffer, response?: CsatAnswer }
 interface CsatPayload { score: number, comment: string, revision: number }
+interface CustomerTyping {
+  input(conversation: string, hasDraft: boolean): void
+  listen(): () => void
+  stop(): void
+}
 interface ComponentState {
   csat: CsatStatus
   csatOffer: Partial<CsatOffer>
@@ -30,6 +36,8 @@ interface ComponentState {
   _poll?: ReturnType<typeof setInterval>
   _typingTimer?: ReturnType<typeof setTimeout>
   _typingRequest?: AbortController
+  _customerTyping?: CustomerTyping
+  _typingCleanup?: () => void
   _refreshRequest?: AbortController
   _unread?: number
   _sendKey?: string | null
@@ -45,8 +53,11 @@ interface CreatedReply { message?: { id: string, conversation_id: string, delive
 
 function onConnect() {
   this._generation = this._generation || 0
+  this._customerTyping ??= createCustomerTyping((path, options) => this.request(path, options))
+  this._typingCleanup = this._customerTyping.listen()
 }
 function onDisconnect() {
+  this._typingCleanup?.()
   this.shutdown()
 }
 function text(key: string, values?: Record<string, string | number>): string {
@@ -115,6 +126,7 @@ function close(): void {
   this.opened = false
   this.cancelOlderHistory()
   this.stopTyping()
+  this._customerTyping?.stop()
   this.emit('closed', {})
 }
 async function update(options: { url?: string, project?: string, token?: string, locale?: string } = {}): Promise<void> {
@@ -129,6 +141,7 @@ async function track(event: { event: string, attributes?: Record<string, unknown
   return this.request<{ id: string, accepted: boolean }>('/events', { method: 'POST', body: JSON.stringify({ ...event, idempotencyKey: event.idempotencyKey || crypto.randomUUID() }) })
 }
 function shutdown(): void {
+  this._customerTyping?.stop()
   this._generation = (this._generation || 0) + 1
   this._abort?.abort()
   clearInterval(this._poll)
@@ -301,7 +314,9 @@ async function loadOlderHistory(): Promise<void> {
   }
 }
 function editDraft(event: Event) {
-  if (event.target instanceof HTMLTextAreaElement) this._draft = event.target.value
+  if (!(event.target instanceof HTMLTextAreaElement)) return
+  this._draft = event.target.value
+  if (this.opened && this.sessionToken && !this.pending) this._customerTyping?.input(this.conversationId, !!this._draft.trim())
 }
 function stopTyping(): void {
   clearTimeout(this._typingTimer)
@@ -426,6 +441,7 @@ async function send(event: Event) {
   const form = event.target
   const draft = String(new FormData(form).get('body') || ''), body = draft.trim()
   if (!body) return
+  this._customerTyping?.stop()
   this._draft = draft
   this.pending = true
   this.notice = ''

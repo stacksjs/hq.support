@@ -2,11 +2,12 @@ import { state } from '@stacksjs/stx'
 import { useEventListener } from '@stacksjs/stx/composables/use-event-listener'
 
 interface InboxViewer { userId: string, composing: boolean }
-interface PresenceState { viewers: InboxViewer[], lastAgentReplyId?: string }
+interface PresenceState { viewers: InboxViewer[], lastAgentReplyId?: string, customerTyping?: boolean }
 type RequestPresence = (path: string, options: RequestInit) => Promise<PresenceState>
 
 export function createInboxPresence(request: RequestPresence, onReply: (id: string) => Promise<void>, onAccessLost: () => void) {
   const viewers = state<InboxViewer[]>([])
+  const customerTyping = state(false)
   const latestReply = state('0')
   let path = '', tabId = '', sequence = 0, composing = false
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -21,6 +22,7 @@ export function createInboxPresence(request: RequestPresence, onReply: (id: stri
     active?.abort()
     active = undefined
     viewers.set([])
+    customerTyping.set(false)
   }
   function payload(status: 'viewing' | 'composing' | 'away', options: RequestInit = {}) {
     return { ...options, method: 'POST', body: JSON.stringify({ tabId, sequence: ++sequence, state: status }) }
@@ -38,6 +40,7 @@ export function createInboxPresence(request: RequestPresence, onReply: (id: stri
       const result = await request(target, payload(composing ? 'composing' : 'viewing', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8_000)]) }))
       if (active !== controller || path !== target) return
       viewers.set(result.viewers)
+      customerTyping.set(result.customerTyping === true)
       if (result.lastAgentReplyId !== undefined && result.lastAgentReplyId !== latestReply()) {
         latestReply.set(result.lastAgentReplyId)
         void onReply(result.lastAgentReplyId).catch(() => undefined)
@@ -46,6 +49,7 @@ export function createInboxPresence(request: RequestPresence, onReply: (id: stri
     catch (failure) {
       if (active !== controller) return
       viewers.set([])
+      customerTyping.set(false)
       if ((failure as { status?: number }).status === 403 || (failure as { status?: number }).status === 404) {
         stop(false)
         onAccessLost()
@@ -89,5 +93,5 @@ export function createInboxPresence(request: RequestPresence, onReply: (id: stri
     const pagehide = useEventListener('pagehide', () => { cancel(); leave(path) })
     return () => { visibility.remove(); pagehide.remove() }
   }
-  return { viewers, latestReply, start, stop, update, listen, refresh: pulse }
+  return { viewers, customerTyping, latestReply, start, stop, update, listen, refresh: pulse }
 }

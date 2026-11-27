@@ -1814,6 +1814,7 @@ declare module '@stacksjs/database' {
       status: string
       configuration_hash: string
       provider_message_id: string
+      accepted_at: number | bigint
       wallet_reservation_id: string
       reserved_cents: number | bigint
       provider_cost_micros: number | bigint
@@ -1927,6 +1928,18 @@ declare module '@stacksjs/database' {
       enabled: number
       revision: number | bigint
       question: string
+    }
+    support_customer_presences: {
+      // columns
+      id: number
+      workspace_id: number | bigint
+      project_id: number | bigint
+      conversation_id: number | bigint
+      session_id: number | bigint
+      tab_id: string
+      sequence: number | bigint
+      state: "composing" | "away"
+      expires_at: number | bigint
     }
     support_customer_sessions: {
       // columns
@@ -2369,6 +2382,8 @@ declare module '@stacksjs/database' {
       name: string
       allowed_origins: string
       anonymous_enabled: number
+      managed_daily_cap_cents: number | bigint
+      managed_monthly_cap_cents: number | bigint
     }
     support_provider_cost_buckets: {
       // columns
@@ -2422,6 +2437,49 @@ declare module '@stacksjs/database' {
       user_id: number | bigint
       availability: string
       capacity: number | bigint
+    }
+    support_ses_invoice_pools: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      account_id: string
+      region: string
+      period: string
+    }
+    support_ses_invoice_revisions: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      pool_id: number | bigint
+      approval: string
+      replaces: string
+      format: string
+      invoice_id: string
+      manifest_sha256: string
+      evidence_sha256: string
+      recipient_units: number | bigint
+      cost_micros: number | bigint
+      charged_cents: number | bigint
+      reason: string
+    }
+    support_ses_send_evidence: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      channel_id: number | bigint
+      delivery_id: number | bigint
+      account_id: string
+      region: string
+      configuration_set: string
+      provider_message_id: string
+      notification_id: string
+      event_sha256: string
+      sent_at: number | bigint
     }
     support_subscriptions: {
       // columns
@@ -2495,6 +2553,11 @@ declare module '@stacksjs/database' {
       snapshot: string
       phase: string
       anchor_at: number | bigint
+      started_at: number | bigint
+      phase_started_at: number | bigint
+      worked_ms: number | bigint
+      first_working_ms: number | bigint
+      resolution_working_ms: number | bigint
       first_remaining_ms: number | bigint
       resolution_remaining_ms: number | bigint
       first_due_at: number | bigint
@@ -2598,6 +2661,7 @@ declare module '@stacksjs/database' {
       updated_at: string | null
       provider_cost_micros: number | bigint
       workspace_id: number | bigint
+      project_id: number | bigint
       public_id: string
       operation_key: string
       provider: string

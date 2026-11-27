@@ -22,12 +22,18 @@ declare global {
   const createAutomations: typeof autoImports.createAutomations
   const createSupportConsole: typeof autoImports.createSupportConsole
   const createCustomerSatisfaction: typeof autoImports.createCustomerSatisfaction
+  const createCustomerTyping: typeof autoImports.createCustomerTyping
+  const createInboxLocale: typeof autoImports.createInboxLocale
   const createInboxPresence: typeof autoImports.createInboxPresence
   const createInbox: typeof autoImports.createInbox
   const createKnowledge: typeof autoImports.createKnowledge
   const createSupport: typeof autoImports.createSupport
   const supportLayoutCss: typeof autoImports.supportLayoutCss
   const support: typeof autoImports.support
+  const messengerLocale: typeof autoImports.messengerLocale
+  const messengerText: typeof autoImports.messengerText
+  const messengerDirection: typeof autoImports.messengerDirection
+  const messengerDate: typeof autoImports.messengerDate
   const createPhone: typeof autoImports.createPhone
   const createReports: typeof autoImports.createReports
   const createSupportSettings: typeof autoImports.createSupportSettings

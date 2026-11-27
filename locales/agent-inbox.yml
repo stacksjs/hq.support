@@ -1,4 +1,5 @@
 en:
+  customerTyping: "Customer is typing…"
   loadOlderMessages: "Load older messages"
   olderMessagesLoading: "Loading older messages…"
   olderMessagesFailed: "Could not load older messages. Try again."
@@ -35,6 +36,7 @@ en:
   retentionLastRedaction: "Last redaction"
 
 de:
+  customerTyping: "Der Kunde schreibt…"
   loadOlderMessages: "Ältere Nachrichten laden"
   olderMessagesLoading: "Ältere Nachrichten werden geladen…"
   olderMessagesFailed: "Ältere Nachrichten konnten nicht geladen werden. Erneut versuchen."
@@ -71,6 +73,7 @@ de:
   retentionLastRedaction: "Letzte Schwärzung"
 
 ar:
+  customerTyping: "العميل يكتب…"
   loadOlderMessages: "تحميل الرسائل الأقدم"
   olderMessagesLoading: "جارٍ تحميل الرسائل الأقدم…"
   olderMessagesFailed: "تعذّر تحميل الرسائل الأقدم. حاول مرة أخرى."

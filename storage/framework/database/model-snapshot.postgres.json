@@ -10058,10 +10058,119 @@
             "type": "unique"
           }
         ]
+      },
+      {
+        "table": "support_customer_presences",
+        "columns": [
+          {
+            "name": "id",
+            "type": "bigint",
+            "isPrimaryKey": true,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "workspace_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "project_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "conversation_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "session_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "tab_id",
+            "type": "string",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "sequence",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "state",
+            "type": "enum",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false,
+            "enumValues": [
+              "composing",
+              "away"
+            ],
+            "enumTypeName": "support_customer_presences_state_type"
+          },
+          {
+            "name": "expires_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          }
+        ],
+        "indexes": [
+          {
+            "name": "support_customer_presence_tab",
+            "columns": [
+              "session_id",
+              "tab_id"
+            ],
+            "type": "unique"
+          },
+          {
+            "name": "support_customer_presence_conversation",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "conversation_id",
+              "expires_at"
+            ],
+            "type": "index"
+          },
+          {
+            "name": "support_customer_presence_expiry",
+            "columns": [
+              "expires_at"
+            ],
+            "type": "index"
+          }
+        ]
       }
     ]
   },
-  "hash": "9f840acec1c4c631081ba0c7c1dcbdf2cfc4178335545d3890b802393627e377",
+  "hash": "bc97e00ab954ae541be70b5fd49b8633939a8e3ccf0345c165d155e642392843",
   "dialect": "postgres",
-  "updatedAt": "2026-11-27T12:36:34.375Z"
+  "updatedAt": "2026-11-27T15:27:46.810Z"
 }

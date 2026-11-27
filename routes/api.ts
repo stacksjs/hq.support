@@ -54,6 +54,7 @@ route.get('/widget/projects/{project}/conversations', supportAction('widget.conv
 route.post('/widget/projects/{project}/conversations', supportAction('widget.create', 'POST')).skipCsrf().rateLimit(30, 'minute')
 route.get('/widget/projects/{project}/conversations/{id}', supportAction('widget.detail', 'GET')).rateLimit(120, 'minute')
 route.get('/widget/projects/{project}/conversations/{id}/typing', supportAction('widget.typing', 'GET')).rateLimit(600, 'minute')
+route.post('/widget/projects/{project}/conversations/{id}/presence', supportAction('widget.presence', 'POST')).parseBody(false).skipCsrf().rateLimit(120, 'minute')
 route.post('/widget/projects/{project}/conversations/{id}/messages', supportAction('widget.reply', 'POST')).skipCsrf().rateLimit(60, 'minute')
 route.get('/widget/projects/{project}/articles', supportAction('widget.articles', 'GET')).rateLimit(120, 'minute')
 route.post('/widget/projects/{project}/tickets', supportAction('widget.tickets.create', 'POST')).skipCsrf().rateLimit(20, 'minute')

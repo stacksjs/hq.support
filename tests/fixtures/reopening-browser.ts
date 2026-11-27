@@ -144,11 +144,32 @@ try {
   const typingTab = crypto.randomUUID()
   assert.equal((await http(prefix + `/conversations/${late.id}/presence`, 'POST', { tabId: typingTab, state: 'composing', sequence: 1 }, owner)).status, 200)
   await wait(`${shadow}.querySelector('.typing-status').textContent.trim() === 'Support is typing…'`, 'Server-identified customer sees typing in the original request')
+  const customerTyping = async (expected: boolean) => {
+    let sequence = 0
+    const tabId = crypto.randomUUID()
+    await waitFor(async () => {
+      const result = await http(prefix + `/conversations/${late.id}/presence`, 'POST', { tabId, state: 'viewing', sequence: ++sequence }, owner)
+      return result.status === 200 && result.data.customerTyping === expected
+    }, 10000, { label: 'Server-identified Messenger changes customer typing' })
+  }
+  await evaluate(`${shadow}.querySelector('#support-body').focus()`)
+  await cdp.send('Input.insertText', { text: 'A private signed-in draft' })
+  await customerTyping(true)
+  const changeCustomer = (token: string) => evaluate(`${widget}.update({token: ${JSON.stringify(token)}})`)
+  await changeCustomer(recent.token)
+  await customerTyping(false)
+  check(await evaluate(`${widget}.conversationId === ${JSON.stringify(recent.id)}`), 'a new identified account clears the previous customer typing across the widget origin boundary')
+  await changeCustomer(late.token)
   held = { id: late.id, release: Promise.withResolvers<void>(), used: false }
   await evaluate(`void ${widget}.refresh()`); await waitFor(() => held!.used, 15000, { label: 'Predecessor refresh held after native read' })
   const before = await usage(Number(workspace.id), 'conversations')
+  await evaluate(`${shadow}.querySelector('#support-body').focus()`)
+  await cdp.send('Input.insertText', { text: 'Preparing a continuation' })
+  await customerTyping(true)
   attachNext = true; await send('Late continuation from browser')
   const destination = submissions.at(-1)!.destination!
+  await customerTyping(false)
+  check(true, 'submitting the continuation clears customer typing for the previous request')
   check(destination !== late.id && await evaluate(`${widget}.conversationId === ${JSON.stringify(destination)}`), 'late reply selects the actual committed destination')
   check(await evaluate(`${shadow}.querySelector('.typing-status').textContent.trim() === ''`), 'typing from the previous conversation clears when the customer changes conversations')
   assert.equal((await http(prefix + `/conversations/${destination}/presence`, 'POST', { tabId: typingTab, state: 'composing', sequence: 2 }, owner)).status, 200)
