@@ -13,7 +13,7 @@ import { createChannelReply, dispatchChannelDelivery, applyChannelInbound, retai
 import { configureBillingGateway, configureWalletLimits, createWalletCheckout, receivePayment } from '../../app/Support/billing'
 import { channelOptedOut, recordChannelConsent } from '../../app/Support/channel-consent'
 import { loadChannel, saveChannel } from '../../app/Support/channels'
-import { agentProject } from '../../app/Support/service'
+import { agentProject, latestAgentReplyId } from '../../app/Support/service'
 
 await overridesReady
 config.database.queryLogging.enabled = false
@@ -324,6 +324,16 @@ try {
   const monthInbound = (await one('SELECT id FROM support_inbound WHERE provider_event_id = ?', [monthSid]))!
   await query('UPDATE support_inbound SET created_at = ? WHERE id = ?', [new Date(Date.now() - 35 * 86400000).toISOString(), monthInbound.id])
   check((await applyChannelInbound(monthInbound.id, dependencies)).processed && Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND meter = 'conversations' AND period = ?", [workspace.id, new Date().toISOString().slice(0, 7)]))!.used) === delayedMeter + 1 && Number((await one("SELECT used FROM support_usage WHERE workspace_id = ? AND period = ? AND meter = 'conversations'", [workspace.id, priorMonth]))?.used || 0) === priorMonthUsed, 'new conversation usage belongs to actual current UTC admission month rather than retained-event month')
+  const guardedConversation = delayedCurrent.conversation_id
+  const lastReply = await latestAgentReplyId(project, guardedConversation)
+  const beforeGuardedHolds = Number((await one('SELECT COUNT(*) AS count FROM support_wallet_reservations WHERE workspace_id = ?', [workspace.id]))!.count)
+  const guardedRequests = ['first', 'second'].map(name => ({ body: `Guarded ${name} provider reply`, idempotencyKey: `guarded-${name}`, afterAgentReplyId: lastReply }))
+  const guardedResults = await Promise.allSettled(guardedRequests.map(input => createChannelReply(project, guardedConversation, input, Number(owner.id), dependencies)))
+  check(guardedResults.filter(result => result.status === 'fulfilled').length === 1 && guardedResults.some(result => result.status === 'rejected' && result.reason.code === 'agent_reply_changed'), 'concurrent guarded provider replies admit one delivery before charging either agent')
+  const guardedWinner = guardedResults.findIndex(result => result.status === 'fulfilled')
+  const guardedReplay = await createChannelReply(project, guardedConversation, guardedRequests[guardedWinner]!, Number(owner.id), dependencies)
+  const guardedFirst = guardedResults[guardedWinner] as PromiseFulfilledResult<typeof guardedReplay>
+  check(guardedFirst.value.delivery?.id === guardedReplay.delivery?.id && Number((await one('SELECT COUNT(*) AS count FROM support_wallet_reservations WHERE workspace_id = ?', [workspace.id]))!.count) === beforeGuardedHolds + 1, 'guarded provider replay recovers one delivery and one wallet hold')
   rotateSlack = async () => { await saveChannel(project, { id: slack.id, provider: 'slack', configuration: { botToken: 'tenant-slack', signingSecret: 'slack-signing', teamId: 'Tfixture', channelId: 'Cfixture' } }, Number(owner.id)) }
   check((await http(`${scope}/channels/${slack.id}/verify`, 'POST', {}, token)).status === 409, 'a provider probe cannot mark newly changed credentials ready')
   check((await loadChannel(project, slack.id)).status === 'pending', 'changed connection stays pending despite stale successful evidence')

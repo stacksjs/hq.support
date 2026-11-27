@@ -22,6 +22,7 @@ declare global {
   const createAutomations: typeof autoImports.createAutomations
   const createSupportConsole: typeof autoImports.createSupportConsole
   const createCustomerSatisfaction: typeof autoImports.createCustomerSatisfaction
+  const createInboxPresence: typeof autoImports.createInboxPresence
   const createInbox: typeof autoImports.createInbox
   const createKnowledge: typeof autoImports.createKnowledge
   const createSupport: typeof autoImports.createSupport

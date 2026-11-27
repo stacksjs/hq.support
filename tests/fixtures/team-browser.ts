@@ -22,8 +22,9 @@ await injectGlobalAutoImports(); await route.importRoutes()
 route.post('/api/_native/support/session', NativeSessionAction).middleware('auth')
 const api = await route.serve({ port: 0, hostname: '127.0.0.1' }), apiOrigin = `http://127.0.0.1:${api.port}`
 const root = resolve(import.meta.dir, '../..'), output = await mkdtemp(resolve(tmpdir(), 'hq-support-team-browser-')), artifacts = resolve(root, 'storage/framework/runtime/team-browser')
-let host: ReturnType<typeof Bun.serve> | undefined, browser: Awaited<ReturnType<typeof launch>> | undefined
-let cookie = '', csrf = '', failSend = false, failList = false
+let host: ReturnType<typeof Bun.serve> | undefined, browser: Awaited<ReturnType<typeof launch>> | undefined, peer: Awaited<ReturnType<typeof launch>> | undefined
+let cookie = '', csrf = '', peerCookie = '', failSend = false, failList = false, simulatePeerDisconnect = false
+const presenceTiming: Record<string, number> = {}
 const assertions: string[] = [], runtimeErrors: string[] = []
 const searchTraffic: Array<{ q: string | null, inboxId: string | null, status: string | null, cursor: string | null, path: string }> = []
 let searchGate: { query: string, used: boolean, entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>> } | undefined
@@ -58,9 +59,13 @@ try {
   assert.equal(compiled.failedCount, 0)
   host = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const url = new URL(request.url)
-    if (url.pathname.startsWith('/_fixture/')) return new Response(null, { status: 303, headers: { location: '/app/team-settings', 'set-cookie': url.pathname.endsWith('/agent') ? agentCookie : ownerCookie } })
+    if (url.pathname.startsWith('/_fixture/')) return new Response(null, { status: 303, headers: { location: '/app/team-settings', 'set-cookie': url.pathname.endsWith('/peer') ? peerCookie : url.pathname.endsWith('/agent') ? agentCookie : ownerCookie } })
     if (url.pathname === '/case-fixture') return new Response('<!doctype html><html lang="en"><head><title>Support case fixture</title></head><body></body></html>', { headers: { 'content-type': 'text/html' } })
     if (url.pathname.startsWith('/api/')) {
+      if (simulatePeerDisconnect && request.method === 'POST' && url.pathname.endsWith('/presence')) {
+        const payload = await request.clone().json() as { state: string }
+        if (payload.state === 'away') return Response.json({ viewers: [] })
+      }
       if (failList && request.method === 'GET' && url.pathname.endsWith('/inbox')) { failList = false; return Response.json({ error: { message: 'Fixture inbox refresh failure. Reply draft kept.' } }, { status: 503 }) }
       if (failSend && request.method === 'POST' && url.pathname.endsWith('/messages')) { failSend = false; return Response.json({ error: { message: 'Fixture transport failure. Keep this reply draft.' } }, { status: 503 }) }
       if (request.method === 'GET' && url.pathname.endsWith('/inbox')) searchTraffic.push({ q: url.searchParams.get('q'), inboxId: url.searchParams.get('inboxId'), status: url.searchParams.get('status'), cursor: url.searchParams.get('cursor'), path: url.pathname })
@@ -283,8 +288,57 @@ try {
     check(Number(record?.inbox_id) === Number(inbox.id), `${audience} form submission reaches the default project inbox`)
     check(signedIn ? record?.external_id === `user:${owner.id}` : String(record?.external_id).startsWith('anonymous:'), `${audience} form preserves the server-bound contact`)
   }
+  const collisionSubject = 'Simultaneous agent replies'
+  const collisionCase = await http(`/v1/projects/${project.public_id}/conversations`, 'POST', { externalId: 'collision-customer', subject: collisionSubject, body: 'Please coordinate this response.', idempotencyKey: 'browser-presence' }, keys.ingestKey)
+  assert.equal(collisionCase.status, 201)
+  await navigate(cdp, origin + '/app', { quietMs: 100, timeoutMs: 20000 })
+  await text(collisionSubject)
+  await selectConversation(collisionSubject)
+  peerCookie = await browserCookie('agent')
+  peer = await launch({ headless: true, shared: false, chromePath: process.env.CHROME_PATH, startTimeoutMs: 60000, commandTimeoutMs: 20000 })
+  const peerCdp = peer.cdp
+  peerCdp.on('Runtime.exceptionThrown', event => runtimeErrors.push(String(event.exceptionDetails.exception?.description || event.exceptionDetails.text)))
+  await peerCdp.intercept([{ urlPattern: '*' }], async (event, session) => {
+    const url = new URL(event.request.url)
+    if (['http:', 'https:'].includes(url.protocol) && url.origin !== origin) await session.send('Fetch.fulfillRequest', { requestId: event.requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: 'text/css' }], body: '' })
+    else await session.send('Fetch.continueRequest', { requestId: event.requestId })
+  })
+  await navigate(peerCdp, origin + '/_fixture/peer', { quietMs: 100, timeoutMs: 20000 })
+  await navigate(peerCdp, origin + '/app', { quietMs: 100, timeoutMs: 20000 })
+  await waitFor(() => peerCdp.evaluate(`document.body.textContent.includes(${JSON.stringify(collisionSubject)})`), 15000, { label: 'Independent agent opens the same inbox' })
+  const joined = performance.now()
+  await peerCdp.evaluate(`Array.from(document.querySelectorAll('.conversation-row strong')).find(el => el.textContent.trim() === ${JSON.stringify(collisionSubject)})?.closest('button').click()`)
+  await waitFor(() => peerCdp.evaluate(`document.querySelector('#reply')?.disabled === false && document.body.textContent.includes('Also viewing · owner')`), 15000, { label: 'Peer sees owner in the selected conversation' })
+  await text('Also viewing · agent')
+  presenceTiming.joinMs = Math.round(performance.now() - joined)
+  check(await evaluate(`document.querySelector('.thread-heading [role="status"]').textContent.trim() === 'Also viewing · agent'`), 'two independent signed-in browsers see only the other agent on the same thread')
+  await input('#reply', 'Owner draft preserved during collaboration')
+  const beganComposing = performance.now()
+  await peerCdp.evaluate(`(()=>{const field=document.querySelector('#reply'); field.value='Agent reply sent first'; field.dispatchEvent(new Event('input',{bubbles:true}));})()`)
+  await text('agent composing a public reply.')
+  presenceTiming.composingMs = Math.round(performance.now() - beganComposing)
+  check(await evaluate(`document.querySelector('#reply').value === 'Owner draft preserved during collaboration' && document.querySelector('#reply-collision').getAttribute('role') === 'status' && document.querySelector('.composer-footer button').disabled`), 'composing warning is announced, keeps the draft and holds the default send')
+  await waitFor(() => peerCdp.evaluate(`document.body.textContent.includes('owner composing a public reply.')`), 15000, { label: 'Peer also sees owner composing' })
+  await peerCdp.evaluate(`Array.from(document.querySelectorAll('button')).find(el => el.textContent.trim() === 'Send my reply anyway')?.click()`)
+  const sent = performance.now()
+  await text('A teammate sent a public reply while you were writing.')
+  presenceTiming.replyWarningMs = Math.round(performance.now() - sent)
+  await click('Review conversation')
+  await text('Agent reply sent first')
+  check(await evaluate(`document.querySelector('#reply').value === 'Owner draft preserved during collaboration' && document.querySelector('#reply').getAttribute('aria-describedby') === 'reply-collision'`), 'reviewing a new reply refreshes the transcript without consuming the draft')
+  await click('Send my reply anyway'); await text('Reply saved.')
+  const collisionThreadId = collisionCase.data.conversation.id
+  check(Number((await one("SELECT COUNT(*) AS total FROM support_messages WHERE conversation_id = ? AND author_type = 'agent' AND visibility = 'public'", [collisionThreadId]))?.total) === 2, 'explicit confirmation sends one additional reply after the other agent’s message')
+  simulatePeerDisconnect = true
+  const disconnected = performance.now()
+  await peer.close()
+  peer = undefined
+  await waitFor(() => evaluate(`!document.querySelector('.thread-heading [role="status"]').textContent.includes('agent')`), 35_000, { label: 'Unclean browser disconnect expires without a leave request' })
+  simulatePeerDisconnect = false
+  presenceTiming.disconnectMs = Math.round(performance.now() - disconnected)
+  check(presenceTiming.disconnectMs <= 32_000, 'a disappeared browser stops appearing after its lease expires')
   console.info(`PASS team UI functional (${assertions.length} checks)`)
-  await Bun.write(resolve(artifacts, 'report.json'), JSON.stringify({ passed: runtimeErrors.length === 0, functionalPassed: true, assertions, runtimeErrors, browser: (await cdp.send('Browser.getVersion')).product }, null, 2))
+  await Bun.write(resolve(artifacts, 'report.json'), JSON.stringify({ passed: runtimeErrors.length === 0, functionalPassed: true, assertions, runtimeErrors, presenceTiming, cacheDriver: config.cache.driver, browser: (await cdp.send('Browser.getVersion')).product }, null, 2))
   assert.deepEqual(runtimeErrors, [], 'No browser runtime errors: retain this gate until the native compiler fix is published')
   console.info('PASS team browser qualification')
 }
@@ -295,6 +349,6 @@ finally {
     await Bun.write(resolve(artifacts, 'diagnostic.json'), JSON.stringify({ assertions, runtimeErrors, body: captured[0].status === 'fulfilled' ? captured[0].value : 'Browser closed' }, null, 2))
     if (captured[1].status === 'fulfilled') await Bun.write(resolve(artifacts, 'latest.png'), Buffer.from(captured[1].value.data, 'base64'))
   }
-  searchGate?.release.resolve(); host?.stop(true); api.stop(true); await browser?.close(); await closeSharedBrowsers(); await rm(output, { recursive: true, force: true })
+  searchGate?.release.resolve(); host?.stop(true); api.stop(true); await peer?.close(); await browser?.close(); await closeSharedBrowsers(); await rm(output, { recursive: true, force: true })
 }
 process.exit(0)

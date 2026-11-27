@@ -1,4 +1,5 @@
 import type { RequestInstance } from '@stacksjs/types'
+import { readJsonBody, RequestBodyError } from '@stacksjs/router/body'
 import type { Row } from './database'
 import { one, query, workspaceTransaction } from './database'
 import { SupportError, fail, identifier, text } from './errors'
@@ -12,7 +13,7 @@ import { confirmationCode } from '@stacksjs/hq/service'
 import { requireWidgetOrigin } from './widget-origin'
 import { projectReports } from './reports'
 
-export type Operation = 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.session.revoke' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.create' | 'widget.tickets.detail' | 'widget.ticket-types' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
+export type Operation = 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'agent.presence' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.session.revoke' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.create' | 'widget.tickets.detail' | 'widget.ticket-types' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
 
 const response = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } })
 function bearer(request: RequestInstance): string { return /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') || '')?.[1] ?? '' }
@@ -32,7 +33,15 @@ function parameters(request: RequestInstance) {
 async function handleCore(request: RequestInstance, operation: Operation): Promise<Response> {
   const acceptedAt = Date.now()
   try {
-    const params = parameters(request), data = input(request)
+    const params = parameters(request)
+    if (operation === 'agent.presence') {
+      const account = await user(request)
+      const project = await support.agentProject(account.id, params.project)
+      if (new URL(request.url).search) fail(422, 'invalid_presence', 'Send presence only in the request body.')
+      const body = support.object(await readJsonBody(request as unknown as Request, 1024, { rejectDuplicateKeys: true }))
+      return response(await (await import('./inbox-presence')).updateInboxPresence(project, params.id, account.id, body))
+    }
+    const data = input(request)
     if (operation === 'hq.start') {
       const started = await (await hq()).startConnect({ url: request.url, headers: request.headers, json: async () => data })
       if (!started.ok) return started
@@ -151,6 +160,7 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
   }
   catch (error) {
     if (error instanceof SupportError) return response({ error: { code: error.code, message: error.message } }, error.status)
+    if (error instanceof RequestBodyError) return response({ error: { code: 'invalid_presence', message: 'Send a bounded JSON presence update.' } }, error.status)
     if (error instanceof TypeError || error instanceof SyntaxError) return response({ error: { code: 'invalid_input', message: 'Request could not be parsed.' } }, 422)
     console.error('[support] request failed', error instanceof Error ? error.name : 'UnknownError')
     if (process.env.APP_ENV === 'test') console.error(error)

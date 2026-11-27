@@ -9,7 +9,7 @@ import { ingestProviderMedia, outboundMediaUrls, providerMediaSources, validateO
 import { managedCostFromMicros, reserveWallet, settleProviderWallet, settleWallet } from './billing'
 import { insert, one, query, workspaceTransaction } from './database'
 import { fail, identifier, text } from './errors'
-import { contact, conversation, createConversation, digest, idempotent, member, messageView, object, reply, secret } from './service'
+import { assertAgentReplyCursor, contact, conversation, createConversation, digest, idempotent, member, messageView, object, reply, secret } from './service'
 import { processInbound, receiveInbound } from './delivery'
 
 export function deliveryView(row: Row) {
@@ -46,12 +46,13 @@ export async function createChannelReply(project: Row, conversationId: unknown, 
   const channel = await requireReadyChannel(project, thread.channel_id), config = await channelConfig(channel), provider = textProvider(String(channel.provider))
   const key = text(input.idempotencyKey, 'idempotencyKey', 200), payload = cleanPayload(String(channel.provider), input)
   const selectedConversation = String(identifier(conversationId))
-  const legacyFingerprint = digest(JSON.stringify({ channel: channel.id, thread: thread.id, payload }))
-  const fingerprint = digest(JSON.stringify({ channel: channel.id, thread: thread.id, conversation: selectedConversation, payload })), configurationHash = digest(String(channel.configuration))
+  const afterAgentReplyId = input.afterAgentReplyId
+  const legacyFingerprint = afterAgentReplyId === undefined ? digest(JSON.stringify({ channel: channel.id, thread: thread.id, payload })) : undefined
+  const fingerprint = digest(JSON.stringify({ channel: channel.id, thread: thread.id, conversation: selectedConversation, payload, afterAgentReplyId })), configurationHash = digest(String(channel.configuration))
   async function replayDelivery(delivery: Row) {
     const message = await one('SELECT * FROM support_messages WHERE id = ? AND project_id = ? AND workspace_id = ?', [delivery.message_id, project.id, project.workspace_id])
     // Legacy hashes omitted the selected request. Its immutable message must still match.
-    if (!message || String(message.conversation_id) !== selectedConversation || ![fingerprint, legacyFingerprint].includes(String(delivery.request_hash))) fail(409, 'idempotency_conflict', 'Channel operation input or conversation changed.')
+    if (!message || String(message.conversation_id) !== selectedConversation || (afterAgentReplyId !== undefined && Number(message.author_id) !== userId) || ![fingerprint, legacyFingerprint].includes(String(delivery.request_hash))) fail(409, 'idempotency_conflict', 'Channel operation input or conversation changed.')
     return { message: messageView(message), delivery: deliveryView(delivery) }
   }
   const previous = await one('SELECT * FROM support_channel_deliveries WHERE project_id = ? AND operation_key = ?', [project.id, key])
@@ -65,6 +66,7 @@ export async function createChannelReply(project: Row, conversationId: unknown, 
     if (digest(String(current.configuration)) !== configurationHash) fail(409, 'channel_changed', 'Connection changed while preparing the reply.')
     const existing = await one('SELECT * FROM support_channel_deliveries WHERE project_id = ? AND operation_key = ?', [project.id, key])
     if (existing) return await replayDelivery(existing)
+    if (afterAgentReplyId !== undefined) await assertAgentReplyCursor(project, selectedConversation, afterAgentReplyId)
     const publicId = crypto.randomUUID()
     const reservation = maximumCents ? await reserveWallet(Number(project.workspace_id), `channel:${publicId}`, maximumCents, String(channel.provider)) : undefined
     const result = await reply(project, conversationId, { body: payload.body, visibility: 'public', idempotencyKey: `channel:${publicId}` }, { userId, deferDelivery: true, mediaOnly: Boolean(Array.isArray(payload.attachmentIds) && payload.attachmentIds.length) })

@@ -2137,6 +2137,20 @@ declare module '@stacksjs/database' {
       status: string
       last_error: string
     }
+    support_inbox_presences: {
+      // columns
+      id: number
+      created_at: string
+      updated_at: string | null
+      workspace_id: number | bigint
+      project_id: number | bigint
+      conversation_id: number | bigint
+      user_id: number | bigint
+      tab_id: string
+      sequence: number | bigint
+      state: "viewing" | "composing" | "away"
+      expires_at: number | bigint
+    }
     support_knowledge_chunks: {
       // columns
       id: number
@@ -2527,6 +2541,7 @@ declare module '@stacksjs/database' {
       project_id: number | bigint
       name: string
       kind: string
+      opens_conversation: number
       fields: string
       states: string
       sla_policy_id: number | bigint
