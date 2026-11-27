@@ -57,7 +57,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: bun --no-env-file scripts/verify-elements-registry-source.ts --publication
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.2
         with:
           artifact-ids: ${{ steps.source.outputs.artifact_id }}
           path: storage/framework/runtime/support-elements-release
@@ -71,7 +71,7 @@ jobs:
         run: bun --no-env-file scripts/qualify-support-browser.ts --skip-build
       - name: Dry-run publication of the exact retained archive
         run: bun --no-env-file scripts/support-elements-release.ts publish-dry-run
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: support-elements-publication-proof-${{ github.run_attempt }}
@@ -121,7 +121,7 @@ jobs:
         run: |
           test -n "$VERIFIED_ARTIFACT_ID"
           test "$RESOLVED_ARTIFACT_ID" = "$VERIFIED_ARTIFACT_ID"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.2
         with:
           artifact-ids: ${{ needs.verify.outputs.artifact_id }}
           path: storage/framework/runtime/support-elements-release
@@ -135,7 +135,7 @@ jobs:
         env:
           SUPPORT_BROWSER_ASSETS: storage/framework/runtime/support-elements-release/hosted
         run: bun --no-env-file scripts/qualify-support-browser.ts --skip-build
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: support-elements-registry-proof-${{ github.run_attempt }}
