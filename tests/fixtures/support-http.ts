@@ -200,6 +200,7 @@ try {
   async function reportMessage(threadId: unknown, offset: number, author: string, visibility = 'public', delivery = 'stored', authorId = author === 'agent' ? 1 : 0) {
     const message = await insert('support_messages', { ...scope, conversation_id: threadId, contact_id: reportContact.id, author_type: author, author_id: authorId, visibility, delivery_status: delivery, body: 'Do not expose this message' })
     await query('UPDATE support_messages SET created_at = ? WHERE id = ?', [new Date(start + offset).toISOString(), message.id])
+    return message.id
   }
   const threadId = await reportThread('widget')
   await reportMessage(threadId, 0, 'customer')
@@ -213,11 +214,24 @@ try {
   await reportMessage(threadId, 50_000, 'customer')
   await reportMessage(threadId, 60_000, 'customer')
   await reportMessage(threadId, 90_000, 'agent')
-  for (const [channel, offset] of [['intercom-import', 0], ['discord', 0], ['widget', -31 * 86_400_000]] as const) {
+  for (const [channel, offset] of [['intercom-import', 0], ['widget', -31 * 86_400_000]] as const) {
     const excluded = await reportThread(channel, offset)
     await reportMessage(excluded, offset, 'customer')
     await reportMessage(excluded, offset, 'agent')
   }
+  const discordThread = await reportThread('discord')
+  const discordChannel = await insert('support_channels', { ...scope, public_id: crypto.randomUUID(), provider: 'discord' })
+  const discordBinding = await insert('support_channel_threads', { ...scope, channel_id: discordChannel.id, conversation_id: discordThread, remote_key: 'discord-report', recipient: 'discord-customer', contact_id: reportContact.id })
+  async function reportDelivery(messageId: unknown, providerId: string, acceptedAt: number) {
+    return await insert('support_channel_deliveries', { ...scope, channel_id: discordChannel.id, thread_id: discordBinding.id, message_id: messageId, public_id: crypto.randomUUID(), operation_key: crypto.randomUUID(), request_hash: '', status: providerId ? 'accepted' : 'unknown', provider_message_id: providerId, accepted_at: acceptedAt })
+  }
+  await reportMessage(discordThread, 0, 'customer')
+  const unknownDiscord = await reportMessage(discordThread, 1_000, 'agent', 'public', 'unknown')
+  await reportDelivery(unknownDiscord, '', 0)
+  await reportDelivery(await reportMessage(discordThread, 2_000, 'agent', 'public', 'accepted'), 'discord-first', start + 20_000)
+  await reportMessage(discordThread, 25_000, 'customer')
+  await reportDelivery(await reportMessage(discordThread, 26_000, 'agent', 'public', 'accepted'), 'discord-follow-up', start + 30_000)
+  await query("UPDATE support_conversations SET status = 'closed', resolved_at = ? WHERE id = ?", [start + 40_000, discordThread])
   const phoneThread = await reportThread('widget')
   const phoneChannel = await insert('support_channels', { ...scope, public_id: crypto.randomUUID(), provider: 'twilio-voice' })
   await insert('support_phone_calls', {
@@ -236,6 +250,15 @@ try {
   assert.deepEqual(measured.data.messengerTimings.firstReply, { samples: 1, averageMs: 30_000 })
   assert.deepEqual(measured.data.messengerTimings.followUpReply, { samples: 1, averageMs: 30_000 })
   assert.deepEqual(measured.data.messengerTimings.resolution, { samples: 1, averageMs: closed.data.conversation.resolved_at - start })
+  assert.deepEqual(measured.data.channelTimings, [{
+    channel: 'discord', firstReply: { samples: 1, averageMs: 20_000 },
+    followUpReply: { samples: 1, averageMs: 5_000 }, resolution: { samples: 1, averageMs: 40_000 },
+  }])
+  await reportDelivery(unknownDiscord, 'historical-acknowledgement-without-time', 0)
+  assert.deepEqual((await report()).data.channelTimings, [{
+    channel: 'discord', firstReply: { samples: 0, averageMs: null },
+    followUpReply: { samples: 0, averageMs: null }, resolution: { samples: 1, averageMs: 40_000 },
+  }])
   check(measured.data.conversations.reduce((sum: number, row: any) => sum + Number(row.total), 0) === 5 && !JSON.stringify(measured.data).includes('Do not expose'), 'legacy totals still include all channels and omit conversation data')
   const reopened = await request(`${reportPath}/conversations/${threadId}`, 'PATCH', { status: 'open' }, token)
   check(reopened.status === 200, 'real inbox status change reopens the report conversation')

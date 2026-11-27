@@ -6455,6 +6455,15 @@
             "isNullable": false,
             "hasDefault": true,
             "defaultValue": "{}"
+          },
+          {
+            "name": "accepted_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
           }
         ],
         "indexes": [
@@ -6481,6 +6490,15 @@
               "public_id"
             ],
             "type": "unique"
+          },
+          {
+            "name": "support_channel_delivery_message",
+            "columns": [
+              "project_id",
+              "workspace_id",
+              "message_id"
+            ],
+            "type": "index"
           }
         ]
       },
@@ -9600,7 +9618,7 @@
       }
     ]
   },
-  "hash": "43cf450742a0c8aacb4aa53d66b2270f62b109efc08e3e8b21315de0d665db52",
+  "hash": "65cc6125518dea3330bbdfdd453400fd2a45b300348db2e040bdfa91d1b7d134",
   "dialect": "sqlite",
-  "updatedAt": "2026-11-27T02:52:27.185Z"
+  "updatedAt": "2026-11-27T02:55:11.691Z"
 }

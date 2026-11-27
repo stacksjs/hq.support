@@ -12,7 +12,7 @@ export interface ChannelProvider {
   ingestMedia?(project: Row, channel: Row, record: Row, conversationId: unknown, payload: Row, dependencies: ChannelDependencies): Promise<unknown>
   estimate(config: Row, payload: Row): number
   send(channel: Row, config: Row, thread: Row, payload: Row, callbackUrl: string, dependencies: ChannelDependencies): Promise<ChannelSendOutcome>
-  reconcile?(config: Row, messageId: string, dependencies: ChannelDependencies): Promise<{ status: string, priceMicros?: number, currency?: string, from?: string, to?: string }>
+  reconcile?(config: Row, messageId: string, dependencies: ChannelDependencies): Promise<{ status: string, priceMicros?: number, currency?: string, from?: string, to?: string, createdAt?: string }>
 }
 const extensions = new Map<string, ChannelProvider>()
 /** A native provider implementation may register here at server boot; never accepts HTTP-supplied adapters. */

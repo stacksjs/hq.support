@@ -247,13 +247,26 @@ try {
   check(Number(arrival.id) > Number(oldBody.id) && Number(otherBox.id) !== Number(closedMatch.id) && siblingRecord.id, 'search qualification uses distinct persisted native records and real new arrivals')
 
   await navigate(cdp, origin + '/_fixture/owner', { quietMs: 100, timeoutMs: 20000 })
+  const reportScope = { workspace_id: workspace.id, project_id: project.id }
+  const reportContact = await insert('support_contacts', { ...reportScope, external_id: 'channel-report-browser' })
+  const reportThread = await insert('support_conversations', { ...reportScope, contact_id: reportContact.id, channel: 'discord', subject: 'Browser channel report' })
+  const reportSource = { ...reportScope, contact_id: reportContact.id, conversation_id: reportThread.id, visibility: 'public' }
+  await insert('support_messages', { ...reportSource, author_type: 'customer', body: 'Provider inquiry' })
+  const reportReply = await insert('support_messages', { ...reportSource, author_type: 'agent', author_id: owner.id, delivery_status: 'accepted', body: 'Provider acknowledgement' })
+  const reportChannel = await insert('support_channels', { ...reportScope, public_id: crypto.randomUUID(), provider: 'discord' })
+  const reportBinding = await insert('support_channel_threads', { ...reportScope, conversation_id: reportThread.id, contact_id: reportContact.id, channel_id: reportChannel.id, remote_key: 'browser-report', recipient: 'discord-fixture' })
+  await insert('support_channel_deliveries', { ...reportScope, channel_id: reportChannel.id, thread_id: reportBinding.id, message_id: reportReply.id, operation_key: 'browser-report', request_hash: '', public_id: crypto.randomUUID(), provider_message_id: 'discord-fixture-response', status: 'accepted', accepted_at: Date.now() })
   await navigate(cdp, origin + '/app/reports', { quietMs: 100, timeoutMs: 20000 })
   const timingCards = `Array.from(document.querySelectorAll('[aria-labelledby="report-messenger-heading"] .metric-cell'))`
   await waitFor(() => evaluate(`${timingCards}.length === 3`), 15000, { label: 'Compiled Messenger timing cards' })
   check(await evaluate(`${timingCards}.some(card => card.textContent.includes('First human reply') && card.textContent.includes('1 sample') && card.querySelector('strong').textContent !== 'No data')`), 'Reports renders a measured human reply from the native inbox')
+  const channelRow = 'document.querySelector(\'[aria-labelledby="report-channels-heading"] tbody tr\')'
+  await waitFor(() => evaluate(`${channelRow}?.cells.length === 4`), 15000, { label: 'Provider timing table cells' })
+  check(await evaluate(`${channelRow}.cells[0].textContent === 'Discord' && ${channelRow}.cells[1].textContent.includes('1 sample') && ${channelRow}.cells[2].textContent.includes('No data')`), 'Reports renders the native provider acknowledgement with a sample count and explicit missing measures')
   await input('#report-project', String(sibling.public_id))
   await waitFor(() => evaluate(`${timingCards}.length === 3 && ${timingCards}.every(card => card.querySelector('strong').textContent === 'No data')`), 15000, { label: 'Project without measured replies' })
   check(await evaluate(`document.querySelector('#report-project').value === ${JSON.stringify(String(sibling.public_id))}`), 'Reports switches projects without retaining the previous project’s timing values')
+  check(await evaluate(`!${channelRow}`), 'Project switching clears the previous project’s provider timing table')
 
   await navigate(cdp, origin + '/app/ticket-settings', { quietMs: 100, timeoutMs: 20000 })
   await waitFor(() => evaluate(`document.querySelector('#type-opens-conversation')?.checked === false`), 15000, { label: 'Inbox option defaults off for new customer types' })
