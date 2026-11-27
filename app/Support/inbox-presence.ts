@@ -6,6 +6,15 @@ import { conversation, latestAgentReplyId, member } from './service'
 export const inboxPresenceLeaseMs = 24_000
 const maxActiveTabs = 16
 
+export async function customerTyping(project: Row, reference: unknown, customer: Row) {
+  const selected = await conversation(project, reference, customer)
+  const composing = await one(`SELECT 1 AS typing FROM support_inbox_presences p
+    JOIN support_memberships m ON m.workspace_id = p.workspace_id AND m.user_id = p.user_id AND m.status = 'active'
+    WHERE p.workspace_id = ? AND p.project_id = ? AND p.conversation_id = ? AND p.state = 'composing' AND p.expires_at > ?
+    LIMIT 1`, [project.workspace_id, project.id, selected.id, Date.now()])
+  return { typing: Boolean(composing) }
+}
+
 export async function updateInboxPresence(project: Row, reference: unknown, userId: number, input: Row) {
   const { tabId, sequence, state } = input
   if (Object.keys(input).length !== 3 || typeof tabId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(tabId)

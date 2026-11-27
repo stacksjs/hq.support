@@ -10,11 +10,14 @@ export function createInboxPresence(request: RequestPresence, onReply: (id: stri
   const latestReply = state('0')
   let path = '', tabId = '', sequence = 0, composing = false
   let timer: ReturnType<typeof setTimeout> | undefined
+  let idle: ReturnType<typeof setTimeout> | undefined
   let active: AbortController | undefined
   const interval = 5_000
 
   function cancel() {
     clearTimeout(timer)
+    clearTimeout(idle)
+    composing = false
     active?.abort()
     active = undefined
     viewers.set([])
@@ -62,14 +65,15 @@ export function createInboxPresence(request: RequestPresence, onReply: (id: stri
     latestReply.set('0')
     if (sendLeave) leave(previous)
   }
-  function start(target: string, baseline: string, isComposing: boolean) {
+  function start(target: string, baseline: string) {
     if (!tabId) tabId = crypto.randomUUID()
     path = target
     latestReply.set(baseline)
-    composing = isComposing
     void pulse()
   }
   function update(isComposing: boolean) {
+    clearTimeout(idle)
+    if (isComposing) idle = setTimeout(() => update(false), 8_000)
     if (composing === isComposing) return
     composing = isComposing
     void pulse()

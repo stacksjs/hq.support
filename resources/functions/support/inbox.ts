@@ -90,12 +90,12 @@ export function createInbox() {
   const composingNames = derived(() => presence.viewers().filter(viewer => viewer.composing).map(viewer => person(viewer.userId)).join(', '))
   const replyChanged = derived(() => visibility() === 'public' && !!draft().trim() && replyAtStart() !== null && Number(presence.latestReply()) > Number(replyAtStart()))
   const collision = derived(() => visibility() === 'public' && !!draft().trim() && (replyChanged() || !!composingNames()))
-  function trackReplyDraft(value: string, mode: string) {
+  function trackReplyDraft(value: string, mode: string, editing = false) {
     if (!value.trim()) replyAtStart.set(null)
     else if (replyAtStart() === null) replyAtStart.set(seenReply())
-    presence.update(mode === 'public' && !!value.trim())
+    presence.update(editing && mode === 'public' && !!value.trim())
   }
-  function draftActivity(event: Event) { trackReplyDraft((event.target as HTMLTextAreaElement).value, visibility()) }
+  function draftActivity(event: Event) { trackReplyDraft((event.target as HTMLTextAreaElement).value, visibility(), true) }
   function visibilityActivity(event: Event) { trackReplyDraft(draft(), (event.target as HTMLSelectElement).value) }
   function draftId(selectedProject: string, item: Conversation) { return `${selectedProject}:${item.id}` }
   function stashDraft(selectedProject = project()) { const item = current(); if (!item) return; const key = draftId(selectedProject, item); if (draft()) drafts.set(key, { body: draft(), visibility: visibility(), key: retryKey, fingerprint: retryFingerprint, cursor: retryCursor, replyAtStart: replyAtStart() }); else drafts.delete(key) }
@@ -285,7 +285,7 @@ export function createInbox() {
       showMessages(data)
       contact.set(data.contact || null)
       if (draft().trim() && replyAtStart() === null) replyAtStart.set(seenReply())
-      presence.start(path + '/presence', seenReply(), visibility() === 'public' && !!draft().trim())
+      presence.start(path + '/presence', seenReply())
       notice.set(''); await loadHistory()
     }
     catch (failure) { if (!disposed && version === selection) { error.set(failure instanceof Error ? failure.message : 'Conversation could not be loaded.'); notice.set('') } }
@@ -341,6 +341,7 @@ export function createInbox() {
     if (!retrying && !confirmed && collision()) return
     const acknowledged = Number(presence.latestReply()) > Number(seenReply()) ? presence.latestReply() : seenReply()
     sending.set(true)
+    if (isPublic) presence.update(false)
     error.set('')
     try {
       if (isPublic && confirmed && !retrying && acknowledged !== seenReply()) {
