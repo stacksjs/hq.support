@@ -73,9 +73,10 @@ jobs:
           retention-days: 7
       - name: Prepare reviewed component publication artifact
         env:
-          SUPPORT_ELEMENTS_VERSION: 0.1.0-alpha.1
           CHROME_PATH: /usr/bin/google-chrome
-        run: bun --no-env-file scripts/support-elements-release.ts prepare
+        run: |
+          version=$(bun --no-env-file -e 'import library from "./config/library"; console.log(library.packages.find(pkg => pkg.name === "@stacksjs/support-elements")?.version ?? "")')
+          SUPPORT_ELEMENTS_VERSION="$version" bun --no-env-file scripts/support-elements-release.ts prepare
       - name: Retain same-commit component publication candidate
         uses: actions/upload-artifact@v7
         with:

@@ -26,7 +26,8 @@ agent reply, keyboard focus, and same-tab reload. It also checks help
 fallback, reduced motion, and narrow viewports. The reviewed
 `0.1.0-alpha.0` npm archive already passed
 [public readback](https://github.com/stacksjs/hq.support/actions/runs/43630101975).
-The changed elements are queued for `0.1.0-alpha.1`.
+The inline theme and accessibility updates are queued for
+[`0.1.0-alpha.2`](https://github.com/stacksjs/hq.support/issues/30).
 
 The local operator dashboard discovers the failed-job model directly from
 `app/Models`. Its native model API omits payloads and exceptions and refuses

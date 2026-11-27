@@ -6,10 +6,9 @@ isolated open shadow roots. The application pages use ts-css utilities.
 
 ## npm distribution
 
-The first release candidate is `@stacksjs/support-elements@0.1.0-alpha.0`.
-Publication remains gated on successful CI for the exact source commit and a
-clean installed consumer; this candidate is not a general-availability claim.
-The package contains the five elements, their declarations, custom-elements
+Pin a published `@stacksjs/support-elements` alpha version in your app.
+Each candidate passes CI for its source commit and a clean consumer install
+before publication. The package contains the five elements, their declarations, custom-elements
 metadata, per-element CSS and the native SSR entry. The hosted controller below
 is a separate artifact built from the same native bundle.
 

@@ -2,7 +2,7 @@
 
 The minimal npm distribution is `@stacksjs/support-elements`: five native stx custom elements, per-element ESM/declarations/CSS, the self-registering bundle, SSR helpers and Custom Elements Manifest. The hosted `createSupport` lazy loader remains a separate public asset. The publication checks require its native bundle to match the npm bundle exactly. No new loader facade is invented inside this npm package.
 
-The `alpha` tag currently points to `0.1.0-alpha.1`, pinned in `config/library.ts` independently of the application's `0.0.0` version. The package README explains browser module imports and the alpha qualification limits. The publication workflow is manually dispatched, defaults to verification/dry-run, and publishes when its `publish` input is selected.
+The public `alpha` tag currently points to `0.1.0-alpha.1`. The next candidate, `0.1.0-alpha.2`, is pinned in `config/library.ts` independently of the application's `0.0.0` version. It includes the verified inline themes, keyboard focus and placeholder contrast. The publication workflow defaults to verification and dry run. Select its `publish` input to publish the candidate.
 
 ## Native fixes and publisher choice
 
@@ -16,22 +16,9 @@ A first npm publication can receive the registry's initial `latest` tag in addit
 
 ## Candidate preparation in main CI
 
-After the native element build and Chromium compiler proof, main CI runs:
+After the native element build and Chromium compiler proof, [main CI](../.github/workflows/ci.yml) reads the version from `config/library.ts`, runs `scripts/support-elements-release.ts prepare`, and retains the package as `support-elements-<source SHA>` for 14 days.
 
-```yaml
-- name: Prepare reviewed component publication artifact
-  env:
-    SUPPORT_ELEMENTS_VERSION: 0.1.0-alpha.1
-  run: bun --no-env-file scripts/support-elements-release.ts prepare
-- uses: actions/upload-artifact@v7
-  with:
-    name: support-elements-${{ github.sha }}
-    path: storage/framework/runtime/support-elements-release
-    if-no-files-found: error
-    retention-days: 14
-```
-
-The root task owns `.github/workflows/ci.yml`; these are integration instructions, not a second CI definition. The prepare command only replaces its dedicated generated release directory. It requires a real installed native actions package at least 0.75.581, with no workspace link. It also requires exactly one reviewed npm library, the pinned version and current Git SHA, all concrete export targets, standalone runtime imports, strict declarations, CEM tags, and no application/server/private files or known server-secret access markers. Lifecycle scripts and server/framework dependencies are refused.
+The prepare command only replaces its dedicated generated release directory. It requires a real installed native actions package at least 0.75.581, with no workspace link. It also requires exactly one reviewed npm library, the pinned version and current Git SHA, all concrete export targets, standalone runtime imports, strict declarations, CEM tags, and no application/server/private files or known server-secret access markers. Lifecycle scripts and server/framework dependencies are refused.
 
 Bun 1.4.4 produces `package.tgz`. `release.json` records source SHA, version, canonical archive SHA-256, every package file hash, every hosted file hash and the packer version. The four passing compiler/browser journeys and hosted assets are retained with the candidate. Hosted asset hashes are checked against the native manifest, and the hosted immutable bundle must equal npm `dist/bundle.js`.
 
