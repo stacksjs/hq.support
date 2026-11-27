@@ -2,7 +2,7 @@
 
 The minimal npm distribution is `@stacksjs/support-elements`: five native stx custom elements, per-element ESM/declarations/CSS, the self-registering bundle, SSR helpers and Custom Elements Manifest. The hosted `createSupport` lazy loader remains a separate public asset. The publication checks require its native bundle to match the npm bundle exactly. No new loader facade is invented inside this npm package.
 
-The public `alpha` tag currently points to `0.1.0-alpha.1`. npm rejected the upload of `0.1.0-alpha.2`, which included inline themes, keyboard focus and placeholder contrast. The retained `0.1.0-alpha.3` adds the Messenger locale and typing updates. The current `0.1.0-alpha.4` pin adds customer transcript pagination. Package versions are independent of the site version. The publication workflow defaults to verification and dry run. Select `publish` when ready to release the reviewed candidate. [Original alpha.2 publication run](https://github.com/stacksjs/hq.support/actions/runs/45933859947)
+The public `alpha` tag currently points to `0.1.0-alpha.1`. The reviewed `0.1.0-alpha.5` candidate includes inline themes, keyboard focus, placeholder contrast, locale and typing updates, and customer transcript pagination. Package versions are independent of the site version. The publication workflow defaults to verification and dry run. Select `publish` after the npm maintainer approves the Trusted Publisher. [Publication tracker](https://github.com/stacksjs/hq.support/issues/30)
 
 ## Native fixes and publisher choice
 
@@ -69,6 +69,20 @@ The workflow uses only `contents: read` and `actions: read`. Its GitHub token is
 
 ## Current evidence and remaining qualification
 
+The reviewed `0.1.0-alpha.5` candidate passed the publication dry run,
+including clean consumer types, component imports, and hosted loader checks.
+Use the following inputs for the retained archive. [Source CI](https://github.com/stacksjs/hq.support/actions/runs/46027001719) · [Publication dry run](https://github.com/stacksjs/hq.support/actions/runs/46030852097)
+
+```text
+version: 0.1.0-alpha.5
+source_sha: 9f42634b567825ef66c4d97bda50a23903dd7c1e
+ci_run_id: 46027001719
+archive_sha256: 2cf63dba9b5a533bf73dbd0e29425a1007e1d23169ad9c620c6abf0cbf3e1f05
+```
+
+The remaining release steps are Trusted Publisher approval, publication of
+that archive under the `alpha` tag, and verified public registry readback.
+
 The earlier source `6fb11394806ce659abec5c7c806b99e01f2864dd` was held after focused-control and disabled-binding compiler defects were found. It was not the published candidate. Released stx 0.2.880 and Stacks 0.75.585 are installed without source aliases, package patches or workspace dependency links. Source [main CI 43623581540](https://github.com/stacksjs/hq.support/actions/runs/43623581540) at `f2faf6f414e257b80d0a648dbe723572fe17a51b` passed the strengthened compiler proof, 75 tests and native application browser journeys, retaining the exact publication candidate. [Dry run 43624504199](https://github.com/stacksjs/hq.support/actions/runs/43624504199) also passed.
 
 [Publication run 43625621495](https://github.com/stacksjs/hq.support/actions/runs/43625621495) uploaded `@stacksjs/support-elements@0.1.0-alpha.0` successfully after operator authentication at 2026-11-14 18:20:04 UTC. The native publisher warned that registry processing can take minutes. The immediate readback at 18:20:05 UTC received metadata 404, so the run failed its post-publication gate after upload acceptance. This is a transient read failure following a successful upload, not an unpublished package or permission to republish.
@@ -76,3 +90,5 @@ The earlier source `6fb11394806ce659abec5c7c806b99e01f2864dd` was held after foc
 Subsequent public metadata returned HTTP 200. [The hosted readback workflow](https://github.com/stacksjs/hq.support/actions/runs/43630101975) verified the original archive, public registry installation, strict consumer types, all five component imports and the hosted-loader Chromium journeys.
 
 The `0.1.0-alpha.1` upload used the original archive from [main CI run 44951740948](https://github.com/stacksjs/hq.support/actions/runs/44951740948) at `53d8a7528c273cf59e5d2cecccddc6f30a9e4d33`. The exact registry archive matches SHA-256 `50370c514fdd5e3bb1ab1b3e235e4011ca3ec0b02ca62ab22862e81c73251b9a`. The clean consumer verified strict types and all six browser imports. [Hosted readback run 44958200298](https://github.com/stacksjs/hq.support/actions/runs/44958200298) records the public registry and hosted asset checks for this candidate.
+
+npm rejected the `0.1.0-alpha.2` upload. The retained `0.1.0-alpha.3` candidate added locale and typing updates, and `0.1.0-alpha.4` added pagination for earlier customer messages. [Original alpha.2 publication run](https://github.com/stacksjs/hq.support/actions/runs/45933859947)
