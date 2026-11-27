@@ -18,7 +18,7 @@ Public help search reads the current published article rows through native Postg
 
 ## Grounded answers
 
-AI uses `createAIClient(config.ai)` from native `@stacksjs/ai/client`; provider secrets stay on the server. The app's default OpenAI provider requires `OPENAI_API_KEY`. Missing chat configuration returns `503 ai_unavailable`. Provider failures return an explicit error and release their reservations. A query with no relevant evidence returns a human handoff without calling a chat model.
+AI uses `createAIClient(config.ai)` from native `@stacksjs/ai/client`. The default chat provider is OpenAI and requires `OPENAI_API_KEY`. To use Anthropic, set `SUPPORT_AI_PROVIDER=anthropic` and `ANTHROPIC_API_KEY` in the server environment. `ANTHROPIC_MODEL` defaults to `claude-haiku-5-5`. The app omits temperature for Claude and guides answers through the grounded system prompt. Missing chat configuration returns `503 ai_unavailable`. Provider failures return an explicit error and release their reservations. A query with no relevant evidence returns a human handoff without calling a chat model.
 
 The prompt contains the question and at most four published source excerpts, bounded to approximately 4,000 UTF-8 bytes. It treats questions and sources as untrusted data and requests structured JSON citing supplied article ids. The server rejects unknown source ids, missing citations on answers, malformed output and invalid token accounting. Immediately before publishing, it rechecks the source's current article revision, visibility, permission state and removal state. This limits the evidence supplied to the model; it does not prove every generated statement follows semantically from an excerpt. An agent should review copilot suggestions.
 

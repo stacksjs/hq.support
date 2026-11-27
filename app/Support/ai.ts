@@ -29,7 +29,9 @@ async function nativeProvider(): Promise<AnswerProvider> {
     const selected = getAIProviderConfiguration(config.ai)
     if (!selected.configured) fail(503, 'ai_unavailable', 'An AI provider must be configured before AI answers are available.')
     const client = createAIClient(config.ai)
-    return (messages, options) => client.generate(messages, options)
+    // Current Claude models reject explicit sampling parameters.
+    const claude = selected.provider === 'anthropic' || (selected.provider === 'bedrock' && selected.model?.includes('anthropic.claude-'))
+    return (messages, options) => client.generate(messages, claude ? { ...options, temperature: undefined } : options)
   }
   catch { fail(503, 'ai_unavailable', 'An AI provider must be configured before AI answers are available.') }
 }

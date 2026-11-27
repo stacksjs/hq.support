@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
-import { db, one, query, workspaceTransaction } from '../../app/Support/database'
+import { db, insert, one, query, workspaceTransaction } from '../../app/Support/database'
 import { digest, enqueue, reserveAi, usage } from '../../app/Support/service'
 import { Storage } from '@stacksjs/storage'
 import { drainOutbox, processInbound, receiveInbound } from '../../app/Support/delivery'
@@ -182,6 +182,66 @@ try {
   check(collected.status === 200 && collected.data.ingestKey && collected.data.readKey, 'HQ keys collected once')
   check((await request(`/cli/connect/${connectStart.data.code}`)).status === 404, 'HQ code single use')
   check(!await one('SELECT id FROM hq_connect_codes WHERE code_hash = ?', [connectStart.data.code]), 'HQ plaintext connect code not persisted')
+
+  const reportOwner = (await request('/support/workspaces', 'POST', { name: 'Reporting workspace' }, token)).data.workspace
+  const reportProject = (await request(`/support/workspaces/${reportOwner.id}/projects`, 'POST', { name: 'Reporting project' }, token)).data.project
+  const reportPath = `/support/projects/${reportProject.public_id}`
+  const empty = await request(`${reportPath}/reports`, 'GET', undefined, token)
+  check(empty.status === 200 && empty.data.messengerTimings.firstReply.samples === 0 && empty.data.messengerTimings.firstReply.averageMs === null, 'empty timing report distinguishes no samples from zero wait')
+  check((await request(`${reportPath}/reports`, 'GET', undefined, otherToken)).status === 403, 'reports deny an unrelated workspace owner')
+  const scope = { project_id: reportProject.id, workspace_id: reportOwner.id }
+  const reportContact = await insert('support_contacts', { ...scope, external_id: 'timing-customer' })
+  const start = Date.now() - 4 * 60 * 60_000
+  async function reportThread(channel: string, ageMs = 0) {
+    const thread = await insert('support_conversations', { ...scope, contact_id: reportContact.id, subject: 'Do not expose this subject', channel })
+    await query('UPDATE support_conversations SET created_at = ? WHERE id = ?', [new Date(start + ageMs).toISOString(), thread.id])
+    return thread.id
+  }
+  async function reportMessage(threadId: unknown, offset: number, author: string, visibility = 'public', delivery = 'stored', authorId = author === 'agent' ? 1 : 0) {
+    const message = await insert('support_messages', { ...scope, conversation_id: threadId, contact_id: reportContact.id, author_type: author, author_id: authorId, visibility, delivery_status: delivery, body: 'Do not expose this message' })
+    await query('UPDATE support_messages SET created_at = ? WHERE id = ?', [new Date(start + offset).toISOString(), message.id])
+  }
+  const threadId = await reportThread('widget')
+  await reportMessage(threadId, 0, 'customer')
+  await reportMessage(threadId, 1_000, 'agent', 'internal')
+  await reportMessage(threadId, 2_000, 'automation')
+  await reportMessage(threadId, 3_000, 'agent', 'public', 'pending')
+  await reportMessage(threadId, 4_000, 'agent', 'public', 'stored', 0)
+  await reportMessage(threadId, 10_000, 'customer')
+  await reportMessage(threadId, 30_000, 'agent')
+  await reportMessage(threadId, 40_000, 'agent')
+  await reportMessage(threadId, 50_000, 'customer')
+  await reportMessage(threadId, 60_000, 'customer')
+  await reportMessage(threadId, 90_000, 'agent')
+  for (const [channel, offset] of [['intercom-import', 0], ['discord', 0], ['widget', -31 * 86_400_000]] as const) {
+    const excluded = await reportThread(channel, offset)
+    await reportMessage(excluded, offset, 'customer')
+    await reportMessage(excluded, offset, 'agent')
+  }
+  const phoneThread = await reportThread('widget')
+  const phoneChannel = await insert('support_channels', { ...scope, public_id: crypto.randomUUID(), provider: 'twilio-voice' })
+  await insert('support_phone_calls', {
+    ...scope, channel_id: phoneChannel.id, conversation_id: phoneThread, contact_id: reportContact.id, public_id: crypto.randomUUID(),
+    operation_key: 'report-phone', fingerprint: '', direction: 'inbound', from_number: '+12025550100', to_number: '+12025550101',
+    country: 'US', mode: 'human', callback_origin: 'https://phone.example.test', max_duration_seconds: 120,
+    reservation_id: '', ai_reservation_id: '', reserved_cents: 0, ai_reserved_cents: 0, stream_digest: '',
+  })
+  await reportMessage(phoneThread, 0, 'customer')
+  await reportMessage(phoneThread, 1_000, 'agent')
+  await query("UPDATE support_conversations SET status = 'closed', resolved_at = ? WHERE id = ?", [start + 1_000, phoneThread])
+  const report = async () => await request(`${reportPath}/reports`, 'GET', undefined, token)
+  const closed = await request(`${reportPath}/conversations/${threadId}`, 'PATCH', { status: 'closed' }, token)
+  check(closed.status === 200, 'real inbox status change closes the report conversation')
+  const measured = await report()
+  assert.deepEqual(measured.data.messengerTimings.firstReply, { samples: 1, averageMs: 30_000 })
+  assert.deepEqual(measured.data.messengerTimings.followUpReply, { samples: 1, averageMs: 30_000 })
+  assert.deepEqual(measured.data.messengerTimings.resolution, { samples: 1, averageMs: closed.data.conversation.resolved_at - start })
+  check(measured.data.conversations.reduce((sum: number, row: any) => sum + Number(row.total), 0) === 5 && !JSON.stringify(measured.data).includes('Do not expose'), 'legacy totals still include all channels and omit conversation data')
+  const reopened = await request(`${reportPath}/conversations/${threadId}`, 'PATCH', { status: 'open' }, token)
+  check(reopened.status === 200, 'real inbox status change reopens the report conversation')
+  assert.deepEqual((await report()).data.messengerTimings.resolution, { samples: 0, averageMs: null })
+  const reclosed = await request(`${reportPath}/conversations/${threadId}`, 'PATCH', { status: 'closed' }, token)
+  assert.deepEqual((await report()).data.messengerTimings.resolution, { samples: 1, averageMs: reclosed.data.conversation.resolved_at - start })
   console.log(`PASS support HTTP ${checks} checks`)
 }
 finally {

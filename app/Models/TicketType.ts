@@ -11,6 +11,7 @@ export default defineModel({
     projectId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     name: { fillable: true, required: true, validation: { rule: schema.string() } },
     kind: { fillable: true, required: true, validation: { rule: schema.string() }, default: 'customer' },
+    opensConversation: { fillable: true, required: true, validation: { rule: schema.boolean() }, default: false },
     fields: { type: 'text', fillable: true, required: true, validation: { rule: schema.string() }, default: '[]' },
     states: { type: 'text', fillable: true, required: true, validation: { rule: schema.string() }, default: '[]' },
     slaPolicyId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },

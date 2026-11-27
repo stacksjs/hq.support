@@ -1,4 +1,5 @@
 import type { AiConfig } from '@stacksjs/types'
+import { env } from '@stacksjs/env'
 
 /**
  * **AI Configuration**
@@ -8,7 +9,14 @@ import type { AiConfig } from '@stacksjs/types'
  * have any questions, feel free to reach out via Discord or GitHub Discussions.
  */
 export default {
-  default: 'openai',
+  default: env.SUPPORT_AI_PROVIDER ?? 'openai',
+
+  drivers: {
+    anthropic: {
+      apiKey: String(env.ANTHROPIC_API_KEY || ''),
+      model: String(env.ANTHROPIC_MODEL || 'claude-haiku-5-5'),
+    },
+  },
 
   // Amazon Bedrock models this app uses. `buddy` requests access to each of
   // them; see `bedrockModels` in @stacksjs/types for the ids Bedrock serves.

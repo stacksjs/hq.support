@@ -36,6 +36,10 @@ const envSchema = defineEnv({
     validation: schema.enum(['hosted', 'selfhost']),
     default: 'hosted',
   },
+  SUPPORT_AI_PROVIDER: {
+    validation: schema.enum(['openai', 'anthropic', 'bedrock', 'ollama']),
+    default: 'openai',
+  },
 
   APP_NAME: {
     validation: schema.string(),

@@ -9,13 +9,15 @@ Owner/admin configuration endpoints under `/api/support/projects/{project}`:
 - `GET /ticket-configuration` lists project-scoped types, calendars and policies.
 - `POST /ticket-calendars` accepts `name`, `timeZone`, `windows: [{weekdays: [0..6], start: '09:00', end: '17:00'}]` and optional `holidays: ['YYYY-MM-DD']`. Sunday is 0. `24:00` is supported only as an end. Split overnight windows into two weekday windows.
 - `POST /ticket-sla-policies` accepts `name`, optional `calendarId`, `firstResponseMinutes`, `resolutionMinutes`, optional `pauseStates` and `escalationAssigneeId`. Zero disables a metric; at least one metric must be positive. Targets are whole minutes, at most 525600. A missing calendar means always open.
-- `POST /ticket-types` accepts `name`, `kind: 'customer' | 'internal' | 'incident'`, optional `slaPolicyId`, `fields` and additional `states`.
+- `POST /ticket-types` accepts `name`, `kind: 'customer' | 'internal' | 'incident'`, optional `slaPolicyId`, `fields` and additional `states`. Customer types can set `opensConversation: true`.
 
 Field definitions contain a unique `key`, `label`, `type`, optional `required`, `visibility: 'customer' | 'internal'`, and optional typed `default`. Supported types are `string` (up to 4000 characters), `email`, `number`, `integer`, `boolean`, `date` (canonical YYYY-MM-DD), and `enum` (requires explicit `options`). Values are validated by native validation rules; numeric strings do not satisfy number fields. Customer forms cannot require an internal field without a default. Unknown fields are refused. Tickets accept `typeId` and `customFields`; their form definitions are copied into an immutable ticket snapshot. Subsequent field updates are validated against that snapshot.
 
 Additional states contain `key`, `label`, and legacy `category: 'open' | 'pending' | 'resolved'`. Built-in `open`, `pending` and `resolved` states are always available. Policy pause states must explicitly exist on the form. Configuration is append-only through these APIs: create a new calendar, policy or type to change future ticket behavior. Existing tickets keep their snapshots. Configuration edit/delete and type migration flows are not implemented.
 
 Authenticated customer sessions can `GET /api/widget/projects/{project}/ticket-types` from an allowed origin. Only customer types and customer fields are returned. Customer ticket creation accepts the same form fields, preserves idempotency, refuses private field writes and internal/incident types, and hides private definitions/values from ticket responses. Internal tickets remain inaccessible even when they share the customer's contact record. Agent-only relation metadata is never included in customer projections.
+
+When a customer submits an opted-in type without a conversation, HQ.support opens a linked conversation for the same contact, consumes one conversation allowance, and uses the project's usual default inbox routing. The ticket and conversation commit together and an unchanged retry returns the same pair. The ticket response includes `conversation_id`. Use that ID with the existing customer conversation endpoint and the same session to read replies. The opening message uses the submitted description or title. Typed form answers stay on the ticket.
 
 ## Clocks and business time
 

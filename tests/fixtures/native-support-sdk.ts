@@ -5,8 +5,10 @@ import { injectGlobalAutoImports } from '@stacksjs/server'
 import { route } from '@stacksjs/router'
 import { createSupportClient, SupportError } from '@stacksjs/support/server'
 import NativeSessionAction from '@stacksjs/defaults/app/Actions/Support/SessionAction.ts'
-import { one, query } from '../../app/Support/database'
-import { digest } from '../../app/Support/service'
+import { one, query, workspaceTransaction } from '../../app/Support/database'
+import { periodOf } from '../../app/Support/limits'
+import { digest, idempotent } from '../../app/Support/service'
+import { createTicket } from '../../app/Support/tickets'
 
 // This seam exercises the real native client and default authenticated action
 // against application HTTP/SQL; it deliberately does not stand in for browser QA.
@@ -23,8 +25,8 @@ route.post('/api/_native/support/session', NativeSessionAction).middleware('auth
 const server = await route.serve({ port: 0, hostname: '127.0.0.1' }), origin = `http://127.0.0.1:${server.port}`, base = origin + '/api'
 let checks = 0, cookie = '', csrf = ''
 const check = (condition: unknown, message: string) => { assert.ok(condition, message); checks++ }
-async function http(path: string, method = 'GET', body?: unknown, token?: string, widget = false) {
-  const response = await fetch(base + path, { method, headers: { accept: 'application/json', ...(cookie ? { cookie, 'x-csrf-token': csrf } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(token ? { authorization: `Bearer ${token}` } : {}), ...(widget ? { origin: 'https://customer.example.test' } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+async function http(path: string, method = 'GET', body?: unknown, token?: string, widget: boolean | string = false) {
+  const response = await fetch(base + path, { method, headers: { accept: 'application/json', ...(cookie ? { cookie, 'x-csrf-token': csrf } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(token ? { authorization: `Bearer ${token}` } : {}), ...(widget ? { origin: typeof widget === 'string' ? widget : 'https://customer.example.test' } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
   return { status: response.status, data: await response.json() as any, headers: response.headers }
 }
 async function register(email: string) {
@@ -138,6 +140,75 @@ try {
   await rejectsCode(() => wrongProject.conversations.list(), 'unauthorized', 401)
   await rejectsCode(() => wrongProject.createSession({ externalId: 'sdk:customer-a' }), 'unauthorized', 401)
   check(Number((await one('SELECT COUNT(*) AS count FROM support_contacts WHERE project_id = ?', [projectB.id]))!.count) === 0, 'project keys never create contacts across tenant boundaries')
+
+  await http(agent, 'PATCH', { allowedOrigins: ['https://customer.example.test'], anonymousEnabled: true }, nativeToken)
+  const guest = await http(`${widget}/session`, 'POST', {}, undefined, true)
+  const secondGuest = await http(`${widget}/session`, 'POST', {}, undefined, true)
+  check(guest.status === 201 && secondGuest.status === 201 && guest.data.contact.id !== secondGuest.data.contact.id, 'allowlisted guest identity has a distinct contact per session')
+  const supportTeamPath = `/support/workspaces/${workspace.id}/support-teams`
+  const team = (await http(supportTeamPath, 'POST', { name: 'Private support' }, nativeToken)).data.team
+  check((await http(`${supportTeamPath}/${team.id}/members`, 'POST', { userId: Number(owner.id) }, nativeToken)).status === 200, 'native responder joins the support team')
+  const inbox = (await http(`${agent}/team-inboxes`, 'POST', { teamId: Number(team.id), name: 'Private cases', isDefault: true }, nativeToken)).data.inbox
+  const typesPath = `${agent}/ticket-types`
+  const typeResponse = await http(typesPath, 'POST', { name: 'Account access', opensConversation: true, fields: [{ key: 'account', label: 'Account', type: 'string', required: true }, { key: 'staff_only', label: 'Staff context', type: 'string', visibility: 'internal', default: 'Internal triage data' }] }, nativeToken)
+  const type = typeResponse.data.type
+  check(typeResponse.status === 201 && Boolean(type.opens_conversation), 'customer form opts into an inbox conversation')
+  check((await http(typesPath, 'POST', { name: 'Wrong type', kind: 'internal', opensConversation: true }, nativeToken)).status === 422, 'private agent-only forms cannot enable customer routing')
+  check((await http(typesPath, 'POST', { name: 'Wrong value', opensConversation: 'true' }, nativeToken)).status === 422, 'type option requires a boolean')
+  const snapshot = () => one('SELECT (SELECT COUNT(*) FROM support_conversations WHERE project_id = ?) AS conversations, (SELECT COUNT(*) FROM support_tickets WHERE project_id = ?) AS tickets, (SELECT COUNT(*) FROM support_outbox WHERE project_id = ?) AS outbox, (SELECT used FROM support_usage WHERE workspace_id = ? AND period = ? AND meter = ?) AS used', [project.id, project.id, project.id, workspace.id, periodOf(), 'conversations'])
+  const payload = { typeId: type.id, title: 'Recover access', description: 'My request can be answered here.', customFields: { account: 'Form-only detail' }, idempotencyKey: 'native-form' }
+  const formBefore = await snapshot()
+  check((await http(`${widget}/tickets`, 'POST', { ...payload, customFields: {} }, guest.data.token, true)).status === 422, 'invalid form is refused before admission')
+  for (const invalidId of [0, false, '']) {
+    check((await http(`${widget}/tickets`, 'POST', { ...payload, conversationId: invalidId }, guest.data.token, true)).status === 422, 'an invalid conversation reference cannot open a new case')
+  }
+  assert.deepEqual(await snapshot(), formBefore)
+  const responses = await Promise.all([1, 2].map(() => http(`${widget}/tickets`, 'POST', payload, guest.data.token, true)))
+  const submitted = responses[0]!.data.ticket
+  check(submitted.conversation_id && responses.every(response => response.status === 201 && response.data.ticket.id === submitted.id && response.data.ticket.conversation_id === submitted.conversation_id), 'concurrent unchanged guest submissions return the same ticket and conversation')
+  const row = await one('SELECT assignee_id, inbox_id, contact_id FROM support_conversations WHERE id = ? AND project_id = ?', [submitted.conversation_id, project.id])
+  check(Number(row?.inbox_id) === Number(inbox.id) && Number(row?.assignee_id) === Number(owner.id) && String(row?.contact_id) === guest.data.contact.id, 'transactional admission uses the default inbox, eligible agent and guest contact')
+  const formAfter = await snapshot()
+  check(['conversations', 'tickets', 'used'].every(key => Number(formAfter?.[key]) === Number(formBefore?.[key]) + 1) && Number(formAfter?.outbox) === Number(formBefore?.outbox) + 2, 'form retries create one ticket, conversation and allowance charge plus the two normal outbox intents')
+  const ticketPath = `${widget}/tickets/${submitted.id}`, conversationPath = `${widget}/conversations/${submitted.conversation_id}`
+  for (const path of [ticketPath, conversationPath]) {
+    check((await http(path, 'GET', undefined, secondGuest.data.token, true)).status === 404, 'second guest cannot read either private case record')
+    check((await http(path, 'GET', undefined, guest.data.token, 'https://unknown.example.test')).status === 403, 'another origin cannot read either private case record')
+  }
+  const replied = await http(`${agent}/conversations/${submitted.conversation_id}/messages`, 'POST', { body: 'Private case response.', idempotencyKey: 'private-case-response' }, nativeToken)
+  const guestDetail = await http(conversationPath, 'GET', undefined, guest.data.token, true)
+  check(replied.status === 201 && guestDetail.data.messages.some((message: any) => message.body === 'Private case response.') && !JSON.stringify(guestDetail.data).includes('Form-only detail') && !JSON.stringify(guestDetail.data).includes('Internal triage data'), 'guest reads the inbox response while typed fields stay on the ticket')
+  const authenticated = await http(`${widget}/tickets`, 'POST', { ...payload, contactId: guest.data.contact.id }, identified.data.token, true)
+  check(authenticated.status === 201 && authenticated.data.ticket.id !== submitted.id && String(authenticated.data.ticket.contact_id) === String(identifiedContact.id), 'native verified session owns its own linked case regardless of submitted contact')
+  check((await http(conversationPath, 'GET', undefined, identified.data.token, true)).status === 404, 'authenticated customer cannot read a guest case')
+  const existing = await http(`${widget}/tickets`, 'POST', { ...payload, conversationId: submitted.conversation_id, idempotencyKey: 'existing-linked-case' }, guest.data.token, true)
+  check(existing.status === 201 && existing.data.ticket.conversation_id === submitted.conversation_id, 'an existing own conversation is reused')
+  const ordinary = await http(`${widget}/tickets`, 'POST', { title: 'Plain ticket', idempotencyKey: 'plain-ticket' }, guest.data.token, true)
+  check(ordinary.status === 201 && ordinary.data.ticket.conversation_id === null, 'ordinary forms retain their ticket-only behavior')
+  const guestContact = (await one('SELECT * FROM support_contacts WHERE id = ?', [guest.data.contact.id]))!
+  const legacySubmission = { title: 'Existing customer receipt', idempotencyKey: 'legacy-customer-case' }
+  const legacyOwn = await idempotent(project, `ticket:${guestContact.id}`, legacySubmission.idempotencyKey, { ...legacySubmission, project: project.public_id }, async () => ({ ticket: await createTicket(project, legacySubmission, guestContact) }))
+  const legacyReplay = await http(`${widget}/tickets`, 'POST', legacySubmission, guest.data.token, true)
+  check(legacyReplay.status === 201 && legacyReplay.data.ticket.id === legacyOwn.ticket.id, 'an unchanged historical receipt is reused for its verified contact')
+  check(String(owner.id) === session.contact.id, 'fixture has separate staff and customer identities with the same numeric ID')
+  const sharedKey = { contactId: guestContact.id, title: 'Independent case receipts', idempotencyKey: 'shared-historical-key' }
+  const legacyStaff = await idempotent(project, `ticket:${owner.id}`, sharedKey.idempotencyKey, { ...sharedKey, project: project.public_id }, async () => ({ ticket: await createTicket(project, sharedKey) }))
+  const staffReplay = await http(`${agent}/tickets`, 'POST', sharedKey, nativeToken)
+  const customerReplay = await http(`${widget}/tickets`, 'POST', sharedKey, session.token, true)
+  check(staffReplay.status === 201 && staffReplay.data.ticket.id === legacyStaff.ticket.id && customerReplay.status === 201 && customerReplay.data.ticket.id !== legacyStaff.ticket.id && String(customerReplay.data.ticket.contact_id) === session.contact.id, 'staff and customer receipts are isolated across overlapping numeric identities')
+  check((await http(`${widget}/tickets`, 'POST', { ...sharedKey, title: 'Changed case' }, session.token, true)).status === 409, 'changed requests cannot reuse the customer receipt')
+  const rollbackBefore = await snapshot()
+  await assert.rejects(workspaceTransaction(Number(workspace.id), async () => {
+    await createTicket(project, payload, guestContact)
+    throw new Error('Aborted linked submission')
+  }), /Aborted linked submission/)
+  assert.deepEqual(await snapshot(), rollbackBefore)
+  await query("UPDATE support_workspaces SET plan = 'free', stacks_verified = ?, deployment_verified = ? WHERE id = ?", [true, true, workspace.id])
+  await query("UPDATE support_usage SET used = 120 WHERE workspace_id = ? AND period = ? AND meter = 'conversations'", [workspace.id, periodOf()])
+  const ceilingSnapshot = await snapshot()
+  const refused = await http(`${widget}/tickets`, 'POST', { ...payload, idempotencyKey: 'over-quota' }, guest.data.token, true)
+  check(refused.status === 402 && refused.data.error.code === 'conversations_limit', 'exhausted conversation quota refuses the entire linked submission')
+  assert.deepEqual(await snapshot(), ceilingSnapshot)
   await query('UPDATE support_api_keys SET revoked_at = ? WHERE project_id = ? AND digest = ?', [Date.now(), project.id, digest(keys.ingestKey)])
   check((await http('/_native/support/session', 'POST', {}, nativeToken)).status === 503, 'native bridge reports upstream authorization failure instead of a fabricated session')
   console.log(`PASS native support SDK HTTP (${checks} checks)`)

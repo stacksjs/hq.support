@@ -1,7 +1,7 @@
 import type { Row } from './database'
 import { insert, one, query, workspaceTransaction } from './database'
 import { fail, identifier, text } from './errors'
-import { conversation, enqueue, member } from './service'
+import { conversation, createConversation, enqueue, idempotent, member, object } from './service'
 import { customFieldValues, parseTicketForm, publicForm, storedJson, ticketForm } from './ticket-forms'
 import { parseBusinessHours } from './ticket-calendar'
 import { currentTicketClock, startTicketClock, transitionTicketClock } from './ticket-sla'
@@ -25,16 +25,39 @@ async function scoped(project: Row, table: string, reference: unknown): Promise<
   if (!row) fail(404, 'not_found', 'Ticket configuration not found.')
   return row
 }
+
+export async function submitTicket(project: Row, input: Row, actor: { customer: Row } | { userId: number }) {
+  const customer = 'customer' in actor ? actor.customer : undefined
+  const id = 'customer' in actor ? actor.customer.id : actor.userId
+  return await idempotent(project, `ticket:${customer ? 'customer' : 'agent'}:${id}`, input.idempotencyKey, input, async () => ({ ticket: await createTicket(project, input, customer) }), {
+    operation: `ticket:${id}`,
+    async authorizeReplay(response) {
+      const originalId = object(object(response).ticket).id
+      if (originalId === undefined) return
+      const previous = await one('SELECT * FROM support_tickets WHERE workspace_id = ? AND project_id = ? AND id = ? AND contact_id = ?', [project.workspace_id, project.id, originalId, customer ? customer.id : identifier(input.contactId)])
+      if (previous && (!customer || previous.kind === 'customer')) return { ticket: await ticketView(previous, Boolean(customer)) }
+    },
+  })
+}
+
 export async function createTicket(project: Row, input: Row, customer?: Row, at = Date.now()): Promise<Row> {
   return await workspaceTransaction(Number(project.workspace_id), async () => {
     const contactId = customer?.id ?? identifier(input.contactId)
     if (!await one('SELECT id FROM support_contacts WHERE id = ? AND project_id = ?', [contactId, project.id])) fail(404, 'not_found', 'Contact not found.')
-    if (input.conversationId) { const row = await conversation(project, input.conversationId, customer); if (String(row.contact_id) !== String(contactId)) fail(422, 'contact_mismatch', 'Ticket and conversation must belong to the same contact.') }
+    let conversationId = input.conversationId === undefined || input.conversationId === null ? null : identifier(input.conversationId)
+    if (conversationId) { const row = await conversation(project, conversationId, customer); if (String(row.contact_id) !== String(contactId)) fail(422, 'contact_mismatch', 'Ticket and conversation must belong to the same contact.') }
     const type = input.typeId ? await scoped(project, 'support_ticket_types', input.typeId) : undefined
     if (customer && type && type.kind !== 'customer') fail(404, 'not_found', 'Ticket form not found.')
     const form = type ? { fields: storedJson(type.fields, []), states: storedJson(type.states, []) } : parseTicketForm({}, 'customer')
     const values = customFieldValues(form, input.customFields, Boolean(customer))
-    const row = await insert('support_tickets', { workspace_id: project.workspace_id, project_id: project.id, contact_id: contactId, conversation_id: input.conversationId ? identifier(input.conversationId) : null, title: text(input.title, 'title', 200), description: typeof input.description === 'string' ? input.description.slice(0, 20000) : '', type_id: type?.id ?? 0, kind: type?.kind ?? 'customer', state: 'open', custom_fields: JSON.stringify(values), type_snapshot: JSON.stringify(form) })
+    const title = text(input.title, 'title', 200)
+    const description = typeof input.description === 'string' ? input.description.slice(0, 20000) : ''
+    if (customer && conversationId === null && Number(type?.opens_conversation) === 1) {
+      // Ticket idempotency owns the entire transaction. Give this nested creation its own key.
+      const thread = await createConversation(project, { externalId: customer.external_id }, { subject: title, body: description.trim() || title, idempotencyKey: crypto.randomUUID() }, customer)
+      conversationId = identifier(thread.conversation.id)
+    }
+    const row = await insert('support_tickets', { workspace_id: project.workspace_id, project_id: project.id, contact_id: contactId, conversation_id: conversationId, title, description, type_id: type?.id ?? 0, kind: type?.kind ?? 'customer', state: 'open', custom_fields: JSON.stringify(values), type_snapshot: JSON.stringify(form) })
     const policy = type && Number(type.sla_policy_id) ? await scoped(project, 'support_ticket_sla_policies', type.sla_policy_id) : undefined
     await startTicketClock(project, row, policy, at)
     await enqueue(project, 'ticket.created', { ticketId: row.id })
@@ -84,13 +107,15 @@ export async function saveTicketType(project: Row, input: Row): Promise<Row> {
   return await workspaceTransaction(Number(project.workspace_id), async () => {
     const kind = String(input.kind || 'customer')
     if (!['customer', 'internal', 'incident'].includes(kind)) fail(422, 'invalid_form', 'Unknown ticket kind.')
+    const opensConversation = input.opensConversation === undefined ? false : input.opensConversation
+    if (typeof opensConversation !== 'boolean' || (opensConversation && kind !== 'customer')) fail(422, 'invalid_form', 'Only customer ticket types can open an inbox conversation.')
     const form = parseTicketForm(input, kind)
     if (input.slaPolicyId) {
       const policy = await scoped(project, 'support_ticket_sla_policies', input.slaPolicyId)
       const states = new Set(form.states.map(state => state.key))
       if (storedJson<string[]>(policy.pause_states, []).some(key => !states.has(key))) fail(422, 'invalid_form', 'Every SLA pause state must exist on this form.')
     }
-    return await insert('support_ticket_types', { workspace_id: project.workspace_id, project_id: project.id, name: text(input.name, 'name', 100), kind, fields: JSON.stringify(form.fields), states: JSON.stringify(form.states), sla_policy_id: input.slaPolicyId ? identifier(input.slaPolicyId) : 0 })
+    return await insert('support_ticket_types', { workspace_id: project.workspace_id, project_id: project.id, name: text(input.name, 'name', 100), kind, opens_conversation: opensConversation, fields: JSON.stringify(form.fields), states: JSON.stringify(form.states), sla_policy_id: input.slaPolicyId ? identifier(input.slaPolicyId) : 0 })
   })
 }
 export async function ticketRelations(project: Row, reference: unknown): Promise<Row[]> {

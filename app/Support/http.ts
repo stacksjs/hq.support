@@ -10,6 +10,7 @@ import { createWorkflow, listWorkflows } from './workflows'
 import { createArticle, searchArticles, updateArticle } from './knowledge'
 import { confirmationCode } from '@stacksjs/hq/service'
 import { requireWidgetOrigin } from './widget-origin'
+import { projectReports } from './reports'
 
 export type Operation = 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.session.revoke' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.create' | 'widget.tickets.detail' | 'widget.ticket-types' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
 
@@ -123,8 +124,8 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
       body = { tickets: await Promise.all((await query('SELECT * FROM support_tickets WHERE project_id = ? ORDER BY id DESC LIMIT 100', [project.id])).map(row => ticketView(row))) }
     }
     else if (operation === 'tickets.create' || operation === 'widget.tickets.create') {
-      const { createTicket } = await import('./tickets')
-      body = await support.idempotent(project, `ticket:${person?.id ?? account?.id}`, data.idempotencyKey, data, async () => ({ ticket: await createTicket(project, data, person) })); status = 201
+      const { submitTicket } = await import('./tickets')
+      body = await submitTicket(project, data, person ? { customer: person } : { userId: account!.id }); status = 201
     }
     else if (operation === 'widget.tickets.detail' || operation === 'tickets.update') {
       const { ticket, ticketView, updateTicket } = await import('./tickets')
@@ -140,7 +141,7 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
       const owner = await support.workspace(Number(project.workspace_id))
       body = { workspace: { id: owner.id, plan: owner.plan, trialEndsAt: Number(owner.trial_ends_at), overagesEnabled: Boolean(owner.overages_enabled), spendingCapCents: Number(owner.spending_cap_cents), walletCents: Number(owner.wallet_cents) }, limits: limitsFor(owner.plan as Plan), plans, policy: billingPolicy, checkoutAvailable: false, usage: { conversations: await support.usage(Number(owner.id), 'conversations'), ai: await support.usage(Number(owner.id), 'ai'), storageBytes: Number(owner.storage_bytes) } }
     }
-    else if (operation === 'reports') body = { conversations: await query('SELECT status, COUNT(*) AS total FROM support_conversations WHERE project_id = ? GROUP BY status', [project.id]), messages: await query('SELECT author_type, COUNT(*) AS total FROM support_messages WHERE project_id = ? GROUP BY author_type', [project.id]), tickets: await query('SELECT status, COUNT(*) AS total FROM support_tickets WHERE project_id = ? GROUP BY status', [project.id]) }
+    else if (operation === 'reports') body = await projectReports(project, acceptedAt)
     else if (operation === 'workflows.list') body = await listWorkflows(project)
     else if (operation === 'workflows.create') { body = { workflow: await createWorkflow(project, data, account!.id), executionAvailable: true, workerRequired: true }; status = 201 }
     else fail(404, 'not_found', 'Endpoint not found.')
