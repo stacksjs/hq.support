@@ -3,12 +3,15 @@ import { createSupportConsole } from './console'
 
 interface Billing { workspace: { plan: string, trialEndsAt: number, overagesEnabled: boolean, spendingCapCents: number }, limits: { conversations: number | null, conversationCeiling: number | null, ai: number | null, storageBytes: number | null, seats: number | null, projects: number | null }, usage: { conversations: number, ai: number, storageBytes: number }, checkoutAvailable: boolean }
 interface Wallet { balanceCents: number, currency: string, minimumTopupCents: number, checkoutAvailable: boolean, autoTopupEnabled: boolean, dailyLimitCents: number, monthlyLimitCents: number, spending: { dailyCents: number, monthlyCents: number, period: string }, entries: { reference: string, kind: string, amount_cents: number, balance_cents: number, created_at: string }[] }
+interface ProjectWallet { dailyLimitCents: number | null, monthlyLimitCents: number | null, spending: Wallet['spending'] }
 interface Subscription { deploymentMode?: 'hosted' | 'selfhost', subscription: { status: string, plan: string, interval: string, current_period_end: number, cancel_at_period_end: boolean } | null, plans: Record<string, { monthlyCents: number, annualCents: number, seats: number, conversations: number, ai: number }>, checkoutAvailable: boolean, portalAvailable?: boolean, pendingCheckout?: { url: string | null, plan: string, interval: string, operationKey: string } | null }
 export function createUsage() {
   const workspace = createSupportConsole()
   const billing = state<Billing | null>(null)
   const wallet = state<Wallet | null>(null)
   const walletError = state('')
+  const projectWallet = state<ProjectWallet | null>(null)
+  const projectWalletError = state('')
   const subscription = state<Subscription | null>(null)
   const subscriptionError = state('')
   const plan = state('starter')
@@ -22,6 +25,8 @@ export function createUsage() {
   const amount = state('20.00')
   const dailyLimit = state('0.00')
   const monthlyLimit = state('0.00')
+  const projectDailyLimit = state('')
+  const projectMonthlyLimit = state('')
   const checkoutUrl = state('')
   const checkoutAmount = state('')
   const checkoutCurrent = derived(() => checkoutUrl() && amount() === checkoutAmount())
@@ -33,6 +38,8 @@ export function createUsage() {
     billing.set(null)
     wallet.set(null)
     walletError.set('')
+    projectWallet.set(null)
+    projectWalletError.set('')
     subscription.set(null)
     subscriptionError.set('')
     subscriptionUrl.set('')
@@ -44,15 +51,19 @@ export function createUsage() {
       const billing = await workspace.request(workspace.projectPath('/billing'))
       let wallet: Wallet | null = null
       let walletError = ''
+      let projectWallet: ProjectWallet | null = null
+      let projectWalletError = ''
       let subscription: Subscription | null = null
       let subscriptionError = ''
       if (workspace.canManage() && workspace.workspace()) {
         try { wallet = await workspace.request(`/api/support/workspaces/${workspace.workspace()!.id}/wallet`) }
         catch (failure) { walletError = failure instanceof Error ? failure.message : 'Prepaid credit could not be loaded.' }
+        try { projectWallet = await workspace.request(workspace.projectPath('/wallet')) }
+        catch (failure) { projectWalletError = failure instanceof Error ? failure.message : 'Project spending ceilings could not be loaded.' }
         try { subscription = await workspace.request(`/api/support/workspaces/${workspace.workspace()!.id}/subscription`) }
         catch (failure) { subscriptionError = failure instanceof Error ? failure.message : 'Subscription could not be loaded.' }
       }
-      return { billing, wallet, walletError, subscription, subscriptionError }
+      return { billing, wallet, walletError, projectWallet, projectWalletError, subscription, subscriptionError }
     })
     if (!result || selectedProject !== workspace.project()) return
     billing.set(result.billing)
@@ -60,6 +71,8 @@ export function createUsage() {
     dailyLimit.set(((result.wallet?.dailyLimitCents || 0) / 100).toFixed(2))
     monthlyLimit.set(((result.wallet?.monthlyLimitCents || 0) / 100).toFixed(2))
     walletError.set(result.walletError)
+    setProjectWallet(result.projectWallet)
+    projectWalletError.set(result.projectWalletError)
     subscription.set(result.subscription)
     subscriptionError.set(result.subscriptionError)
     const existing = result.subscription?.pendingCheckout
@@ -109,6 +122,25 @@ export function createUsage() {
     monthlyLimit.set((result.monthlyLimitCents / 100).toFixed(2))
     workspace.notice.set(daily === 0 || monthly === 0 ? 'Spending ceilings saved. New managed paid operations are paused.' : 'Spending ceilings saved. Managed paid operations also require available credit and a configured provider.')
   }
+  function setProjectWallet(value: ProjectWallet | null) {
+    projectWallet.set(value)
+    projectDailyLimit.set(value?.dailyLimitCents == null ? '' : (value.dailyLimitCents / 100).toFixed(2))
+    projectMonthlyLimit.set(value?.monthlyLimitCents == null ? '' : (value.monthlyLimitCents / 100).toFixed(2))
+  }
+  async function saveProjectLimits() {
+    if (!projectWallet() || !workspace.canManage() || workspace.pending() || !workspace.project()) return
+    const daily = projectDailyLimit().trim() ? parseCents(projectDailyLimit()) : null
+    const monthly = projectMonthlyLimit().trim() ? parseCents(projectMonthlyLimit()) : null
+    if ((daily !== null && !Number.isFinite(daily)) || (monthly !== null && !Number.isFinite(monthly)) || (daily !== null && monthly !== null && daily > monthly)) {
+      workspace.error.set('Enter nonnegative USD ceilings with at most two decimal places. If both are set, the monthly ceiling must cover the daily ceiling.')
+      return
+    }
+    const project = workspace.project()
+    const result = await workspace.run(() => workspace.request(workspace.projectPath('/wallet/limits'), { method: 'POST', body: JSON.stringify({ dailyLimitCents: daily, monthlyLimitCents: monthly }) }), workspace.pending)
+    if (!result || project !== workspace.project()) return
+    setProjectWallet(result)
+    workspace.notice.set('Project spending ceilings saved.')
+  }
   async function checkout() {
     if (!wallet()?.checkoutAvailable || workspace.pending() || !workspace.workspace()) return
     workspace.notice.set('')
@@ -125,5 +157,5 @@ export function createUsage() {
   function money(cents?: number) { return typeof cents === 'number' ? (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : 'Unavailable' }
   function count(value?: number | null) { return value === null ? 'Unlimited' : typeof value === 'number' ? value.toLocaleString() : 'Unavailable' }
   function bytes(value?: number | null) { return value === null ? 'Unlimited' : typeof value === 'number' ? value >= 1000000000 ? `${(value / 1000000000).toLocaleString()} GB` : `${(value / 1000000).toLocaleString()} MB` : 'Unavailable' }
-  return { workspace, billing, wallet, walletError, amount, dailyLimit, monthlyLimit, saveLimits, checkoutUrl, checkoutCurrent, subscription, subscriptionError, plan, interval, selectedPrice, subscriptionUrl, subscriptionCurrent, canSubscribe, portalUrl, subscribe, portal, date, load, boot, checkout, money, count, bytes }
+  return { workspace, billing, wallet, walletError, projectWallet, projectWalletError, amount, dailyLimit, monthlyLimit, projectDailyLimit, projectMonthlyLimit, saveLimits, saveProjectLimits, checkoutUrl, checkoutCurrent, subscription, subscriptionError, plan, interval, selectedPrice, subscriptionUrl, subscriptionCurrent, canSubscribe, portalUrl, subscribe, portal, date, load, boot, checkout, money, count, bytes }
 }

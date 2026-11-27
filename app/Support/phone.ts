@@ -24,7 +24,9 @@ export async function phoneCapabilities(project: Row) {
         browserAvailable = /^SK[a-f0-9]{32}$/i.test(String(credentials.apiKeySid)) && Boolean(credentials.apiKeySecret)
         let mediaReady = false
         try { const media = new URL(process.env.SUPPORT_VOICE_MEDIA_URL || ''); mediaReady = media.protocol === 'wss:' && media.pathname === '/' && !media.search && !media.username && !media.password } catch {}
-        aiAvailable = Boolean(process.env.OPENAI_API_KEY && pricing.realtimeModel && mediaReady && Number(wallet?.wallet_cents) > 0 && Number(wallet?.managed_daily_cap_cents) > 0 && Number(wallet?.managed_monthly_cap_cents) > 0)
+        aiAvailable = Boolean(process.env.OPENAI_API_KEY && pricing.realtimeModel && mediaReady
+          && Number(wallet?.wallet_cents) > 0 && Number(wallet?.managed_daily_cap_cents) > 0 && Number(wallet?.managed_monthly_cap_cents) > 0
+          && Number(project.managed_daily_cap_cents) !== 0 && Number(project.managed_monthly_cap_cents) !== 0)
         reason = aiAvailable ? '' : 'voice_configuration_or_credit_required'
       }
       catch { reason = 'voice_configuration_unavailable' }
@@ -108,8 +110,8 @@ export async function prepareCall(project: Row, input: Row, actorId: number | nu
       if (spent + reserved + aiReserved > cap) fail(402, 'phone_spending_cap', 'This call exceeds the daily or monthly phone spending ceiling.')
     }
     const publicId = crypto.randomUUID(), origin = phoneOrigin()
-    const providerReservation = await reserveWallet(Number(project.workspace_id), `phone:${publicId}`, reserved, 'twilio-voice')
-    const aiReservation = await reserveWallet(Number(project.workspace_id), `voice-ai:${publicId}`, aiReserved, 'openai-realtime')
+    const providerReservation = await reserveWallet(Number(project.workspace_id), `phone:${publicId}`, reserved, 'twilio-voice', Number(project.id))
+    const aiReservation = await reserveWallet(Number(project.workspace_id), `voice-ai:${publicId}`, aiReserved, 'openai-realtime', Number(project.id))
     const person = await contact(project, { externalId: `phone:${destination.number}`, name: destination.number })
     const thread = await createConversation(project, { externalId: person.external_id }, { idempotencyKey: `phone:${publicId}`, subject: `Phone call ${destination.number}`, body: 'Phone call requested.' }, person)
     return await insert('support_phone_calls', {

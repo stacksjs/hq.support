@@ -2037,6 +2037,24 @@
             "isNullable": false,
             "hasDefault": true,
             "defaultValue": 0
+          },
+          {
+            "name": "managed_daily_cap_cents",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": -1
+          },
+          {
+            "name": "managed_monthly_cap_cents",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": -1
           }
         ],
         "indexes": [
@@ -3607,6 +3625,15 @@
             "isNullable": false,
             "hasDefault": true,
             "defaultValue": -1
+          },
+          {
+            "name": "project_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
           }
         ],
         "indexes": [
@@ -3617,6 +3644,15 @@
               "operation_key"
             ],
             "type": "unique"
+          },
+          {
+            "name": "wallet_reservation_project_period",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "created_at"
+            ],
+            "type": "index"
           }
         ]
       },
@@ -9663,7 +9699,7 @@
       }
     ]
   },
-  "hash": "272f192e8060a8aa7339234a78b3b62972534a430da3656f3688aae5dca2c15b",
+  "hash": "a5d0daf6c8fcf6ce876931b994cdfca879adda9ae9b51622838d218e92069b41",
   "dialect": "sqlite",
-  "updatedAt": "2026-11-27T03:02:25.571Z"
+  "updatedAt": "2026-11-27T03:06:33.684Z"
 }

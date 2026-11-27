@@ -55,7 +55,7 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
     if (operation === 'me') {
       const account = await user(request)
       const workspaces = await query("SELECT w.id, w.public_id, w.name, w.plan, w.trial_ends_at, m.role FROM support_workspaces w JOIN support_memberships m ON m.workspace_id = w.id WHERE m.user_id = ? AND m.status = 'active' ORDER BY w.id", [account.id])
-      const projects = await query("SELECT p.* FROM support_projects p JOIN support_memberships m ON m.workspace_id = p.workspace_id WHERE m.user_id = ? AND m.status = 'active' ORDER BY p.id", [account.id])
+      const projects = await query("SELECT p.id, p.workspace_id, p.public_id, p.name, p.allowed_origins, p.anonymous_enabled, p.buddy_connected_at, p.verified_origin, p.deployment_verified_at, p.created_at, p.updated_at FROM support_projects p JOIN support_memberships m ON m.workspace_id = p.workspace_id WHERE m.user_id = ? AND m.status = 'active' ORDER BY p.id", [account.id])
       return response({ user: account, workspaces, projects })
     }
     if (operation === 'workspaces.create') return response({ workspace: await support.createWorkspace(await user(request), text(data.name, 'name')) }, 201)

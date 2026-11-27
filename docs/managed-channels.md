@@ -86,7 +86,12 @@ These are operator-supplied conservative USD cost ceilings, **not verified
 current provider prices or recommended rates**. Missing/zero ceilings disable
 paid dispatch. SMS reservations use worst-case UCS-2 segmentation; provider
 usage is authoritative. Both native workspace wallet caps must be positive and
-prepaid balance available. Final settlement uses the exact provider decimal
+prepaid balance available. Owners and admins can set additional UTC daily and
+monthly ceilings for each project in Usage and credit. A blank field uses the
+workspace ceiling. Zero pauses new paid operations for the selected project.
+Project totals include reserved and settled costs. Older wallet entries with
+no recorded project count toward a capped project's limit until their UTC
+period ends. Final settlement uses the exact provider decimal
 price in USD microdollars, applies the 15% margin, and rounds cents once. An
 absent price stays `cost_pending`; it is never treated as a free send.
 Encrypted original credentials permit read-only settlement after rotation.

@@ -5,7 +5,7 @@ import { config, overridesReady } from '@stacksjs/config'
 import { injectGlobalAutoImports } from '@stacksjs/server'
 import { route } from '@stacksjs/router'
 import { stripe } from '@stacksjs/payments'
-import { one } from '../../app/Support/database'
+import { insert, one, query } from '../../app/Support/database'
 import { managedCostCents, managedCostFromMicros, reserveWallet, settleProviderWallet, settleWallet } from '../../app/Support/billing'
 
 await overridesReady
@@ -111,6 +111,54 @@ try {
   await assert.rejects(settleProviderWallet(workspaceId, String(duplicateReceipt.public_id), 100, 'micro-receipt-0'), /another operation/)
   assert.equal((await one('SELECT status FROM support_wallet_reservations WHERE id = ?', [duplicateReceipt.id]))!.status, 'reserved', 'conflicting receipts retain the unresolved reservation')
   assert.equal(Number((await one('SELECT provider_cost_micros FROM support_provider_cost_buckets WHERE id = ?', [bucket.id]))!.provider_cost_micros), 8300, 'a receipt cannot enter two operations in the provider aggregate')
+
+  const capWorkspace = (await request('/support/workspaces', 'POST', { name: 'Project ceilings' }, token)).data.workspace
+  const capId = Number(capWorkspace.id)
+  await query("UPDATE support_workspaces SET plan = 'selfhost', wallet_cents = 2000 WHERE id = ?", [capId])
+  await request(`/support/workspaces/${capId}/wallet/limits`, 'POST', { dailyLimitCents: 500, monthlyLimitCents: 500 }, token)
+  const projects = `/support/workspaces/${capId}/projects`
+  const firstProject = (await request(projects, 'POST', { name: 'Capped channel project' }, token)).data.project
+  const siblingProject = (await request(projects, 'POST', { name: 'Sibling channel project' }, token)).data.project
+  const firstId = Number(firstProject.id), siblingId = Number(siblingProject.id)
+  const firstWallet = `/support/projects/${firstProject.public_id}/wallet`
+  const siblingWallet = `/support/projects/${siblingProject.public_id}/wallet`
+  assert.equal((await request(firstWallet, 'GET')).status, 401)
+  assert.equal((await request(firstWallet, 'GET', undefined, token)).data.dailyLimitCents, null)
+  assert.equal((await request(firstWallet + '/limits', 'POST', { dailyLimitCents: 201, monthlyLimitCents: 200 }, token)).status, 422)
+  assert.equal((await request(firstWallet + '/limits', 'POST', { dailyLimitCents: 200, monthlyLimitCents: 500 }, token)).status, 200)
+  const agentEmail = 'billing-agent@example.test', agentPassword = 'BillingAgent2026!'
+  await request('/register', 'POST', { name: 'Billing fixture agent', email: agentEmail, password: agentPassword, password_confirmation: agentPassword })
+  const agent = await one('SELECT id FROM users WHERE email = ?', [agentEmail])
+  assert.ok(agent)
+  await insert('support_memberships', { workspace_id: capId, user_id: agent.id, email: agentEmail, role: 'agent', status: 'active' })
+  const agentSession = (await request('/login', 'POST', { email: agentEmail, password: agentPassword })).data
+  const agentToken = agentSession.token ?? agentSession.access_token
+  assert.equal((await request(firstWallet + '/limits', 'POST', { dailyLimitCents: 0, monthlyLimitCents: null }, agentToken)).status, 403)
+  assert.equal((await request(firstWallet, 'GET', undefined, agentToken)).status, 403)
+  const agentProjects = (await request('/support/me', 'GET', undefined, agentToken)).data.projects
+  assert.ok(agentProjects.some(project => project.public_id === firstProject.public_id))
+  assert.ok(!JSON.stringify(agentProjects).includes('managed_daily_cap_cents'), 'project listing keeps the budget private from an ordinary agent')
+  const legacy = await reserveWallet(capId, 'legacy-cost', 15, 'email')
+  const scoped = await Promise.allSettled([reserveWallet(capId, 'project-first-a', 100, 'email', firstId), reserveWallet(capId, 'project-first-b', 100, 'email', firstId)])
+  assert.equal(scoped.filter(result => result.status === 'fulfilled').length, 1)
+  const held = scoped.find(result => result.status === 'fulfilled')!.value
+  assert.equal(Number(held.project_id), firstId)
+  assert.equal((await request(firstWallet, 'GET', undefined, token)).data.spending.dailyCents, 115)
+  await reserveWallet(capId, 'sibling-operation', 100, 'email', siblingId)
+  assert.equal((await request(firstWallet, 'GET', undefined, token)).data.spending.dailyCents, 115, 'sibling usage does not use this project ceiling')
+  assert.equal((await request(siblingWallet, 'GET', undefined, token)).data.dailyLimitCents, null)
+  assert.equal((await request(siblingWallet, 'GET', undefined, token)).data.spending.dailyCents, 115)
+  await assert.rejects(reserveWallet(capId, String(held.operation_key), 100, 'email', siblingId), /Reservation input changed/)
+  await request(firstWallet + '/limits', 'POST', { dailyLimitCents: 0, monthlyLimitCents: null }, token)
+  assert.equal((await reserveWallet(capId, String(held.operation_key), 100, 'email', firstId)).public_id, held.public_id)
+  await assert.rejects(reserveWallet(capId, 'project-paused', 1, 'email', firstId), /ceiling for this project/)
+  await settleWallet(capId, String(held.public_id), 50, 'scoped-delivery')
+  assert.equal((await request(firstWallet, 'GET', undefined, token)).data.spending.dailyCents, 65)
+  await query('UPDATE support_wallet_reservations SET created_at = ? WHERE id = ?', [new Date(Date.now() - 40 * 86400000).toISOString(), legacy.id])
+  assert.equal((await request(firstWallet, 'GET', undefined, token)).data.spending.monthlyCents, 50, 'unassigned usage leaves the project window when it expires')
+  await request(firstWallet + '/limits', 'POST', { dailyLimitCents: 500, monthlyLimitCents: null }, token)
+  await assert.rejects(reserveWallet(capId, 'workspace-ceiling-project', 400, 'email', firstId), /managed-channel spending ceiling has been reached/)
+  await assert.rejects(reserveWallet(workspaceId, 'foreign-wallet-project', 1, 'email', firstId), /Project not found/)
   console.info('PASS support billing')
 }
 finally { server.stop(true) }

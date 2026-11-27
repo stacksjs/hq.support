@@ -77,7 +77,7 @@ try {
       return new Response(response.body, { status: response.status, headers: outgoing })
     }
     if (url.pathname === '/favicon.ico') return new Response(null, { status: 204 })
-    const path = ['/app', '/app/team-settings', '/app/reports', '/app/ticket-settings'].includes(url.pathname) ? `${url.pathname}.html` : url.pathname
+    const path = ['/app', '/app/team-settings', '/app/reports', '/app/ticket-settings', '/app/usage'].includes(url.pathname) ? `${url.pathname}.html` : url.pathname
     const file = resolve(output, '.' + decodeURIComponent(path))
     if (!file.startsWith(output + sep)) return new Response('Forbidden', { status: 403 })
     return await Bun.file(file).exists() ? new Response(Bun.file(file), { headers: path.endsWith('.html') ? { 'content-type': 'text/html', 'cache-control': 'no-store' } : {} }) : new Response('Not found', { status: 404 })
@@ -273,6 +273,19 @@ try {
   check(await evaluate(`document.querySelector('#report-project').value === ${JSON.stringify(String(sibling.public_id))}`), 'Reports switches projects without retaining the previous project’s timing values')
   check(await evaluate(`!${channelRow}`), 'Project switching clears the previous project’s provider timing table')
   check(await evaluate(`${slaCards}.length === 2 && ${slaCards}.every(card => card.querySelector('strong').textContent === 'No data')`), 'Project switching clears the previous project’s completed SLA samples')
+
+  await navigate(cdp, origin + '/app/usage', { quietMs: 100, timeoutMs: 20000 })
+  await waitFor(() => evaluate(`document.querySelector('#project-daily-limit') !== null && !document.querySelector('#usage-project').disabled`), 15000, { label: 'Self-hosted project spending settings' })
+  await input('#usage-project', String(project.public_id))
+  await waitFor(() => evaluate(`document.querySelector('#project-daily-limit') !== null && !document.querySelector('#usage-project').disabled`), 15000, { label: 'Selected project spending settings' })
+  await input('#project-daily-limit', '12.34')
+  await click('Save project ceilings')
+  await text('Project spending ceilings saved.')
+  const wallet = (await http(prefix + '/wallet', 'GET', undefined, owner.token)).data
+  check(wallet.dailyLimitCents === 1234 && wallet.monthlyLimitCents === null, 'self-hosted Usage saves the selected project cap and preserves the inherited monthly ceiling')
+  await input('#usage-project', String(sibling.public_id))
+  await waitFor(() => evaluate(`document.querySelector('#project-daily-limit')?.value === '' && !document.querySelector('#usage-project').disabled`), 15000, { label: 'Uncapped sibling project' })
+  check((await http(`/support/projects/${sibling.public_id}/wallet`, 'GET', undefined, owner.token)).data.dailyLimitCents === null, 'changing projects resets the cap form without changing the sibling budget')
 
   await navigate(cdp, origin + '/app/ticket-settings', { quietMs: 100, timeoutMs: 20000 })
   await waitFor(() => evaluate(`document.querySelector('#type-opens-conversation')?.checked === false`), 15000, { label: 'Inbox option defaults off for new customer types' })

@@ -1,11 +1,12 @@
 import { Action } from '@stacksjs/actions/runtime'
 import { SupportError, fail, identifier } from '../../Support/errors'
-import { configureWalletLimits, createWalletCheckout, receivePayment, walletOverview } from '../../Support/billing'
+import { configureProjectWalletLimits, configureWalletLimits, createWalletCheckout, projectWalletOverview, receivePayment, walletOverview } from '../../Support/billing'
+import { agentProject } from '../../Support/service'
 import { createSubscriptionCheckout, subscriptionOverview, subscriptionPortal } from '../../Support/subscriptions'
 
-export function billingAction(operation: 'overview' | 'checkout' | 'webhook' | 'subscription' | 'subscribe' | 'portal' | 'limits') {
+export function billingAction(operation: 'overview' | 'checkout' | 'webhook' | 'subscription' | 'subscribe' | 'portal' | 'limits' | 'project-overview' | 'project-limits') {
   return new Action({
-    name: `Support billing ${operation}`, method: ['overview', 'subscription'].includes(operation) ? 'GET' : 'POST', apiResponse: false,
+    name: `Support billing ${operation}`, method: ['overview', 'subscription', 'project-overview'].includes(operation) ? 'GET' : 'POST', apiResponse: false,
     async handle(request) {
       try {
         if (operation === 'webhook') {
@@ -14,8 +15,13 @@ export function billingAction(operation: 'overview' | 'checkout' | 'webhook' | '
         }
         const account = await request.user()
         if (!account) fail(401, 'unauthorized', 'Sign in to continue.')
-        const workspace = identifier(request.getParam('workspace'))
         const user = Number(account.id)
+        if (operation === 'project-overview' || operation === 'project-limits') {
+          const project = await agentProject(user, request.getParam('project'), ['owner', 'admin'])
+          const result = operation === 'project-overview' ? await projectWalletOverview(project) : await configureProjectWalletLimits(project, request.all())
+          return Response.json(result, { headers: { 'Cache-Control': 'no-store' } })
+        }
+        const workspace = identifier(request.getParam('workspace'))
         const result = operation === 'overview' ? await walletOverview(user, workspace)
           : operation === 'subscription' ? await subscriptionOverview(user, workspace)
             : operation === 'limits' ? await configureWalletLimits(user, workspace, request.all())

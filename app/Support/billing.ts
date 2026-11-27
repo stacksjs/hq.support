@@ -74,12 +74,36 @@ export async function walletOverview(userId: number, workspaceId: number) {
   }
 }
 
-async function walletSpending(workspaceId: number) {
-  const now = new Date()
+async function walletSpending(workspaceId: number, projectId?: number, now = new Date()) {
   const day = `${now.toISOString().slice(0, 10)}T00:00:00.000Z`
   const month = `${now.toISOString().slice(0, 7)}-01T00:00:00.000Z`
-  const total = async (since: string) => Number((await one("SELECT COALESCE(SUM(CASE WHEN status = 'reserved' THEN reserved_cents ELSE actual_cents END), 0) AS total FROM support_wallet_reservations WHERE workspace_id = ? AND created_at >= ?", [workspaceId, since]))?.total ?? 0)
+  // Pending and settled legacy reservations without a project still count
+  // conservatively against configured project limits until their window ends.
+  const projectScope = projectId === undefined ? '' : ' AND project_id IN (0, ?)'
+  const total = async (since: string) => Number((await one(`SELECT COALESCE(SUM(CASE WHEN status = 'reserved' THEN reserved_cents ELSE actual_cents END), 0) AS total FROM support_wallet_reservations WHERE workspace_id = ? AND created_at >= ?${projectScope}`, [workspaceId, since, ...(projectId === undefined ? [] : [projectId])]))?.total ?? 0)
   return { dailyCents: await total(day), monthlyCents: await total(month), period: now.toISOString().slice(0, 7) }
+}
+
+async function walletProject(workspaceId: number, projectId: number) {
+  const project = await one('SELECT managed_daily_cap_cents, managed_monthly_cap_cents FROM support_projects WHERE workspace_id = ? AND id = ?', [workspaceId, projectId])
+  if (!project) fail(404, 'project_not_found', 'Project not found.')
+  const daily = Number(project.managed_daily_cap_cents), monthly = Number(project.managed_monthly_cap_cents)
+  return { dailyLimitCents: daily < 0 ? null : daily, monthlyLimitCents: monthly < 0 ? null : monthly }
+}
+
+export async function projectWalletOverview(project: Row) {
+  const workspaceId = Number(project.workspace_id), projectId = Number(project.id)
+  return { ...await walletProject(workspaceId, projectId), spending: await walletSpending(workspaceId, projectId) }
+}
+
+export async function configureProjectWalletLimits(project: Row, input: Row) {
+  const daily = input.dailyLimitCents === null ? -1 : cents(input.dailyLimitCents, 0)
+  const monthly = input.monthlyLimitCents === null ? -1 : cents(input.monthlyLimitCents, 0)
+  if (daily >= 0 && monthly >= 0 && daily > monthly) fail(422, 'invalid_limit', 'The monthly ceiling must cover the daily ceiling.')
+  return await workspaceTransaction(Number(project.workspace_id), async () => {
+    await query('UPDATE support_projects SET managed_daily_cap_cents = ?, managed_monthly_cap_cents = ?, updated_at = ? WHERE id = ? AND workspace_id = ?', [daily, monthly, new Date().toISOString(), project.id, project.workspace_id])
+    return await projectWalletOverview(project)
+  })
 }
 
 export async function configureWalletLimits(userId: number, workspaceId: number, input: Row) {
@@ -175,21 +199,27 @@ export async function receivePayment(raw: string, signature: string) {
   return { received: true }
 }
 
-export async function reserveWallet(workspaceId: number, operationKey: string, amountCents: number, provider: string) {
+export async function reserveWallet(workspaceId: number, operationKey: string, amountCents: number, provider: string, projectId?: number) {
   const amount = cents(amountCents)
   const operation = text(operationKey, 'operationKey')
   return await workspaceTransaction(workspaceId, async () => {
+    const project = projectId === undefined ? undefined : await walletProject(workspaceId, projectId)
     const existing = await one('SELECT * FROM support_wallet_reservations WHERE workspace_id = ? AND operation_key = ?', [workspaceId, operation])
     if (existing) {
-      if (Number(existing.reserved_cents) !== amount || existing.provider !== provider) fail(409, 'idempotency_conflict', 'Reservation input changed.')
+      if (Number(existing.reserved_cents) !== amount || existing.provider !== provider || (Number(existing.project_id) > 0 && Number(existing.project_id) !== projectId)) fail(409, 'idempotency_conflict', 'Reservation input changed.')
       return existing
     }
     const current = await workspace(workspaceId)
     if (balance(current) < amount) fail(402, 'wallet_exhausted', 'Add prepaid credit before using this channel.')
-    const spending = await walletSpending(workspaceId)
+    const now = new Date()
+    const spending = await walletSpending(workspaceId, undefined, now)
     if (Number(current.managed_daily_cap_cents) <= 0 || Number(current.managed_monthly_cap_cents) <= 0) fail(402, 'wallet_limit', 'Configure daily and monthly managed-channel spending ceilings first.')
     if (spending.dailyCents + amount > Number(current.managed_daily_cap_cents) || spending.monthlyCents + amount > Number(current.managed_monthly_cap_cents)) fail(402, 'wallet_limit', 'The managed-channel spending ceiling has been reached.')
-    const reservation = await insert('support_wallet_reservations', { workspace_id: workspaceId, public_id: crypto.randomUUID(), operation_key: operation, provider: text(provider, 'provider'), reserved_cents: amount })
+    if (project && (project.dailyLimitCents !== null || project.monthlyLimitCents !== null)) {
+      const scoped = await walletSpending(workspaceId, projectId, now)
+      if (scoped.dailyCents + amount > (project.dailyLimitCents ?? Infinity) || scoped.monthlyCents + amount > (project.monthlyLimitCents ?? Infinity)) fail(402, 'project_wallet_limit', 'The managed-channel spending ceiling for this project has been reached.')
+    }
+    const reservation = await insert('support_wallet_reservations', { workspace_id: workspaceId, project_id: projectId ?? 0, public_id: crypto.randomUUID(), operation_key: operation, provider: text(provider, 'provider'), reserved_cents: amount, created_at: now.toISOString() })
     await entry(workspaceId, `reserve:${reservation.public_id}`, 'reserve', -amount, provider)
     return reservation
   })

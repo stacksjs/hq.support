@@ -2038,6 +2038,24 @@
             "isNullable": false,
             "hasDefault": true,
             "defaultValue": 0
+          },
+          {
+            "name": "managed_daily_cap_cents",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": -1
+          },
+          {
+            "name": "managed_monthly_cap_cents",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": -1
           }
         ],
         "indexes": [
@@ -3608,6 +3626,15 @@
             "isNullable": false,
             "hasDefault": true,
             "defaultValue": -1
+          },
+          {
+            "name": "project_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
           }
         ],
         "indexes": [
@@ -3618,6 +3645,15 @@
               "operation_key"
             ],
             "type": "unique"
+          },
+          {
+            "name": "wallet_reservation_project_period",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "created_at"
+            ],
+            "type": "index"
           }
         ]
       },
@@ -9667,7 +9703,7 @@
       }
     ]
   },
-  "hash": "7651da3b6dacd517e7e980870214694422452bfb6d9ec2c1b5aaaaa0a51cd028",
+  "hash": "3fa7b15a8503034def8eccd2ea2edcfd93c1818f57898348889fac2f3d4f46ee",
   "dialect": "postgres",
-  "updatedAt": "2026-11-27T03:02:25.742Z"
+  "updatedAt": "2026-11-27T03:06:33.858Z"
 }

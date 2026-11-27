@@ -70,7 +70,8 @@ The existing exact provider-cost accounting/managed markup, signed payment
 validation, prepaid reservations and positive UTC daily/monthly spending
 ceilings remain enforced. A zero ceiling still pauses new paid work. Preparing
 checkout does not fund the wallet; credit requires a verified payment event.
-Changing core entitlement does not remove those controls.
+Owners and admins can apply lower paid messaging and voice ceilings to
+individual projects in Usage and credit.
 
 If the operator needs a wallet-free direct BYO paid-channel policy, that is a
 separate provider/billing integration requiring its own authorization, cost and

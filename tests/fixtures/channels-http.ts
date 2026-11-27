@@ -139,6 +139,12 @@ try {
   configureBillingGateway({ async checkout(input) { checkoutId = input.checkoutId; return { id: 'cs_channel_fixture', url: 'https://checkout.stripe.com/channel-fixture' } }, async event() { return { id: 'evt_channel_fixture', type: 'checkout.session.completed', object: { id: 'cs_channel_fixture', payment_status: 'paid', amount_total: 2000, currency: 'usd', payment_intent: 'pi_channel_fixture', client_reference_id: String(workspace.id), metadata: { service: 'supporthq', checkout_id: checkoutId } } } } })
   await createWalletCheckout(Number(owner.id), Number(workspace.id), { amountCents: 2000, idempotencyKey: 'channel-wallet-fixture' }); await receivePayment('fixture', 'external-provider-seam')
   await configureWalletLimits(Number(owner.id), Number(workspace.id), { dailyLimitCents: 1000, monthlyLimitCents: 2000 })
+  const projectWallet = `/support/projects/${project.public_id}/wallet/limits`
+  check((await http(projectWallet, 'POST', { dailyLimitCents: 0, monthlyLimitCents: null }, token)).status === 200, 'owner can pause paid operations for just this project')
+  const sendsBeforeProjectCap = providerPosts
+  const deniedByProject = await http(`/support/projects/${project.public_id}/channel-conversations/${thread.conversation_id}/messages`, 'POST', { body: 'Blocked by project ceiling', idempotencyKey: 'project-ceiling' }, token)
+  check(deniedByProject.status === 402 && deniedByProject.data.error.code === 'project_wallet_limit' && providerPosts === sendsBeforeProjectCap, 'native paid reply route enforces a project ceiling before provider submission')
+  await http(projectWallet, 'POST', { dailyLimitCents: null, monthlyLimitCents: null }, token)
   const sent = await createChannelReply(project, thread.conversation_id, { body: 'Reply', idempotencyKey: 'reply-1' }, Number(owner.id), dependencies)
   const delivery = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [sent.delivery!.id]))!
   check((await dispatchChannelDelivery(Number(delivery.id), dependencies)).outcome === 'accepted', 'real HTTP native SMS request returns provider acceptance')

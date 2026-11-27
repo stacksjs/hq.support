@@ -140,6 +140,12 @@ try {
   check((await request(path + '/calls', 'POST', { channelId: channel.id, idempotencyKey: 'daily-ceiling', to: '+16135550109' }, owner)).status === 402 && providerCreates === beforeBudget, 'daily maximum-cost ceiling stops paid provider work')
   policies[accountSid].dailyCapCents = 20000
   process.env.SUPPORT_PHONE_PRICING = JSON.stringify(policies)
+  const projectWallet = `/support/projects/${project.public_id}/wallet/limits`
+  check((await request(projectWallet, 'POST', { dailyLimitCents: 115, monthlyLimitCents: null }, owner)).status === 200, 'owner configures the project voice ceiling')
+  const splitHold = await request(path + '/calls', 'POST', { channelId: channel.id, idempotencyKey: 'project-voice-ceiling', to: '+16135550109', maxDurationSeconds: 60 }, owner)
+  check(splitHold.status === 402 && splitHold.data.error.code === 'project_wallet_limit' && providerCreates === beforeBudget, 'project must cover both projected telephony and AI costs before dialing')
+  check(Number((await one('SELECT wallet_cents FROM support_workspaces WHERE id = ?', [workspace.id]))?.wallet_cents) === 10000 && (await query('SELECT id FROM support_wallet_reservations WHERE workspace_id = ?', [workspace.id])).length === 0, 'refusing the second voice reservation rolls back the first reservation and balance debit')
+  await request(projectWallet, 'POST', { dailyLimitCents: null, monthlyLimitCents: null }, owner)
   const input = { channelId: channel.id, idempotencyKey: 'one-outbound', to: '+16135550100', maxDurationSeconds: 60 }
   const simultaneous = await Promise.all([request(path + '/calls', 'POST', input, owner), request(path + '/calls', 'POST', input, owner)])
   check(providerCreates === 1 && simultaneous.some(result => result.status === 201), `concurrent call attempts send one provider request ${JSON.stringify(simultaneous)}`)

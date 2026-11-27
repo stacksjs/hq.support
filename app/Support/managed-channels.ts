@@ -68,7 +68,7 @@ export async function createChannelReply(project: Row, conversationId: unknown, 
     if (existing) return await replayDelivery(existing)
     if (afterAgentReplyId !== undefined) await assertAgentReplyCursor(project, selectedConversation, afterAgentReplyId)
     const publicId = crypto.randomUUID()
-    const reservation = maximumCents ? await reserveWallet(Number(project.workspace_id), `channel:${publicId}`, maximumCents, String(channel.provider)) : undefined
+    const reservation = maximumCents ? await reserveWallet(Number(project.workspace_id), `channel:${publicId}`, maximumCents, String(channel.provider), Number(project.id)) : undefined
     const result = await reply(project, conversationId, { body: payload.body, visibility: 'public', idempotencyKey: `channel:${publicId}` }, { userId, deferDelivery: true, mediaOnly: Boolean(Array.isArray(payload.attachmentIds) && payload.attachmentIds.length) })
     const row = await insert('support_channel_deliveries', { workspace_id: project.workspace_id, project_id: project.id, channel_id: channel.id, thread_id: thread.id, message_id: result.message.id, public_id: publicId, payload: JSON.stringify({ ...payload, _configuration: channel.configuration }), operation_key: key, request_hash: fingerprint, configuration_hash: configurationHash, wallet_reservation_id: reservation?.public_id || '', reserved_cents: maximumCents, status: 'pending', available_at: Date.now() })
     await query("UPDATE support_messages SET delivery_status = 'pending' WHERE id = ?", [result.message.id])
