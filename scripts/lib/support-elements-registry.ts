@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { archivePayload, inspectPayload, packageName, payloadHashes, sha256 } from './support-elements-artifact'
 
+const packageMetadataUrl = 'https://registry.npmjs.org/@stacksjs%2fsupport-elements'
+
 interface RegistryOptions {
   deadlineMs?: number
   requestTimeoutMs?: number
@@ -56,15 +58,27 @@ export function createRegistryReader(options: RegistryOptions = {}) {
   }
 }
 
+export async function assertAlphaTagCanAdvance(version: string, read = createRegistryReader()) {
+  const metadata = JSON.parse(new TextDecoder().decode(await read(packageMetadataUrl)))
+  assert.equal(metadata.name, packageName)
+  const tags = metadata['dist-tags']
+  assert.ok(tags && typeof tags === 'object' && !Array.isArray(tags), 'Invalid npm dist-tag metadata.')
+  if (tags.alpha === undefined) return
+  const alphaVersion = /^0\.1\.0-alpha\.(?:0|[1-9]\d*)$/
+  assert.ok(typeof tags.alpha === 'string' && alphaVersion.test(tags.alpha), 'Invalid current npm alpha tag.')
+  assert.match(version, alphaVersion)
+  assert.ok(Bun.semver.order(version, tags.alpha) >= 0, 'Publishing this version would move the npm alpha tag backward.')
+}
+
 export async function readPublishedElements(release: { version: string, archiveSha256: string, files: Record<string, string> }, read = createRegistryReader()) {
-  const metadata = JSON.parse(new TextDecoder().decode(await read(`https://registry.npmjs.org/@stacksjs%2fsupport-elements/${release.version}`, true)))
+  const metadata = JSON.parse(new TextDecoder().decode(await read(`${packageMetadataUrl}/${release.version}`, true)))
   assert.equal(metadata.name, packageName); assert.equal(metadata.version, release.version)
   const url = new URL(metadata.dist.tarball); assert.equal(url.origin, 'https://registry.npmjs.org'); assert.equal(url.username, ''); assert.equal(url.password, '')
   const bytes = await read(url)
   assert.equal(`sha512-${createHash('sha512').update(bytes).digest('base64')}`, metadata.dist.integrity)
   assert.equal(sha256(bytes), release.archiveSha256, 'Public npm archive bytes differ from the reviewed CI archive')
   const published = await archivePayload(bytes); inspectPayload(published, release.version); assert.deepEqual(payloadHashes(published), release.files, 'Public npm payload differs from the reviewed same-SHA CI artifact')
-  const tags = JSON.parse(new TextDecoder().decode(await read('https://registry.npmjs.org/@stacksjs%2fsupport-elements', true)))['dist-tags']
+  const tags = JSON.parse(new TextDecoder().decode(await read(packageMetadataUrl, true)))['dist-tags']
   assert.equal(tags.alpha, release.version, 'The verified release must be tagged alpha')
   return { published, tags }
 }

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { archivePayload, elements, inspectPayload, packageName, payloadHashes, sha256, siteWidgetPayload } from '../../scripts/lib/support-elements-artifact'
 import type { Payload } from '../../scripts/lib/support-elements-artifact'
 import { assertElementsCiRun } from '../../scripts/verify-elements-ci'
-import { createRegistryReader, readPublishedElements } from '../../scripts/lib/support-elements-registry'
+import { assertAlphaTagCanAdvance, createRegistryReader, readPublishedElements } from '../../scripts/lib/support-elements-registry'
 
 function fixture(): Payload {
   const bytes = (value: string) => new TextEncoder().encode(value), files: Payload = new Map(), exports: Record<string, unknown> = { '.': { types: './dist/index.d.ts', import: './dist/bundle.js', default: './dist/bundle.js' } }
@@ -54,14 +54,23 @@ describe('same-SHA successful main CI gate', () => {
 test('publication dry-runs the retained archive and scopes OIDC to the publish job', async () => {
   const workflow = Bun.YAML.parse(await Bun.file(new URL('../../.github/workflows/publish-elements.yml', import.meta.url)).text()) as {
     permissions?: Record<string, string>
-    jobs: Record<string, { needs?: string, if?: string, permissions?: Record<string, string>, steps: { run?: string, uses?: string, env?: Record<string, string> }[] }>
+    jobs: Record<string, { needs?: string, if?: string, permissions?: Record<string, string>, outputs?: Record<string, string>, env: Record<string, string>, steps: { run?: string, uses?: string, id?: string, with?: Record<string, unknown>, env?: Record<string, string> }[] }>
   }
   const { verify, publish } = workflow.jobs
   expect(publish?.needs).toBe('verify')
   for (const job of [verify!, publish!]) {
-    expect(job.steps.some(step => step.run?.includes('scripts/verify-elements-ci.ts'))).toBe(true)
+    expect(job.env.SUPPORT_ELEMENTS_SOURCE_SHA).toBe('${{ inputs.source_sha || github.sha }}')
+    expect(job.env.SUPPORT_ELEMENTS_ARCHIVE_SHA256).toBe('${{ inputs.archive_sha256 }}')
+    expect(job.steps.find(step => step.id === 'source')?.run?.endsWith('scripts/verify-elements-registry-source.ts --publication')).toBe(true)
+    expect(job.steps.find(step => step.uses?.startsWith('actions/checkout@'))?.with).toEqual({ ref: '${{ github.sha }}', 'persist-credentials': false })
     expect(job.steps.some(step => step.run?.includes(' libs:publish') || step.run?.endsWith(' restore'))).toBe(false)
   }
+  expect(verify!.outputs?.artifact_id).toBe('${{ steps.source.outputs.artifact_id }}')
+  expect(verify!.steps.find(step => step.uses?.startsWith('actions/download-artifact@'))?.with?.['artifact-ids']).toBe('${{ steps.source.outputs.artifact_id }}')
+  expect(publish!.steps.find(step => step.uses?.startsWith('actions/download-artifact@'))?.with?.['artifact-ids']).toBe('${{ needs.verify.outputs.artifact_id }}')
+  const sameArtifact = publish!.steps.find(step => step.env?.VERIFIED_ARTIFACT_ID)
+  expect(sameArtifact?.env).toEqual({ VERIFIED_ARTIFACT_ID: '${{ needs.verify.outputs.artifact_id }}', RESOLVED_ARTIFACT_ID: '${{ steps.source.outputs.artifact_id }}' })
+  expect(sameArtifact?.run).toContain('test "$RESOLVED_ARTIFACT_ID" = "$VERIFIED_ARTIFACT_ID"')
   expect(verify!.steps.some(step => step.run?.endsWith(' publish-dry-run'))).toBe(true)
   expect(workflow.permissions?.['id-token']).toBeUndefined()
   expect(verify!.permissions?.['id-token']).toBeUndefined()
@@ -73,7 +82,8 @@ test('publication dry-runs the retained archive and scopes OIDC to the publish j
     expect(job.steps.some(step => Object.keys(step.env ?? {}).some(key => ['NPM_TOKEN', 'NPM_CONFIG_TOKEN', 'NODE_AUTH_TOKEN', 'BUN_AUTH_TOKEN'].includes(key)))).toBe(false)
   }
   expect(publish!.steps.some(step => step.run?.endsWith(' publish'))).toBe(true)
-  expect(publish!.steps.some(step => step.run?.endsWith(' registry'))).toBe(true)
+  const readback = publish!.steps.find(step => step.run?.endsWith(' registry'))?.run
+  expect(readback).toContain('env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL')
 })
 
 test('production stages the qualified widget bytes and only their supported public paths', () => {
@@ -104,6 +114,15 @@ test('production stages the qualified widget bytes and only their supported publ
 })
 
 describe('public registry readback', () => {
+  test('rejects a rollback or invalid public alpha tag before publication', async () => {
+    const registry = (tags: unknown) => async () => new TextEncoder().encode(JSON.stringify({ name: packageName, 'dist-tags': tags }))
+    await expect(assertAlphaTagCanAdvance('0.1.0-alpha.3', registry({ alpha: '0.1.0-alpha.4' }))).rejects.toThrow('move the npm alpha tag backward')
+    await expect(assertAlphaTagCanAdvance('0.1.0-alpha.4', registry({ alpha: 'unexpected-version' }))).rejects.toThrow('Invalid current npm alpha tag')
+    await expect(assertAlphaTagCanAdvance('0.1.0-alpha.4', registry(null))).rejects.toThrow('Invalid npm dist-tag metadata')
+    await expect(assertAlphaTagCanAdvance('0.1.0-alpha.10', registry({ alpha: '0.1.0-alpha.4' }))).resolves.toBeUndefined()
+    await expect(assertAlphaTagCanAdvance('0.1.0-alpha.4', registry({ alpha: '0.1.0-alpha.4' }))).resolves.toBeUndefined()
+  })
+
   test('waits for an uploaded version to become readable', async () => {
     let requests = 0
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch() { return ++requests < 3 ? new Response('processing', { status: 404 }) : Response.json({ version: '0.1.0-alpha.0' }) } })

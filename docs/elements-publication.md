@@ -2,7 +2,7 @@
 
 The minimal npm distribution is `@stacksjs/support-elements`: five native stx custom elements, per-element ESM/declarations/CSS, the self-registering bundle, SSR helpers and Custom Elements Manifest. The hosted `createSupport` lazy loader remains a separate public asset. The publication checks require its native bundle to match the npm bundle exactly. No new loader facade is invented inside this npm package.
 
-The public `alpha` tag currently points to `0.1.0-alpha.1`. The `0.1.0-alpha.2` candidate includes the verified inline themes, keyboard focus and placeholder contrast. npm rejected its upload in the [original publication run](https://github.com/stacksjs/hq.support/actions/runs/45933859947). The current candidate, `0.1.0-alpha.3`, is pinned independently of the application's `0.0.0` version and adds English, German and Arabic Messenger copy and locale updates. The publication workflow defaults to verification and dry run. Select its `publish` input to publish the candidate.
+The public `alpha` tag currently points to `0.1.0-alpha.1`. npm rejected the upload of `0.1.0-alpha.2`, which included inline themes, keyboard focus and placeholder contrast. The retained `0.1.0-alpha.3` adds the Messenger locale and typing updates. The current `0.1.0-alpha.4` pin adds customer transcript pagination. Package versions are independent of the site version. The publication workflow defaults to verification and dry run. Select `publish` when ready to release the reviewed candidate. [Original alpha.2 publication run](https://github.com/stacksjs/hq.support/actions/runs/45933859947)
 
 ## Native fixes and publisher choice
 
@@ -24,9 +24,11 @@ Bun 1.4.4 produces `package.tgz`. `release.json` records source SHA, version, ca
 
 Before uploading, a clean disposable consumer installs the archive with scripts disabled and no app dependency aliases. It must be a real installed directory. Bun's installer-only `.bun-tag` marker is excluded from installation comparison; that filename is never allowed inside the reviewed archive. Strict TypeScript compilation uses the declarations with no ambient stubs and `skipLibCheck: false`, importing root, suffixless/explicit per-element modules and SSR. Actual Chromium imports the bundle and each of the five individual ESM modules in fresh contexts on a plain host, under strict script/style CSP. Exported constructors must match native registrations, create shadow roots and avoid customer-token reflection. External requests are blocked. Source and temporary consumer files are removed after verification.
 
-## Same-commit publication and public readback
+## Reviewed publication and public readback
 
-`.github/workflows/publish-elements.yml` accepts a successful main `ci_run_id`, the reviewed version and a boolean publish choice. `verify-elements-ci.ts` checks the GitHub API for the exact current SHA, repository, main push, CI workflow path, completed success, and unexpired `support-elements-{SHA}` artifact. A successful check for another branch, fork, workflow or commit cannot authorize publication.
+`.github/workflows/publish-elements.yml` accepts a successful main `ci_run_id`, the reviewed version and a boolean publish choice. By default it uses the exact dispatch commit and the version pinned in `config/library.ts`. The source check verifies the repository, main push, CI workflow path, completed success, and ownership of the unexpired artifact. Both jobs run the workflow code checked out from the current dispatch commit.
+
+For an already reviewed archive whose source predates the dispatch, enter its exact `source_sha` and reviewed `archive_sha256` together with the original successful `ci_run_id` and version. The source must be an ancestor of the dispatch commit. The workflow downloads the artifact by its verified GitHub ID and compares the actual tarball SHA-256 with the supplied digest before the dry run and publication. The publish job requires that same artifact ID and checks that the version can advance the public `alpha` tag without moving it backward.
 
 The workflow downloads that candidate from the verified run. It checks the hashes, then reruns the clean consumer and hosted browser checks against the downloaded assets using `SUPPORT_BROWSER_ASSETS` and `--skip-build`. CI and the publication verifier dry-run the original tarball through Stacks. Stacks uses the npm CLI for the dry run so the verification works without registry credentials.
 

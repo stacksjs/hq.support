@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { verifyElementsRegistrySource } from '../../scripts/verify-elements-registry-source'
+import { verifyElementsPublicationSource, verifyElementsRegistrySource } from '../../scripts/verify-elements-registry-source'
 
 const input = { repository: 'stacksjs/hq.support', sourceSha: 'a'.repeat(40), verifierSha: 'b'.repeat(40), runId: '123', version: '0.1.0-alpha.0' }
 interface WorkflowStep { uses?: string, run?: string, id?: string, with?: Record<string, unknown>, env?: Record<string, string> }
@@ -63,6 +63,41 @@ describe('historical registry verification source boundary', () => {
       const fixture = sourceFixture(); mutate(fixture)
       await expect(verifyElementsRegistrySource(input, async path => path.includes('/artifacts') ? fixture.artifacts : fixture.run)).rejects.toThrow()
     }
+  })
+})
+
+describe('reviewed publication source', () => {
+  const archiveSha256 = 'c'.repeat(64)
+  const comparePath = `/compare/${input.sourceSha}...${input.verifierSha}?per_page=1`
+  const ancestor = { status: 'ahead', base_commit: { sha: input.sourceSha }, merge_base_commit: { sha: input.sourceSha } }
+
+  test('accepts a reviewed main ancestor and returns only its owned artifact', async () => {
+    const fixture = sourceFixture(), paths: string[] = []
+    const proof = await verifyElementsPublicationSource({ ...input, archiveSha256 }, async path => {
+      paths.push(path)
+      if (path === comparePath) return ancestor
+      return path.includes('/artifacts') ? fixture.artifacts : fixture.run
+    })
+    expect(paths).toEqual(['/actions/runs/123', '/actions/runs/123/artifacts?per_page=100', comparePath])
+    expect(proof.artifactId).toBe(789)
+  })
+
+  test('rejects unpinned, diverged or unrelated historical artifacts', async () => {
+    for (const digest of [undefined, '', 'not-an-archive-digest'])
+      await expect(verifyElementsPublicationSource({ ...input, archiveSha256: digest }, async () => { throw new Error('Unexpected GitHub request') })).rejects.toThrow('requires the reviewed archive SHA-256')
+    for (const comparison of [{ ...ancestor, status: 'diverged' }, { ...ancestor, merge_base_commit: { sha: input.verifierSha } }]) {
+      const fixture = sourceFixture()
+      await expect(verifyElementsPublicationSource({ ...input, archiveSha256 }, async path => path === comparePath ? comparison : path.includes('/artifacts') ? fixture.artifacts : fixture.run)).rejects.toThrow()
+    }
+  })
+
+  test('accepts the current main candidate without a separate archive pin', async () => {
+    const fixture = sourceFixture()
+    const proof = await verifyElementsPublicationSource({ ...input, verifierSha: input.sourceSha }, async path => {
+      expect(path).not.toContain('/compare/')
+      return path.includes('/artifacts') ? fixture.artifacts : fixture.run
+    })
+    expect(proof.sourceSha).toBe(proof.verifierSha)
   })
 })
 

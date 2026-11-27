@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { assertElementsCiRun } from './verify-elements-ci'
 
 interface SourceInput { repository: string, sourceSha: string, verifierSha: string, runId: string, version: string }
+interface PublicationInput extends SourceInput { archiveSha256?: string }
 interface SourceRun {
   id: number
   repository: { id: number, full_name: string }
@@ -17,7 +18,6 @@ interface SourceArtifact {
   workflow_run: { id: number, repository_id: number, head_repository_id: number, head_branch: string, head_sha: string }
 }
 
-// Historical source is allowed only for readback. This does not authorize publication.
 export async function verifyElementsRegistrySource(input: SourceInput, read: (path: string) => Promise<unknown>) {
   const { repository, sourceSha, verifierSha, runId, version } = input
   assert.equal(repository, 'stacksjs/hq.support'); assert.match(sourceSha, /^[a-f0-9]{40}$/); assert.match(verifierSha, /^[a-f0-9]{40}$/)
@@ -35,12 +35,27 @@ export async function verifyElementsRegistrySource(input: SourceInput, read: (pa
   return { version, sourceSha, verifierSha, sourceCiRunId: runId, sourceCiUrl: `https://github.com/${repository}/actions/runs/${runId}`, artifactId: artifact.id, artifactName: artifact.name }
 }
 
+export async function verifyElementsPublicationSource(input: PublicationInput, read: (path: string) => Promise<unknown>) {
+  const { sourceSha, verifierSha, archiveSha256 } = input
+  if (sourceSha !== verifierSha || archiveSha256)
+    assert.match(archiveSha256 ?? '', /^[a-f0-9]{64}$/, 'Historical publication requires the reviewed archive SHA-256.')
+  const proof = await verifyElementsRegistrySource(input, read)
+  if (sourceSha !== verifierSha) {
+    const ancestry = await read(`/compare/${sourceSha}...${verifierSha}?per_page=1`) as { status: string, base_commit?: { sha: string }, merge_base_commit?: { sha: string } }
+    assert.equal(ancestry.status, 'ahead', 'The publication workflow must descend from the historical source.')
+    assert.equal(ancestry.base_commit?.sha, sourceSha)
+    assert.equal(ancestry.merge_base_commit?.sha, sourceSha)
+  }
+  return proof
+}
+
 if (import.meta.main) {
   assert.equal(process.env.GITHUB_REF, 'refs/heads/main')
   const token = process.env.GITHUB_TOKEN || ''
   assert.ok(token, 'A read-only Actions token is required to inspect the source candidate')
   const repository = process.env.GITHUB_REPOSITORY || ''
-  const proof = await verifyElementsRegistrySource({ repository, sourceSha: process.env.SUPPORT_ELEMENTS_SOURCE_SHA || '', verifierSha: process.env.GITHUB_SHA || '', runId: process.env.SUPPORT_ELEMENTS_CI_RUN || '', version: process.env.SUPPORT_ELEMENTS_VERSION || '' }, async path => {
+  const verify = process.argv.includes('--publication') ? verifyElementsPublicationSource : verifyElementsRegistrySource
+  const proof = await verify({ repository, sourceSha: process.env.SUPPORT_ELEMENTS_SOURCE_SHA || '', verifierSha: process.env.GITHUB_SHA || '', runId: process.env.SUPPORT_ELEMENTS_CI_RUN || '', version: process.env.SUPPORT_ELEMENTS_VERSION || '', archiveSha256: process.env.SUPPORT_ELEMENTS_ARCHIVE_SHA256 }, async path => {
     const response = await fetch(`https://api.github.com/repos/${repository}${path}`, { headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28' }, redirect: 'error', signal: AbortSignal.timeout(15000) })
     assert.ok(response.ok, `GitHub source gate returned HTTP ${response.status}`)
     return await response.json()

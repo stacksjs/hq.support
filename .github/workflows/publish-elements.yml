@@ -4,17 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       ci_run_id:
-        description: Successful main CI run for this exact commit and its component artifact
+        description: Successful main CI run that retained the reviewed component archive
         required: true
         type: string
       version:
-        description: Reviewed version pinned in config/library.ts, for example 0.1.0-alpha.0
+        description: Reviewed version in the retained archive, for example 0.1.0-alpha.3
         required: true
         type: string
       publish:
         description: Publish the verified candidate to npm after the dry run
         type: boolean
         default: false
+      source_sha:
+        description: Historical main commit that produced the archive, or leave blank for current main
+        type: string
+      archive_sha256:
+        description: Reviewed tarball SHA-256, required for a historical source
+        type: string
 
 permissions:
   contents: read
@@ -29,26 +35,31 @@ jobs:
     if: github.repository == 'stacksjs/hq.support' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      artifact_id: ${{ steps.source.outputs.artifact_id }}
     env:
       SUPPORT_ELEMENTS_CI_RUN: ${{ inputs.ci_run_id }}
       SUPPORT_ELEMENTS_VERSION: ${{ inputs.version }}
-      SUPPORT_ELEMENTS_SOURCE_SHA: ${{ github.sha }}
+      SUPPORT_ELEMENTS_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      SUPPORT_ELEMENTS_ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
       CHROME_PATH: /usr/bin/google-chrome
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
-      - name: Verify exact successful main CI run
+      - name: Verify the main source and archive ownership
+        id: source
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: bun --no-env-file scripts/verify-elements-ci.ts
+        run: bun --no-env-file scripts/verify-elements-registry-source.ts --publication
       - uses: actions/download-artifact@v8
         with:
-          name: support-elements-${{ github.sha }}
+          artifact-ids: ${{ steps.source.outputs.artifact_id }}
           path: storage/framework/runtime/support-elements-release
           run-id: ${{ inputs.ci_run_id }}
           github-token: ${{ github.token }}
@@ -81,7 +92,8 @@ jobs:
     env:
       SUPPORT_ELEMENTS_CI_RUN: ${{ inputs.ci_run_id }}
       SUPPORT_ELEMENTS_VERSION: ${{ inputs.version }}
-      SUPPORT_ELEMENTS_SOURCE_SHA: ${{ github.sha }}
+      SUPPORT_ELEMENTS_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      SUPPORT_ELEMENTS_ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
       CHROME_PATH: /usr/bin/google-chrome
     steps:
       - uses: actions/checkout@v6
@@ -98,19 +110,27 @@ jobs:
       - run: npm install --global npm@11.16.0 --ignore-scripts
       - run: bun install --frozen-lockfile --ignore-scripts
       - name: Recheck CI ownership before publication
+        id: source
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: bun --no-env-file scripts/verify-elements-ci.ts
+        run: bun --no-env-file scripts/verify-elements-registry-source.ts --publication
+      - name: Require the exact artifact that passed verification
+        env:
+          VERIFIED_ARTIFACT_ID: ${{ needs.verify.outputs.artifact_id }}
+          RESOLVED_ARTIFACT_ID: ${{ steps.source.outputs.artifact_id }}
+        run: |
+          test -n "$VERIFIED_ARTIFACT_ID"
+          test "$RESOLVED_ARTIFACT_ID" = "$VERIFIED_ARTIFACT_ID"
       - uses: actions/download-artifact@v8
         with:
-          name: support-elements-${{ github.sha }}
+          artifact-ids: ${{ needs.verify.outputs.artifact_id }}
           path: storage/framework/runtime/support-elements-release
           run-id: ${{ inputs.ci_run_id }}
           github-token: ${{ github.token }}
       - name: Publish the original CI archive with npm trusted publishing
         run: bun --no-env-file scripts/support-elements-release.ts publish
       - name: Verify actual public npm bytes, strict install and browser consumers
-        run: bun --no-env-file scripts/support-elements-release.ts registry
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL bun --no-env-file scripts/support-elements-release.ts registry
       - name: Verify hosted loader against the published npm bundle
         env:
           SUPPORT_BROWSER_ASSETS: storage/framework/runtime/support-elements-release/hosted

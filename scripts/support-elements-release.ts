@@ -8,7 +8,7 @@ import { publishPreparedLibraryRelease } from '@stacksjs/actions/library/release
 import { launch, navigate, waitFor } from '@stacksjs/testing/browser'
 import { archivePayload, assertRealInstall, directoryPayload, elements, inspectPayload, materialize, packageName, payloadHashes, sha256, siteWidgetPayload } from './lib/support-elements-artifact'
 import type { Payload } from './lib/support-elements-artifact'
-import { readPublishedElements } from './lib/support-elements-registry'
+import { assertAlphaTagCanAdvance, readPublishedElements } from './lib/support-elements-registry'
 
 const root = resolve(import.meta.dir, '..'), generated = resolve(root, 'storage/framework/libs/packages/support-elements')
 const defaultArtifact = resolve(root, 'storage/framework/runtime/support-elements-release')
@@ -43,7 +43,10 @@ async function readRelease(directory: string, version: string, expectedSha: stri
   assert.equal(release.schemaVersion, 1); assert.equal(release.name, packageName); assert.equal(release.version, version); assert.equal(release.sourceSha, expectedSha)
   assert.equal(release.packer, `bun-${Bun.version}`, 'Restore and publish with the same pinned native Bun packer')
   const bytes = new Uint8Array(await Bun.file(resolve(directory, 'package.tgz')).arrayBuffer())
-  assert.equal(sha256(bytes), release.archiveSha256)
+  const reviewedDigest = process.env.SUPPORT_ELEMENTS_ARCHIVE_SHA256
+  const digest = sha256(bytes)
+  assert.equal(digest, release.archiveSha256)
+  if (reviewedDigest) assert.equal(digest, reviewedDigest, 'The retained archive must match the reviewed SHA-256.')
   const payload = await archivePayload(bytes); inspectPayload(payload, version); assert.deepEqual(payloadHashes(payload), release.files)
   const hosted = await directoryPayload(resolve(directory, 'hosted')); assert.deepEqual(payloadHashes(hosted), release.hosted)
   const manifest = JSON.parse(new TextDecoder().decode(hosted.get('widgets/manifest.json'))!)
@@ -127,8 +130,14 @@ export async function releaseCommand(mode: string, artifact: string, version: st
   }
   const { release, payload, hosted } = await readRelease(artifact, version, expectedSha)
   if (mode === 'publish' || mode === 'publish-dry-run') {
-    await reviewedConfig(version)
-    assert.equal(await sha(), expectedSha)
+    const checkout = await sha()
+    if (checkout === expectedSha) await reviewedConfig(version)
+    else {
+      assert.equal(process.env.GITHUB_REPOSITORY, 'stacksjs/hq.support')
+      assert.equal(process.env.GITHUB_REF, 'refs/heads/main')
+      assert.equal(process.env.GITHUB_SHA, checkout, 'Historical publication must run from the current workflow checkout.')
+      assert.match(process.env.SUPPORT_ELEMENTS_ARCHIVE_SHA256 ?? '', /^[a-f0-9]{64}$/, 'Historical publication requires the reviewed archive SHA-256.')
+    }
     const source = { repository: 'stacksjs/hq.support', commit: expectedSha }
     const temporary = await mkdtemp(resolve(tmpdir(), 'hq-support-retained-release-'))
     const directory = resolve(temporary, 'candidate')
@@ -149,6 +158,7 @@ export async function releaseCommand(mode: string, artifact: string, version: st
       })
       assert.equal(candidate.packages[0]?.archive.sha256, release.archiveSha256)
       const dryRun = mode === 'publish-dry-run'
+      if (!dryRun) await assertAlphaTagCanAdvance(version)
       const receipt = await publishPreparedLibraryRelease(directory, {
         cwd: root, source, publisher: 'npm', dryRun,
       })
