@@ -78,7 +78,7 @@ export async function createWidgetPreview(options: { port?: number, assetsDirect
           }
           return Response.json(seen.get(body.idempotencyKey))
         }
-        if (resource === '/conversations/1') return Response.json({ conversation: { id: '1' }, messages, attachments: [] })
+        if (resource === '/conversations/1') return Response.json({ conversation: { id: '1', subject: 'Fixture request' }, messages, messagesNextCursor: null, attachments: [] })
         return Response.json({ message: 'Not available in the compiler fixture.' }, { status: 404 })
       }
       if (nativeApi && url.pathname.startsWith('/api/')) return nativeApi(request)

@@ -1,5 +1,5 @@
 <script component type="application/json">
-{"tag":"hq-support-messenger","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"opened":{"type":"boolean","default":false},"typing":{"type":"boolean","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"deliveryNotice":{"type":"string","attribute":false,"reflect":false},"attachments":{"type":"array","attribute":false,"reflect":false},"thread":{"type":"array","attribute":false,"reflect":false},"conversationId":{"type":"string","attribute":false,"reflect":false},"heading":{"type":"string","default":""},"locale":{"type":"string","attribute":false,"reflect":false,"default":"en"},"csat":{"type":"object","attribute":false,"reflect":false},"csatOffer":{"type":"object","attribute":false,"reflect":false},"csatPending":{"type":"boolean","attribute":false,"reflect":false},"csatNotice":{"type":"string","attribute":false,"reflect":false},"csatChanged":{"type":"boolean","attribute":false,"reflect":false}},"events":{"ready":{},"opened":{},"closed":{},"unread":{},"delivery":{},"error":{}}}
+{"tag":"hq-support-messenger","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"opened":{"type":"boolean","default":false},"typing":{"type":"boolean","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"deliveryNotice":{"type":"string","attribute":false,"reflect":false},"attachments":{"type":"array","attribute":false,"reflect":false},"thread":{"type":"array","attribute":false,"reflect":false},"conversationId":{"type":"string","attribute":false,"reflect":false},"heading":{"type":"string","default":""},"locale":{"type":"string","attribute":false,"reflect":false,"default":"en"},"csat":{"type":"object","attribute":false,"reflect":false},"csatOffer":{"type":"object","attribute":false,"reflect":false},"csatPending":{"type":"boolean","attribute":false,"reflect":false},"csatNotice":{"type":"string","attribute":false,"reflect":false},"csatChanged":{"type":"boolean","attribute":false,"reflect":false},"olderCursor":{"type":"string","attribute":false,"reflect":false},"olderPending":{"type":"boolean","attribute":false,"reflect":false},"olderFailed":{"type":"boolean","attribute":false,"reflect":false},"newerAvailable":{"type":"boolean","attribute":false,"reflect":false}},"events":{"ready":{},"opened":{},"closed":{},"unread":{},"delivery":{},"error":{}}}
 </script>
 <script client>
 import { messengerDate, messengerDirection, messengerLocale, messengerText } from '../../functions/support/messenger-locale'
@@ -20,12 +20,17 @@ interface ComponentState {
   _csatOperation?: { key: string, payload: CsatPayload } | null
   thread: Message[]
   attachments: Attachment[]
+  _olderRequest?: AbortController
+  _loadedOlder?: boolean
+  _latestHistory?: ConversationResponse
+  _historySubject?: string
+  _historyRevision?: number
   _generation?: number
   _abort?: AbortController
   _poll?: ReturnType<typeof setInterval>
   _typingTimer?: ReturnType<typeof setTimeout>
   _typingRequest?: AbortController
-  _refreshing?: boolean
+  _refreshRequest?: AbortController
   _unread?: number
   _sendKey?: string | null
   _sendFingerprint?: string
@@ -34,7 +39,7 @@ interface ComponentState {
 interface ResponseError { message?: string, error?: { message?: string, code?: string } | string }
 interface SessionResponse { token: string }
 interface ConversationsResponse { conversations?: { id: string }[] }
-interface ConversationResponse { messages?: Message[], attachments?: Attachment[] }
+interface ConversationResponse { conversation: { id: string, subject: string }, messages: Message[], messagesNextCursor: string | null, attachments?: Attachment[] }
 interface CreatedConversation { conversation?: { id: string }, id?: string }
 interface CreatedReply { message?: { id: string, conversation_id: string, delivery_status?: string } }
 
@@ -79,7 +84,7 @@ async function boot(options: { url?: string, project?: string, token?: string, l
       this.conversationId = String(conversation.id)
       const detail = await this.request<ConversationResponse>('/conversations/' + encodeURIComponent(this.conversationId))
       if (generation !== this._generation) return
-      this.thread = detail.messages || []; this.attachments = detail.attachments || []
+      this.applyHistory(detail)
       await this.refreshCsat()
       if (generation !== this._generation) return
     }
@@ -108,6 +113,7 @@ function open(): void {
 }
 function close(): void {
   this.opened = false
+  this.cancelOlderHistory()
   this.stopTyping()
   this.emit('closed', {})
 }
@@ -127,11 +133,10 @@ function shutdown(): void {
   this._abort?.abort()
   clearInterval(this._poll)
   this.stopTyping()
-  this._refreshing = false
   this._unread = 0
   this.sessionToken = ''
   this.conversationId = ''
-  this.thread = []; this.attachments = []
+  this.clearHistory()
   this.pending = false
   this.opened = false
   this.notice = ''; this.deliveryNotice = ''
@@ -153,6 +158,147 @@ async function request<T = unknown>(path: string, options: RequestInit = {}, aut
   if (response.status === 401 && authenticated && generation === this._generation) { this.shutdown(); this.emit('error', { message: 'Your customer session expired. Reconnect support.' }) }
   if (!response.ok) { const failure = new Error(result.message || (typeof result.error === 'object' ? result.error?.message : '') || (typeof result.error === 'string' ? result.error : '') || 'Support request failed (' + response.status + ').'); Object.assign(failure, { status: response.status, code: typeof result.error === 'object' ? result.error?.code : undefined }); throw failure }
   return result
+}
+function cancelOlderHistory(): void {
+  this._olderRequest?.abort()
+  this._olderRequest = undefined
+  this.olderPending = false
+}
+function clearHistory(): void {
+  this.cancelOlderHistory()
+  this._historyRevision = (this._historyRevision || 0) + 1
+  this._refreshRequest?.abort()
+  this._refreshRequest = undefined
+  this._loadedOlder = false
+  this._latestHistory = undefined
+  this._historySubject = undefined
+  this.newerAvailable = false
+  this.olderCursor = ''
+  this.olderFailed = false
+  this.thread = []
+  this.attachments = []
+}
+function validateHistory(detail: ConversationResponse, conversation: string, before?: string): void {
+  if (detail?.conversation?.id !== conversation || !Array.isArray(detail.messages)) throw new Error('Unexpected conversation history.')
+  const cursor = detail.messagesNextCursor
+  if (cursor !== null && (typeof cursor !== 'string' || !/^[1-9]\d*$/.test(cursor) || !Number.isSafeInteger(Number(cursor))
+    || cursor !== detail.messages[0]?.id || (before && Number(cursor) >= Number(before))))
+    throw new Error('Unexpected history cursor.')
+}
+function applyHistory(detail: ConversationResponse, showLatest = false): number {
+  this.validateHistory(detail, this.conversationId)
+  const messages = detail.messages, attachments = detail.attachments || []
+  const previous = this.thread as Message[]
+  const viewedNewest = Number(previous.at(-1)?.id ?? 0)
+  const observedNewest = Number(this._latestHistory?.messages?.at(-1)?.id ?? viewedNewest)
+  const responseNewest = messages.at(-1)
+  // A poll that began before a reply can arrive after the reply's detail request.
+  if (responseNewest && Number(responseNewest.id) < observedNewest) return 0
+  const received = messages.filter(message => Number(message.id) > observedNewest && message.author_type === 'agent').length
+  const first = messages[0]
+  const readingOlder = this._loadedOlder || this._olderRequest || this.olderFailed
+  const subject = detail.conversation.subject
+  const renamed = subject !== undefined && this._historySubject !== undefined && subject !== this._historySubject
+  const cachedBodies = readingOlder && new Map(previous.map(message => [message.id, message.body]))
+  const rewritten = cachedBodies && messages.some(message => cachedBodies.has(message.id) && cachedBodies.get(message.id) !== message.body)
+  const keepArchive = !showLatest && !renamed && !rewritten && detail.messagesNextCursor && readingOlder
+  this._historySubject = subject ?? this._historySubject
+  if (keepArchive && first && Number(first.id) > viewedNewest) {
+    this._latestHistory = detail
+    this.newerAvailable = true
+    return received
+  }
+  this._latestHistory = undefined
+  this.newerAvailable = false
+  const overlap = first && previous.some(message => message.id === first.id)
+  const retainOlder = keepArchive && overlap
+  const next = retainOlder ? [...previous.filter(message => Number(message.id) < Number(first.id)), ...messages] : messages
+  if (!retainOlder) {
+    this.cancelOlderHistory()
+    this._loadedOlder = false
+    this.olderCursor = detail.messagesNextCursor || ''
+    this.olderFailed = false
+  }
+  if (JSON.stringify(next) !== JSON.stringify(previous)) this.thread = next
+  if (JSON.stringify(attachments) !== JSON.stringify(this.attachments)) this.attachments = attachments
+  return received
+}
+async function jumpToLatest(): Promise<void> {
+  const detail = this._latestHistory
+  if (!this.opened || !detail) return
+  const generation = this._generation, conversation = this.conversationId
+  const buttonHadFocus = this.shadowRoot?.activeElement?.id === 'support-latest-messages'
+  this.applyHistory(detail, true)
+  await this.updateComplete
+  if (generation !== this._generation || conversation !== this.conversationId || !this.opened) return
+  const history = this.shadowRoot?.getElementById('support-history')
+  if (history) {
+    if (buttonHadFocus && !this.shadowRoot?.activeElement) history.focus({ preventScroll: true })
+    history.scrollTop = history.scrollHeight
+  }
+}
+async function loadOlderHistory(): Promise<void> {
+  const cursor = this.olderCursor
+  if (!this.opened || !this.sessionToken || !this.conversationId || !cursor || this._olderRequest) return
+  const generation = this._generation, conversation = this.conversationId
+  const controller = new AbortController()
+  this._olderRequest = controller
+  const current = () => this._olderRequest === controller && generation === this._generation && conversation === this.conversationId
+  const readHistory = (): HTMLElement | null => this.shadowRoot?.getElementById('support-history') || null
+  const originalScroll = readHistory()?.scrollTop ?? 0
+  this.olderPending = true
+  this.olderFailed = false
+  await this.updateComplete
+  if (!current()) return
+  const loadingHistory = readHistory()
+  if (loadingHistory) loadingHistory.scrollTop = originalScroll
+  let anchor: { id: string, top: number } | undefined
+  let finishWithFocus = false
+  let scroll = originalScroll
+  try {
+    const query = new URLSearchParams({ beforeMessage: cursor, limit: '50', attachmentLimit: '1' })
+    const detail = await this.request<ConversationResponse>('/conversations/' + encodeURIComponent(conversation) + '?' + query, { signal: controller.signal })
+    if (!current()) return
+    this.validateHistory(detail, conversation, cursor)
+    if (this._historySubject !== undefined && detail.conversation.subject !== this._historySubject) {
+      this.clearHistory()
+      await this.refresh()
+      return
+    }
+    const history = readHistory()
+    const first = history?.querySelector<HTMLElement>('[data-message-id]')
+    scroll = history?.scrollTop ?? scroll
+    if (history && first?.dataset.messageId) {
+      anchor = { id: first.dataset.messageId, top: first.getBoundingClientRect().top - history.getBoundingClientRect().top + scroll }
+    }
+    const ids = new Set((this.thread as Message[]).map(message => message.id))
+    const earlier = detail.messages.filter(message => !ids.has(message.id))
+    this.thread = [...earlier, ...this.thread]
+    this._loadedOlder = true
+    this.olderCursor = detail.messagesNextCursor || ''
+    finishWithFocus = !this.olderCursor && this.shadowRoot?.activeElement?.id === 'support-older-messages'
+  }
+  catch {
+    if (!current()) return
+    scroll = readHistory()?.scrollTop ?? scroll
+    this.olderFailed = true
+  }
+  finally {
+    if (current()) {
+      this.olderPending = false
+      await this.updateComplete
+      if (current()) {
+        this._olderRequest = undefined
+        const history = readHistory()
+        if (history) {
+          const first = anchor && history.querySelector<HTMLElement>('[data-message-id="' + CSS.escape(anchor.id) + '"]')
+          const offset = first && anchor ? first.getBoundingClientRect().top - history.getBoundingClientRect().top + history.scrollTop - anchor.top : 0
+          if (finishWithFocus && !this.shadowRoot?.activeElement) history.focus({ preventScroll: true })
+          history.scrollTop = scroll + offset
+        }
+      }
+    }
+  }
 }
 function editDraft(event: Event) {
   if (event.target instanceof HTMLTextAreaElement) this._draft = event.target.value
@@ -184,29 +330,33 @@ function startTyping(): void {
   void poll()
 }
 async function refresh(): Promise<void> {
-  if (!this.sessionToken || this.pending || this._refreshing) return
+  if (!this.sessionToken || this.pending || this._refreshRequest || !this.conversationId) return
   const generation = this._generation, conversation = this.conversationId
-  this._refreshing = true
+  const controller = new AbortController()
+  this._refreshRequest = controller
+  const current = () => this._refreshRequest === controller && generation === this._generation && conversation === this.conversationId
   try {
-    if (!conversation) return
-    const detail = await this.request<ConversationResponse>('/conversations/' + encodeURIComponent(conversation))
-    if (generation !== this._generation || conversation !== this.conversationId) return
-    this.attachments = detail.attachments || []
-    const next = detail.messages || []
-    if (JSON.stringify(next) !== JSON.stringify(this.thread)) {
-      const oldIds = new Set(this.thread.map(message => String(message.id)))
-      const received = next.filter(message => !oldIds.has(String(message.id)) && message.author_type === 'agent').length
-      this.thread = next
+    const detail = await this.request<ConversationResponse>('/conversations/' + encodeURIComponent(conversation), { signal: controller.signal })
+    if (!current() || this.pending) return
+    const previous = this.thread as Message[]
+    const scroll = (this._loadedOlder || this._olderRequest || this.olderFailed) ? this.shadowRoot?.getElementById('support-history')?.scrollTop : undefined
+    const received = this.applyHistory(detail)
+    if (this.thread !== previous || received) {
       this._unread = this.opened ? 0 : (this._unread || 0) + received
       this.emit('unread', { count: this._unread })
+    }
+    if (scroll !== undefined && (this._loadedOlder || this._olderRequest || this.olderFailed)) {
+      await this.updateComplete
+      if (!current()) return
+      const history = this.shadowRoot?.getElementById('support-history')
+      if (history) history.scrollTop = scroll
     }
     await this.refreshCsat()
   }
   catch (error) {
-    if (generation === this._generation && conversation === this.conversationId && !(error instanceof Error && error.name === 'AbortError')) this.emit('error', { message: error instanceof Error ? error.message : 'Messages could not be refreshed.' })
+    if (current() && !(error instanceof Error && error.name === 'AbortError')) this.emit('error', { message: error instanceof Error ? error.message : 'Messages could not be refreshed.' })
   }
-  // The lock belongs to this one refresh until it settles, including after a continuation.
-  finally { if (generation === this._generation) this._refreshing = false }
+  finally { if (current()) this._refreshRequest = undefined }
 }
 function clearCsat(): void {
   this.csat = {}; this.csatOffer = {}; this.csatPending = false; this.csatNotice = ''; this.csatChanged = false
@@ -300,7 +450,7 @@ async function send(event: Event) {
       if (typeof result.message?.id !== 'string' || !result.message.id.trim() || typeof result.message.conversation_id !== 'string' || !result.message.conversation_id.trim()) throw new Error('Your reply could not be confirmed. Retry with the same message.')
       deliveryStatus = result.message.delivery_status || 'accepted'
       if (result.message.conversation_id !== this.conversationId) {
-        this.clearCsat(); this.thread = []; this.attachments = []; this.conversationId = result.message.conversation_id
+        this.clearCsat(); this.clearHistory(); this.conversationId = result.message.conversation_id
         this.startTyping()
         this.deliveryNotice = 'Your reply is in a linked support request.'
       }
@@ -311,9 +461,10 @@ async function send(event: Event) {
     this._draft = ''
     form.reset()
     const deliveryConversation = this.conversationId
+    const historyRevision = this._historyRevision
     const detail = await this.request<ConversationResponse>('/conversations/' + encodeURIComponent(deliveryConversation))
     if (generation !== this._generation || deliveryConversation !== this.conversationId) return
-    this.thread = detail.messages || []; this.attachments = detail.attachments || []
+    if (historyRevision === this._historyRevision) this.applyHistory(detail)
     await this.refreshCsat()
     if (generation !== this._generation || deliveryConversation !== this.conversationId) return
     this.emit('delivery', { conversationId: this.conversationId, status: deliveryStatus })
@@ -336,12 +487,22 @@ async function send(event: Event) {
   @if(this.opened)
     <section class="messenger" role="region" lang="{{ this.locale }}" dir="{{ this.direction() }}" aria-label="{{ this.text('region') }}">
       <header><div><span class="brand">hq.support</span><h2>{{ this.heading || this.text('heading') }}</h2><p>{{ this.text('introduction') }}</p></div><button id="support-close" class="close" type="button" @click="close" aria-label="{{ this.text('close') }}">×</button></header>
+      @if(this.olderCursor || this.newerAvailable)
+        <div class="history-actions">
+          @if(this.olderCursor)
+            <button id="support-older-messages" type="button" aria-controls="support-history" aria-busy="{{ this.olderPending ? 'true' : 'false' }}" aria-disabled="{{ this.olderPending ? 'true' : 'false' }}" @click="loadOlderHistory">{{ this.text(this.olderPending ? 'loadingEarlier' : this.olderFailed ? 'retryEarlier' : 'loadEarlier') }}</button>
+          @endif
+          @if(this.newerAvailable)
+            <button id="support-latest-messages" type="button" aria-controls="support-history" @click="jumpToLatest">{{ this.text('showLatest') }}</button>
+          @endif
+        </div>
+      @endif
       <div id="support-history" class="messages{{ this.thread.length === 0 ? ' is-empty' : '' }}" role="log" aria-label="{{ this.text('conversation') }}" aria-live="polite" aria-relevant="additions text" tabindex="{{ this.thread.length ? '0' : '-1' }}">
         @if(this.thread.length === 0)
           <div class="welcome"><strong>{{ this.text('welcome') }}</strong><p>{{ this.text('context') }}</p></div>
         @endif
         @foreach(this.thread as message)
-          <article class="message"><small>{{ ['contact', 'customer'].includes(message.author_type) ? this.text('you') : this.text('support') }}</small>@if(message.created_at)<time datetime="{{ message.created_at }}">{{ this.date(message.created_at) }}</time>@endif<p dir="auto">{{ message.body }}</p></article>
+          <article class="message" data-message-id="{{ message.id }}"><small>{{ ['contact', 'customer'].includes(message.author_type) ? this.text('you') : this.text('support') }}</small>@if(message.created_at)<time datetime="{{ message.created_at }}">{{ this.date(message.created_at) }}</time>@endif<p dir="auto">{{ message.body }}</p></article>
         @endforeach
       </div>
       <div class="typing-status" role="status" aria-atomic="true">@if(this.typing)<span>{{ this.text('typing') }}</span>@endif</div>
@@ -376,6 +537,11 @@ header > div{align-self:center}
 .messenger{text-align:start}
 .brand,header p,.messages.is-empty{display:var(--support-intro-display,revert)}
 .messages:focus-visible{outline:3px solid var(--hq-support-focus,#68bcab);outline-offset:-3px}
+.history-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:4px;padding:8px 16px 0}
+.history-actions button{min-height:36px;padding:6px 12px;border:0;border-radius:8px;background:transparent;color:var(--support-accent);font:inherit;font-size:13px;font-weight:650;cursor:pointer}
+.history-actions button:hover,.history-actions button:focus-visible{background:var(--hq-support-secondary-surface,#eff6f3)}
+.history-actions button:focus-visible{outline:2px solid var(--hq-support-focus,#68bcab);outline-offset:2px}
+.history-actions button[aria-disabled=true]{opacity:.7;cursor:wait}
 textarea::placeholder{color:var(--hq-support-muted,#526760);opacity:1}
 .send-row button[aria-disabled=true]{opacity:.55;cursor:wait}
 .typing-status span{display:block;padding:0 20px 10px;color:var(--hq-support-muted,#526760);font-size:12px}
@@ -403,8 +569,11 @@ textarea::placeholder{color:var(--hq-support-muted,#526760);opacity:1}
   header p, .close, .welcome, .message small, .message time, .send-row span, .csat-help, .typing-status span {
     color: var(--support-dark-muted);
   }
-  .brand, .delivery-notice, .csat-review {
+  .brand, .delivery-notice, .csat-review, .history-actions button {
     color: var(--support-dark-highlight);
+  }
+  .history-actions button:hover, .history-actions button:focus-visible {
+    background: var(--hq-support-secondary-surface,#26312e);
   }
   .welcome strong {
     color: var(--hq-support-text,#e5edeb);

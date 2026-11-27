@@ -204,7 +204,7 @@ export async function detail(projectRow: Row, id: unknown, person?: Row, beforeM
   const row = await conversation(projectRow, id, person)
   const lastAgentReplyId = person || beforeMessage ? undefined : await latestAgentReplyId(projectRow, row.id)
   const before = historyCursor(beforeMessage), attachmentBefore = historyCursor(options.beforeAttachment)
-  // The messenger replaces its transcript and does not consume older cursors; retain its 500-row default.
+  // Preserve the existing default for clients that request recent history without a limit.
   const limit = historyLimit(options.limit, 500, 500), attachmentLimit = historyLimit(options.attachmentLimit, 100, 100)
   const page = await query(`SELECT * FROM support_messages WHERE workspace_id = ? AND project_id = ? AND conversation_id = ? AND id < ?${person ? " AND visibility = 'public' AND contact_id = ?" : ''} ORDER BY id DESC LIMIT ?`, [projectRow.workspace_id, projectRow.id, row.id, before, ...(person ? [person.id] : []), limit + 1])
   const messages = boundedPage(page, limit, customerProjectionLimits.messageBytes, messageView)

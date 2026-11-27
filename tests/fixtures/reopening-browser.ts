@@ -24,10 +24,10 @@ const api = await route.serve({ port: 0, hostname: '127.0.0.1' }), apiOrigin = `
 const root = resolve(import.meta.dir, '../..'), temporary = await mkdtemp(resolve(tmpdir(), 'hq-support-reopening-browser-')), artifacts = resolve(root, 'storage/framework/runtime/reopening-browser')
 const output = resolve(temporary, 'site')
 await mkdir(artifacts, { recursive: true })
-for (const file of ['report.json', 'failure.json', 'failure.png', 'messenger-375.png', 'inbox-1440.png', 'older-messages-375-ar.png', 'agent-latest-messages-1440.png']) await rm(resolve(artifacts, file), { force: true })
+for (const file of ['report.json', 'failure.json', 'failure.png', 'messenger-375.png', 'inbox-1440.png', 'older-messages-375-ar.png', 'agent-latest-messages-1440.png', 'messenger-history-375-dark.png', 'messenger-history-1440-light.png']) await rm(resolve(artifacts, file), { force: true })
 Storage.init({ default: 'local', disks: { local: { driver: 'local', root: resolve(temporary, 'private') } } })
 let host: ReturnType<typeof Bun.serve> | undefined, boundary: ReturnType<typeof Bun.serve> | undefined, browser: Awaited<ReturnType<typeof launch>> | undefined
-let cookie = '', csrf = '', lostAck = false, failHistory = false, failOlderMessages = false, attachNext = false, lostImageAck = false
+let cookie = '', csrf = '', lostAck = false, failHistory = false, failOlderMessages = false, malformedHistory: 'older' | 'recent' | 'cursor' | undefined, attachNext = false, lostImageAck = false
 const submissions: { path: string, payload: any, status: number, destination?: string }[] = [], assertions: string[] = [], runtimeErrors: string[] = [], requests: string[] = []
 let held: { id: string, release: ReturnType<typeof Promise.withResolvers<void>>, used: boolean, older?: boolean } | undefined
 const check = (condition: unknown, message: string) => { assert.ok(condition, message); assertions.push(message) }
@@ -88,6 +88,15 @@ try {
       const pending = held
       const isOlderPage = url.searchParams.has('beforeMessage')
       if (request.method === 'GET' && pending && !pending.used && url.pathname.endsWith(`/conversations/${pending.id}`) && isOlderPage === Boolean(pending.older)) { pending.used = true; const saved = await response.arrayBuffer(); await pending.release.promise; return new Response(saved, { status: response.status, headers: outgoing }) }
+      if (request.method === 'GET' && /\/conversations\/[^/]+$/.test(url.pathname) && malformedHistory === (isOlderPage ? 'older' : 'recent')) {
+        malformedHistory = undefined
+        await response.arrayBuffer()
+        return new Response('<!doctype html><title>Gateway fallback</title>', { headers: { 'Content-Type': 'text/html' } })
+      }
+      if (request.method === 'GET' && malformedHistory === 'cursor' && isOlderPage) {
+        malformedHistory = undefined
+        return Response.json({ ...await response.json() as object, messagesNextCursor: '1' }, { headers: outgoing })
+      }
       if (request.method === 'GET' && failOlderMessages && isOlderPage) {
         failOlderMessages = false
         await response.arrayBuffer()
@@ -146,7 +155,7 @@ try {
   await wait(`${shadow}.querySelector('.typing-status').textContent.trim() === 'Support is typing…'`, 'Signed-in customer tracks new conversation typing')
   check(true, 'the continuation rebinds typing to its own conversation across the widget origin boundary')
   check(await evaluate(`!${shadow}.querySelector('.csat-form') && !${shadow}.querySelector('.csat-answer') && !${shadow}.textContent.includes('Original history for Late original request')`), 'continuation clears predecessor history and CSAT before showing destination history')
-  held.release.resolve(); await wait(`!${widget}._refreshing`, 'Held predecessor refresh completed')
+  held.release.resolve(); await wait(`!${widget}._refreshRequest`, 'Held predecessor refresh completed')
   check(await evaluate(`${widget}.thread.some(message=>message.body==='Late continuation from browser') && !${widget}.thread.some(message=>message.body==='Original history for Late original request')`), 'held predecessor refresh cannot overwrite the destination thread in the same customer generation')
   check(await evaluate(`${widget}.attachments.some(file=>file.fileName==='successor-only.txt') && !${widget}.attachments.some(file=>file.fileName==='original-only.txt')`), 'destination history fetch loads only its own attachment metadata')
   check(await usage(Number(workspace.id), 'conversations') === before + 1 && (await one('SELECT status FROM support_conversations WHERE id = ?', [late.id]))!.status === 'closed', 'late browser continuation charges one admission and leaves its predecessor resolved')
@@ -180,10 +189,118 @@ try {
   check(submissions.at(-1)!.status === 409 && JSON.stringify(submissions.at(-1)!.payload) === JSON.stringify(submissions.at(-2)!.payload) && await evaluate(`${widget}._sendKey === ${JSON.stringify(conflictKey)} && ${shadow}.querySelector('#support-body').value === 'Exact allowance-refused draft'`), 'real 409 invalid lineage preserves the exact refused draft and key')
   await query('UPDATE support_conversations SET continuation_id = NULL, resolved_at = ? WHERE id = ?', [Date.now() - 8 * 86400000, refused.id])
 
-  const screenshot = async (name: string) => {
+  const screenshot = async (name: string, width?: number, height?: number) => {
     const image = await cdp.send('Page.captureScreenshot', { format: 'png' })
-    await Bun.write(resolve(artifacts, name + '.png'), Buffer.from(image.data, 'base64'))
+    const png = Buffer.from(image.data, 'base64')
+    if (width && height) assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [width, height], name)
+    await Bun.write(resolve(artifacts, name + '.png'), png)
   }
+  const archiveContact = (await one('SELECT id FROM support_contacts WHERE project_id = ? AND external_id = ?', [project.id, 'recent']))!
+  await query("INSERT INTO support_messages (workspace_id, project_id, conversation_id, contact_id, body, visibility, author_type, delivery_status) VALUES (?, ?, ?, ?, 'Staff-only archive note', 'internal', 'agent', 'imported')", [workspace.id, project.id, recent.id, archiveContact.id])
+  await query(`WITH RECURSIVE part(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM part WHERE n < 620)
+    INSERT INTO support_messages (workspace_id, project_id, conversation_id, contact_id, body, visibility, author_type, delivery_status)
+    SELECT ?, ?, ?, ?, 'Imported message ' || n, 'public', 'customer', 'imported' FROM part`,
+  [workspace.id, project.id, recent.id, archiveContact.id])
+  await boot(recent.token)
+  const history = `${shadow}.querySelector('#support-history')`
+  const olderButton = `${shadow}.querySelector('#support-older-messages')`
+  const olderRequests = () => requests.filter(path => path.startsWith(`GET /api/widget/projects/${project.public_id}/conversations/${recent.id}?beforeMessage=`))
+  const loadOlder = () => evaluate(`${olderButton}.click()`)
+  check(await evaluate(`${history}.querySelectorAll('article').length === 500 && !${history}.textContent.includes('Original history for Recent original request')`), 'customer detail bounds the initial long transcript')
+  await wait(olderButton, 'Customer can request earlier messages')
+  await evaluate(`(()=>{const field=${shadow}.querySelector('#support-body');field.value='Draft survives history';field.dispatchEvent(new Event('input',{bubbles:true}));${history}.scrollTop=90})()`)
+  malformedHistory = 'older'
+  await loadOlder()
+  await wait(`${olderButton}?.textContent.trim() === 'Retry loading earlier messages'`, 'An invalid HTTP 200 response keeps the retry control')
+  malformedHistory = 'cursor'
+  await loadOlder()
+  await wait(`${olderButton}?.textContent.trim() === 'Retry loading earlier messages'`, 'A cursor that skips history keeps the retry control')
+  failOlderMessages = true
+  await loadOlder()
+  await wait(`${olderButton}?.textContent.trim() === 'Retry loading earlier messages'`, 'Customer can retry a failed cursor')
+  check(await evaluate(`${history}.querySelectorAll('article').length === 500 && ${shadow}.querySelector('#support-body').value === 'Draft survives history'`), 'failed cursor keeps the visible messages and draft')
+  const anchor = await evaluate(`${history}.querySelector('article').getBoundingClientRect().top - ${history}.getBoundingClientRect().top`)
+  await loadOlder()
+  await wait(`${history}.querySelectorAll('article').length === 550 && ${olderButton}?.getAttribute('aria-disabled') === 'false'`, 'One bounded older page is visible')
+  check(olderRequests().length === 4 && new Set(olderRequests()).size === 1 && new URLSearchParams(olderRequests()[0]!.split('?')[1]).get('limit') === '50', 'each failure retries the identical cursor and a 50-row request')
+  await wait(`Math.abs(${history}.querySelectorAll('article')[50].getBoundingClientRect().top - ${history}.getBoundingClientRect().top - ${Number(anchor)}) < 3`, 'Prepending earlier messages preserves the reading position')
+  check(await evaluate(`${shadow}.querySelector('#support-body').value === 'Draft survives history'`), 'prepending preserves the unsent draft')
+  const readingScroll = await evaluate(`${history}.scrollTop`)
+  malformedHistory = 'recent'
+  await evaluate(`${widget}.refresh()`)
+  check(await evaluate(`${history}.querySelectorAll('article').length === 550 && ${olderButton} && ${shadow}.querySelector('#support-body').value === 'Draft survives history'`), 'an invalid recent snapshot preserves the loaded archive, cursor, and draft')
+  assert.equal((await http(prefix + `/conversations/${recent.id}/messages`, 'POST', { body: 'Live agent archive reply', idempotencyKey: 'archive-agent-reply' }, owner)).status, 201)
+  await evaluate(`${widget}.refresh()`)
+  check(await evaluate(`${history}.lastElementChild.textContent.includes('Live agent archive reply') && Math.abs(${history}.scrollTop-${Number(readingScroll)})<3`), 'a newly delivered agent reply preserves the archive reading position')
+  await send('Reply after reading the archive')
+  check(await evaluate(`${history}.querySelectorAll('article').length === 552 && ${history}.lastElementChild.textContent.includes('Reply after reading the archive')`), 'live refresh and a real reply keep the loaded earlier page')
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: true })
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 })
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] })
+  await evaluate(`${widget}.update({locale:'ar'})`)
+  await wait(`${olderButton}?.textContent.trim() === 'عرض الرسائل السابقة'`, 'The customer history button is localized on mobile')
+  check(await evaluate(`innerWidth === 375 && innerHeight === 812 && navigator.maxTouchPoints === 1 && ${shadow}.querySelector('.messenger').dir === 'rtl' && ${olderButton}.getBoundingClientRect().width > 80 && document.documentElement.scrollWidth <= innerWidth && getComputedStyle(${olderButton}).color === 'rgb(131, 217, 199)'`), 'narrow Arabic Messenger uses the dark theme and fits without horizontal overflow')
+  await screenshot('messenger-history-375-dark', 375, 812)
+  await cdp.send('Accessibility.enable')
+  const customerAccessibility = await cdp.send('Accessibility.getFullAXTree')
+  check(customerAccessibility.nodes.some(node => node.role?.value === 'button' && node.name?.value === 'عرض الرسائل السابقة'), 'Chromium exposes the translated customer history button')
+  held = { id: recent.id, release: Promise.withResolvers<void>(), used: false, older: true }
+  const historyTouch = await evaluate(`(()=>{const rect=${olderButton}.getBoundingClientRect();return {x:rect.left + rect.width / 2,y:rect.top + rect.height / 2}})()`) as { x: number; y: number }
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [historyTouch] })
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  await waitFor(() => held!.used, 15000, { label: 'Older page held after native read' })
+  await wait(`${olderButton}?.getAttribute('aria-disabled') === 'true'`, 'History controls indicate an in-flight request')
+  await loadOlder()
+  await evaluate(`${widget}.update({token:${JSON.stringify(refused.token)},locale:'en'})`)
+  held.release.resolve()
+  await wait(`${history}.textContent.includes('Original history for Allowance original request')`, 'Replacement session history shown')
+  check(olderRequests().length === 5 && await evaluate(`!${olderButton} && !${history}.textContent.includes('Imported message')`), 'double activation and a late history response cannot cross the customer session boundary')
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false })
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false })
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
+  await boot(recent.token)
+  await evaluate(`${widget}.update({locale:'de'})`)
+  await wait(`${olderButton}?.textContent.trim() === 'Frühere Nachrichten anzeigen'`, 'The desktop control has its German label')
+  await evaluate(`${widget}.update({locale:'en'})`)
+  await wait(`${olderButton}?.textContent.trim() === 'Show earlier messages'`, 'The desktop light control has its English label')
+  await screenshot('messenger-history-1440-light', 1440, 1000)
+  for (let count = 550; count <= 600; count += 50) {
+    await loadOlder()
+    await wait(`${history}.querySelectorAll('article').length === ${count} && ${olderButton}?.getAttribute('aria-disabled') === 'false'`, 'Another older page is visible')
+  }
+  await evaluate(`${olderButton}.focus()`)
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' })
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+  await wait(`!${olderButton} && ${history}.querySelector('article').textContent.includes('Original history for Recent original request')`, 'Keyboard reaches the beginning and removes the exhausted cursor')
+  check(await evaluate(`(()=>{const ids=Array.from(${history}.querySelectorAll('article')).map(row=>Number(row.dataset.messageId));return ids.length===624 && ids.every((id,index)=>id>0 && (!index || id>ids[index-1])) && !${history}.textContent.includes('Staff-only archive note')})()`), 'original public history is chronological and unique and excludes the staff note')
+  await wait(`${shadow}.activeElement === ${history}`, 'Keyboard focus remains on the exhausted history')
+  const latestButton = `${shadow}.querySelector('#support-latest-messages')`
+  await evaluate(`(()=>{const field=${shadow}.querySelector('#support-body');field.value='Draft survives the burst';field.dispatchEvent(new Event('input',{bubbles:true}));${history}.scrollTop=120})()`)
+  await query(`WITH RECURSIVE part(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM part WHERE n < 521)
+    INSERT INTO support_messages (workspace_id, project_id, conversation_id, contact_id, body, visibility, author_type, delivery_status)
+    SELECT ?, ?, ?, ?, 'Burst reply ' || n, 'public', 'agent', 'imported' FROM part`,
+  [workspace.id, project.id, recent.id, archiveContact.id])
+  await evaluate(`${widget}.refresh()`)
+  check(await evaluate(`${history}.querySelectorAll('article').length === 624 && ${history}.textContent.includes('Original history for Recent original request') && Math.abs(${history}.scrollTop-120)<3`), 'a disjoint recent page leaves the opened archive and reading position intact')
+  await wait(`${latestButton}?.textContent.trim() === 'Show latest messages'`, 'A disjoint recent page offers an explicit jump to the latest messages')
+  await evaluate(`${widget}.refresh()`)
+  check(await evaluate(`${latestButton} && !${olderButton} && ${shadow}.querySelector('#support-body').value === 'Draft survives the burst' && !${history}.textContent.includes('Burst reply')`), 'repeated polling leaves the archive and draft visible without splicing a gap into the transcript')
+  await evaluate(`${latestButton}.focus();${latestButton}.click()`)
+  await wait(`!${latestButton} && ${olderButton} && ${history}.lastElementChild.textContent.trim().endsWith('Burst reply 521')`, 'The customer can jump explicitly to the newest recent page')
+  check(await evaluate(`${shadow}.activeElement === ${history} && ${history}.scrollHeight-${history}.clientHeight-${history}.scrollTop<3 && ${shadow}.querySelector('#support-body').value === 'Draft survives the burst'`), 'the latest action focuses the newest messages and leaves the unsent draft intact')
+  await loadOlder()
+  await wait(`${history}.textContent.includes('Reply after reading the archive') && ${history}.querySelectorAll('article').length === 550`, 'Paging from the latest view can cross the previously unloaded gap')
+  held = { id: recent.id, release: Promise.withResolvers<void>(), used: false }
+  await evaluate(`void ${widget}.refresh()`)
+  await waitFor(() => held?.used, 10000, { label: 'Customer recent page is held before retention' })
+  await query("UPDATE support_messages SET body = '[Removed by retention policy]' WHERE project_id = ? AND conversation_id = ?", [project.id, recent.id])
+  await query("UPDATE support_conversations SET subject = '[Removed by retention policy]' WHERE id = ? AND project_id = ?", [recent.id, project.id])
+  await loadOlder()
+  await wait(`${history}.querySelectorAll('article').length === 500 && ${history}.textContent.includes('Removed by retention policy')`, 'The changed older page refreshes the recent history while a stale poll is held')
+  held.release.resolve()
+  held = undefined
+  check(await evaluate(`!${history}.textContent.includes('Reply after reading the archive') && !${history}.textContent.includes('Burst reply') && ${shadow}.querySelector('#support-body').value === 'Draft survives the burst'`), 'rewritten history cancels the stale recent page and preserves the customer draft')
+
   await query(`WITH RECURSIVE part(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM part WHERE n < 550)
     INSERT INTO support_messages (workspace_id, project_id, conversation_id, contact_id, body, visibility, author_type, delivery_status)
     SELECT ?, ?, ?, ?, 'Imported history part ' || n, 'public', 'customer', 'imported' FROM part`,
