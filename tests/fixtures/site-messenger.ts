@@ -261,6 +261,7 @@ try {
     container.style.setProperty('--hq-support-inline-intro-display', 'none')
     container.style.setProperty('--hq-support-surface', '#23272f')
     container.style.setProperty('--hq-support-accent', '#1766c8')
+    container.style.setProperty('--hq-support-muted', '#b1bac9')
     container.style.setProperty('--hq-support-border', '#363b45')
     container.style.setProperty('--hq-support-control-height', '44px')
     document.body.append(container)
@@ -277,6 +278,7 @@ try {
     const appearance = await cdp.evaluate(`(() => {
       const panel = ${compactRoot}.querySelector('.messenger')
       const send = ${compactRoot}.querySelector('#support-send')
+      const composer = ${compactRoot}.querySelector('#support-body')
       return {
         inlineWidth: panel.getBoundingClientRect().width,
         hostWidth: ${compactHost}.getBoundingClientRect().width,
@@ -284,11 +286,12 @@ try {
         border: getComputedStyle(panel).borderTopColor,
         send: getComputedStyle(send).backgroundColor,
         sendHeight: send.getBoundingClientRect().height,
+        placeholder: getComputedStyle(composer, '::placeholder').color,
         emptyHistory: getComputedStyle(${compactRoot}.querySelector('#support-history')).display,
       }
     })()`)
     const hostWidth = width === 1280 ? 620 : 320
-    assert.deepEqual(appearance, { inlineWidth: hostWidth, hostWidth, panel: 'rgb(35, 39, 47)', border: 'rgb(54, 59, 69)', send: 'rgb(23, 102, 200)', sendHeight: 44, emptyHistory: 'none' })
+    assert.deepEqual(appearance, { inlineWidth: hostWidth, hostWidth, panel: 'rgb(35, 39, 47)', border: 'rgb(54, 59, 69)', send: 'rgb(23, 102, 200)', sendHeight: 44, placeholder: 'rgb(177, 186, 201)', emptyHistory: 'none' })
   }
   await cdp.evaluate('globalThis.stopInlineAppearanceProof()')
   assert.deepEqual(errors, [])
