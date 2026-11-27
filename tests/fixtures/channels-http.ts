@@ -30,6 +30,7 @@ let providerPosts = 0, failure: 'unknown' | 'rejected' | undefined, smsCallback 
 const accountSid = `AC${'a'.repeat(32)}`, numberSid = `PN${'b'.repeat(32)}`, senderSid = `XE${'c'.repeat(32)}`, contentSid = `HX${'d'.repeat(32)}`, authToken = 'channel-fixture-secret'
 process.env.SUPPORT_MESSAGING_PRICING = JSON.stringify({ [accountSid]: { smsMaxMicrosPerSegment: 20000, mmsMaxMicros: 100000, whatsappMaxMicros: 100000 } })
 const messages = new Map<string, Record<string, unknown>>()
+const receiptReads = new Map<string, number>()
 const provider = Bun.serve({ port: 0, hostname: '127.0.0.1', async fetch(request) {
   const original = new URL(request.headers.get('x-provider-url')!)
   const auth = request.headers.get('authorization')
@@ -64,7 +65,9 @@ const provider = Bun.serve({ port: 0, hostname: '127.0.0.1', async fetch(request
       return Response.json(message, { status: 201 })
     }
     const sid = /\/(SM[a-f0-9]{32})\.json$/.exec(original.pathname)?.[1]
-    return sid && messages.has(sid) ? Response.json(messages.get(sid)) : Response.json({}, { status: 404 })
+    if (!sid || !messages.has(sid)) return Response.json({}, { status: 404 })
+    receiptReads.set(sid, (receiptReads.get(sid) || 0) + 1)
+    return Response.json(messages.get(sid))
   }
   if (original.hostname === 'slack.com') {
     assert.equal(auth, 'Bearer tenant-slack')
@@ -343,6 +346,31 @@ try {
   rotateSlack = async () => { await saveChannel(project, { id: slack.id, provider: 'slack', configuration: { botToken: 'tenant-slack', signingSecret: 'slack-signing', teamId: 'Tfixture', channelId: 'Cfixture' } }, Number(owner.id)) }
   check((await http(`${scope}/channels/${slack.id}/verify`, 'POST', {}, token)).status === 409, 'a provider probe cannot mark newly changed credentials ready')
   check((await loadChannel(project, slack.id)).status === 'pending', 'changed connection stays pending despite stale successful evidence')
+  // A full batch of pending prices must leave room for a later paid receipt.
+  await recoverChannelWork(dependencies)
+  await query("UPDATE support_channel_deliveries SET available_at = ? WHERE status = 'cost_pending'", [Date.now() + 600000])
+  const backlog = []
+  for (let index = 0; index < 101; index++) {
+    const queued = await createChannelReply(project, guardedConversation, { body: `Receipt backlog ${index}`, idempotencyKey: `receipt-backlog-${index}` }, Number(owner.id), dependencies)
+    const row = (await one('SELECT id FROM support_channel_deliveries WHERE public_id = ?', [queued.delivery!.id]))!
+    assert.equal((await dispatchChannelDelivery(Number(row.id), dependencies)).outcome, 'accepted')
+    backlog.push((await one('SELECT * FROM support_channel_deliveries WHERE id = ?', [row.id]))!)
+  }
+  const firstBacklogReceipt = backlog[0]!, lastBacklogReceipt = backlog.at(-1)!
+  const firstProviderId = String(firstBacklogReceipt.provider_message_id), lastProviderId = String(lastBacklogReceipt.provider_message_id)
+  messages.get(lastProviderId)!.price = '-0.007900'
+  messages.get(lastProviderId)!.status = 'delivered'
+  const firstReads = receiptReads.get(firstProviderId)!, lastReads = receiptReads.get(lastProviderId)!, beforeBacklogPosts = providerPosts
+  await recoverChannelWork(dependencies)
+  check(receiptReads.get(firstProviderId) === firstReads + 1 && receiptReads.get(lastProviderId) === lastReads, 'the first recovery pass honors its 100-receipt batch limit')
+  await Promise.all([recoverChannelWork(dependencies), recoverChannelWork(dependencies)])
+  check(receiptReads.get(firstProviderId) === firstReads + 1 && receiptReads.get(lastProviderId) === lastReads + 1, 'receipt recovery advances past pending prices and overlapping workers poll each due receipt once')
+  check((await one('SELECT status FROM support_channel_deliveries WHERE id = ?', [lastBacklogReceipt.id]))?.status === 'delivered' && (await one('SELECT status FROM support_channel_deliveries WHERE id = ?', [firstBacklogReceipt.id]))?.status === 'cost_pending', 'a newer verified receipt settles and an older missing price keeps its hold')
+  messages.get(firstProviderId)!.price = '-0.007900'
+  messages.get(firstProviderId)!.status = 'delivered'
+  await query('UPDATE support_channel_deliveries SET available_at = 0 WHERE id = ?', [firstBacklogReceipt.id])
+  await recoverChannelWork(dependencies)
+  check((await one('SELECT status FROM support_channel_deliveries WHERE id = ?', [firstBacklogReceipt.id]))?.status === 'delivered' && providerPosts === beforeBacklogPosts, 'a later price settles after its scheduled retry without resending any original message')
   await saveChannel(project, { id: sms.id, provider: 'sms', configuration: { accountSid, authToken: 'rotated-new-token', fromNumber: '+14155550100', phoneNumberSid: numberSid, country: 'US' } }, Number(owner.id))
   check((await http(`${scope}/channel-deliveries/${delivery.public_id}/reconcile`, 'POST', {}, token)).status === 200, 'encrypted original credential snapshot reconciles old operations after connection rotation')
   check(!JSON.stringify(deliveryView(current)).includes(authToken), 'delivery views never expose encrypted credential snapshots')

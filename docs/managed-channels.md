@@ -95,6 +95,10 @@ period ends. Final settlement uses the exact provider decimal
 price in USD microdollars, applies the 15% margin, and rounds cents once. An
 absent price stays `cost_pending`; it is never treated as a free send.
 Encrypted original credentials permit read-only settlement after rotation.
+Automatic recovery polls due receipts oldest first and defers each attempted
+receipt by one minute before contacting the provider. This leaves room for
+newer receipts when older prices are still missing. Authorized manual
+reconciliation can still check a specific delivery immediately.
 
 STOP/START consent is persisted per workspace/project/channel/recipient,
 independent of conversation admission. Native keyword/Advanced Opt-Out parsing

@@ -260,21 +260,35 @@ export async function recoverChannelWork(dependencies: ChannelDependencies = {})
 
   // Invoice-only holds have no per-message receipt to poll.
   const providers = channelReceiptProviders()
+  const receiptDueAt = Date.now()
   const receipts = providers.length === 0 ? [] : await query(
-    `SELECT d.public_id, d.project_id, d.workspace_id
+    `SELECT d.id, d.public_id, d.project_id, d.workspace_id
      FROM support_channel_deliveries d
      JOIN support_channels c ON c.id = d.channel_id AND c.project_id = d.project_id AND c.workspace_id = d.workspace_id
-     WHERE d.status = 'cost_pending' AND d.lease_until <= ? AND c.provider IN (${providers.map(() => '?').join(', ')})
-     ORDER BY d.id LIMIT 100`,
-    [now, ...providers],
+     WHERE d.status = 'cost_pending' AND d.provider_message_id <> '' AND d.available_at <= ? AND d.lease_until <= ?
+       AND c.provider IN (${providers.map(() => '?').join(', ')})
+     ORDER BY d.available_at, d.id LIMIT 100`,
+    [receiptDueAt, receiptDueAt, ...providers],
   )
+  let receiptPolls = 0
   for (const row of receipts) {
+    // Reschedule before contacting the provider so overlapping sweeps cannot poll
+    // the same delivery and unresolved prices cannot monopolize the first page.
+    const claimed = await one(
+      `UPDATE support_channel_deliveries SET available_at = ?
+       WHERE id = ? AND workspace_id = ? AND project_id = ? AND status = 'cost_pending'
+         AND available_at <= ? AND lease_until <= ? RETURNING id`,
+      [Date.now() + 60000, row.id, row.workspace_id, row.project_id, receiptDueAt, receiptDueAt],
+    )
+    if (!claimed) continue
     const project = await one('SELECT * FROM support_projects WHERE id = ? AND workspace_id = ?', [row.project_id, row.workspace_id])
-    if (project) await reconcileChannelDelivery(project, row.public_id, dependencies).catch(() => undefined)
+    if (!project) continue
+    await reconcileChannelDelivery(project, row.public_id, dependencies).catch(() => undefined)
+    receiptPolls++
   }
   const incoming = await query("SELECT id FROM support_inbound WHERE provider LIKE 'channel:%' AND status <> 'processed' AND lease_until <= ? AND available_at <= ? ORDER BY id LIMIT 100", [Date.now(), Date.now()])
   for (const row of incoming) await applyChannelInbound(row.id, dependencies)
-  return { deliveries: dispatches.length + receipts.length, inbound: incoming.length }
+  return { deliveries: dispatches.length + receiptPolls, inbound: incoming.length }
 }
 
 /** Native bot inbox pagination, with every page retained before advancing the durable cursor. */
