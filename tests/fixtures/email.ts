@@ -30,10 +30,14 @@ await injectGlobalAutoImports()
 await route.importRoutes()
 const region = 'us-east-1', accountId = '123456789012', topicArn = `arn:aws:sns:${region}:${accountId}:hq-support-email`, bucket = 'hq-support-email-private', cert = readFileSync(new URL('enterprise-saml-test-cert.pem', import.meta.url), 'utf8'), key = readFileSync(new URL('enterprise-saml-test-key.pem', import.meta.url), 'utf8')
 let sends = 0, reads = 0, certificates = 0, failure: 'unknown' | 'rejected' | 'server_error' | undefined, privateBucket = true
+let inFlight: { entered: () => void, resume: Promise<void> } | undefined
+const outboundTopicArn = `${topicArn}-outbound`, configurationSet = 'fixture-support-send'
 const rawSources = new Map<string, string>(), outgoing: string[] = []
+const dispatchTags: string[] = []
 const gateway = async (options: any) => {
   assert.equal(options.region, region); assert.equal(options.retries, 0); assert.equal(options.timeoutMs, 15000)
   if (options.service === 'sts') return { GetCallerIdentityResponse: { GetCallerIdentityResult: { Account: accountId } } }
+  if (options.path === `/v2/email/configuration-sets/${configurationSet}/event-destinations`) return { EventDestinations: [{ Enabled: true, MatchingEventTypes: ['SEND'], SnsDestination: { TopicArn: outboundTopicArn } }] }
   if (options.service === 'ses' && options.method === 'GET') return { VerificationStatus: 'SUCCESS', VerifiedForSendingStatus: true, DkimAttributes: { SigningEnabled: true, Status: 'SUCCESS' } }
   if (options.service === 's3' && options.queryParams?.publicAccessBlock === '') return { BlockPublicAcls: true, IgnorePublicAcls: true, BlockPublicPolicy: true, RestrictPublicBuckets: privateBucket }
   if (options.service === 's3') { reads++; assert.equal(options.bucket, bucket); const raw = rawSources.get(options.path); assert.ok(raw); return new Response(raw, { headers: { 'Content-Length': String(Buffer.byteLength(raw)) } }) }
@@ -41,15 +45,26 @@ const gateway = async (options: any) => {
   const form = new URLSearchParams(options.body)
   assert.equal(form.get('Action'), 'SendRawEmail'); assert.equal(form.get('Source'), 'support@owned.example.test')
   assert.equal(form.get('Destinations.member.1'), 'customer@example.test')
+  assert.equal(form.get('ConfigurationSetName'), configurationSet)
+  assert.equal(form.get('Tags.member.1.Name'), 'hq-dispatch')
+  dispatchTags.push(form.get('Tags.member.1.Value') || '')
   const raw = Buffer.from(form.get('RawMessage.Data')!, 'base64').toString(); outgoing.push(raw)
   if (failure === 'unknown') { failure = undefined; throw new Error('Provider response lost after acceptance') }
   if (failure === 'server_error') { failure = undefined; throw Object.assign(new Error('upstream service unavailable'), { statusCode: 503 }) }
+  if (inFlight) {
+    const pending = inFlight
+    inFlight = undefined
+    pending.entered()
+    await pending.resume
+    throw new Error('Provider response lost after SNS event')
+  }
   if (failure === 'rejected') { failure = undefined; throw Object.assign(new Error('provider secret body'), { statusCode: 400 }) }
   return { SendRawEmailResponse: { SendRawEmailResult: { MessageId: `ses-out-${sends}` } } }
 }
 const dependencies = { awsRequest: gateway, fetchCert: async () => { certificates++; return cert } }
 registerSupportEmail(dependencies)
 route.post('/api/_email/channels/{channel}/incoming', emailAction('incoming', 'POST', dependencies)).skipCsrf()
+route.post('/api/_email/channels/{channel}/outbound', emailAction('outbound', 'POST', dependencies)).skipCsrf()
 route.get('/api/_email/projects/{project}/receipts', emailAction('receipts', 'GET', dependencies)).middleware('auth')
 for (const [path, operation] of [['channels', 'save'], ['channels/{channel}/verify', 'verify'], ['conversations/{conversation}/reply', 'reply']] as const) route.post(`/api/_email/projects/{project}/${path}`, channelAction(operation, 'POST')).middleware('auth')
 const server = await route.serve({ port: 0, hostname: '127.0.0.1' }), base = `http://127.0.0.1:${server.port}/api`
@@ -94,7 +109,7 @@ try {
   await query('UPDATE support_workspaces SET wallet_cents = 10000 WHERE id = ?', [workspace.id])
   await configureWalletLimits(Number(user.id), Number(workspace.id), { dailyLimitCents: 10000, monthlyLimitCents: 20000 })
   process.env.SUPPORT_EMAIL_REPLY_KEY = 'fixture-email-reply-signing-key-32-bytes'
-  const policy = { region, accountId, topicArn, bucket, prefix: 'incoming/', fromAddresses: ['support@owned.example.test'], inboundAddresses: ['inbox@owned.example.test'], replyDomain: 'reply.hq.support', rateVersion: 'fixture-ceiling-v1', maxMicrosPerMessage: 1000 }
+  const policy = { region, accountId, topicArn, outboundTopicArn, configurationSet, bucket, prefix: 'incoming/', fromAddresses: ['support@owned.example.test'], inboundAddresses: ['inbox@owned.example.test'], replyDomain: 'reply.hq.support', rateVersion: 'fixture-ceiling-v1', maxMicrosPerMessage: 1000 }
   process.env.SUPPORT_EMAIL_POLICIES = JSON.stringify({ [String(workspace.id)]: policy })
   const path = `/_email/projects/${project.public_id}`, config = { fromAddress: 'support@owned.example.test', inboundAddress: 'inbox@owned.example.test' }
   const saved = await http(path + '/channels', 'POST', { provider: 'email', label: 'Support email', configuration: config }, owner), channel = saved.data.channel
@@ -191,6 +206,24 @@ try {
   const uncertainRow = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [uncertain.data.delivery.id]))!
   await dispatchChannelDelivery(Number(uncertainRow.id)); await dispatchChannelDelivery(Number(uncertainRow.id))
   check(sends === 3 && (await one('SELECT status FROM support_channel_deliveries WHERE id = ?', [uncertainRow.id]))?.status === 'unknown', 'lost provider acknowledgement persists unknown without retrying POST')
+  const outbound = `/_email/channels/${channel.publicId}/outbound`
+  const sendEvent = { eventType: 'Send', send: {}, mail: { messageId: 'ses-out-3', timestamp: new Date().toISOString(), sendingAccountId: accountId, source: config.fromAddress, destination: ['customer@example.test'], tags: { 'ses:configuration-set': [configurationSet], 'hq-dispatch': [dispatchTags[2]] } } }
+  const outboundEnvelope = signed(sendEvent, { TopicArn: outboundTopicArn })
+  check((await http(outbound, 'POST', signed(sendEvent))).status === 401, 'inbound topic cannot acknowledge an outbound delivery')
+  const wrongRecipient = signed({ ...sendEvent, mail: { ...sendEvent.mail, destination: ['other@example.test'] } }, { TopicArn: outboundTopicArn })
+  check((await http(outbound, 'POST', wrongRecipient)).status === 403, 'a signed event for another recipient cannot resolve a delivery')
+  const wrongSender = signed({ ...sendEvent, mail: { ...sendEvent.mail, source: 'other@owned.example.test' } }, { TopicArn: outboundTopicArn })
+  check((await http(outbound, 'POST', wrongSender)).status === 403, 'signed send evidence still requires the exact original sender')
+  const signedSend = await http(outbound, 'POST', outboundEnvelope, undefined, 'text/plain')
+  check(signedSend.status === 202 && !signedSend.data.duplicate, 'signed SES Send event acknowledges the lost operation')
+  const proof = await http(outbound, 'POST', outboundEnvelope)
+  check(proof.status === 202 && proof.data.duplicate, 'replayed signed receipt has no second effect')
+  const conflictingSend = signed({ ...sendEvent, mail: { ...sendEvent.mail, messageId: 'ses-out-conflict' } }, { TopicArn: outboundTopicArn })
+  check((await http(outbound, 'POST', conflictingSend)).status === 409, 'a second provider identity cannot replace an accepted send')
+  await dispatchChannelDelivery(Number(uncertainRow.id))
+  const acceptedFromEvents = await one('SELECT status, provider_message_id FROM support_channel_deliveries WHERE id = ?', [uncertainRow.id])
+  check(sends === 3 && acceptedFromEvents?.status === 'cost_pending' && acceptedFromEvents.provider_message_id === 'ses-out-3', 'signed send persists provider acceptance without submitting again')
+  check((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [uncertainRow.wallet_reservation_id]))?.status === 'reserved', 'signed transport acceptance keeps the unsettled wallet hold')
   failure = 'rejected'
   const rejected = await http(path + `/conversations/${firstThread.conversation_id}/reply`, 'POST', { body: 'Rejected reply', idempotencyKey: 'email-rejected' }, owner)
   const rejectedRow = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [rejected.data.delivery.id]))!
@@ -203,6 +236,22 @@ try {
   await dispatchChannelDelivery(Number(serviceFailureRow.id)); await dispatchChannelDelivery(Number(serviceFailureRow.id))
   check(sends === before503 + 1 && (await one('SELECT status FROM support_channel_deliveries WHERE id = ?', [serviceFailureRow.id]))?.status === 'unknown', 'HTTP 503 is uncertain and never automatically resends POST')
   check((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [serviceFailureRow.wallet_reservation_id]))?.status === 'reserved', 'uncertain service failure keeps maximum-cost hold')
+  const race = await http(path + `/conversations/${firstThread.conversation_id}/reply`, 'POST', { body: 'Provider event arrives before the API acknowledgement', idempotencyKey: 'email-send-event-race' }, owner)
+  const raceRow = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [race.data.delivery.id]))!
+  const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>()
+  inFlight = { entered: entered.resolve, resume: resume.promise }
+  const queued = dispatchChannelDelivery(Number(raceRow.id))
+  try {
+    await Promise.race([entered.promise, queued.then(() => assert.fail('Dispatch must reach the provider'))])
+    const raceEvent = signed({ ...sendEvent, mail: { ...sendEvent.mail, messageId: 'ses-out-race', tags: { 'ses:configuration-set': [configurationSet], 'hq-dispatch': [dispatchTags.at(-1)] } } }, { TopicArn: outboundTopicArn })
+    check((await http(outbound, 'POST', raceEvent)).status === 202, 'signed receipt can acknowledge an in-flight send')
+  }
+  finally {
+    resume.resolve()
+    await queued
+  }
+  const raceResult = await one('SELECT status, provider_message_id FROM support_channel_deliveries WHERE id = ?', [raceRow.id])
+  check(raceResult?.status === 'cost_pending' && raceResult.provider_message_id === 'ses-out-race', 'late lost API acknowledgement cannot overwrite prior signed acceptance')
   await query("UPDATE support_email_receipts SET status = 'pending', lease_until = 0 WHERE id = ?", [receipt.id])
   const restart = await runIsolated('tests/fixtures/email-resume.ts', { args: [String(receipt.id)], env: { QUEUE_DRIVER: 'database' }, envFile: false, preload: [], timeoutMs: 25000 })
   assertIsolatedOk(restart, 'PASS restarted email worker')

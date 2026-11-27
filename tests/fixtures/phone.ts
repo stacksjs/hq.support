@@ -312,9 +312,16 @@ try {
   await until(() => loadedPeers.every(peer => peer.readyState === 3), 'all concurrent realtime sessions release resources after stop')
   await until(() => streams.every(stream => calls.get(stream.sid)?.status === 'completed'), 'all closed media streams finish the test provider calls')
   const next = await openMedia(overflow.id)
-  next.close()
   check(next.readyState !== WebSocket.CONNECTING, 'a new signed media socket can use released capacity')
   console.log(`PASS voice load (${streams.length} parallel streams, ${streams.length * framesPerStream} audio frames, ${Math.round(performance.now() - startedAt)} ms)`)
+  const nextPeerIndex = realtimePeers.length
+  next.send(JSON.stringify({ event: 'connected', protocol: 'Call', version: '1.0.0' }))
+  next.send(JSON.stringify({ event: 'start', sequenceNumber: '1', streamSid: overflow.stream, start: { streamSid: overflow.stream, accountSid, callSid: overflow.sid, tracks: ['inbound'], mediaFormat: { encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1 }, customParameters: { call: overflow.id, proof: createHmac('sha256', authToken).update(`hq-support-stream:${overflow.id}`).digest('hex') } } }))
+  await until(() => realtimePeers.length > nextPeerIndex && realtimePeers[nextPeerIndex]!.sent.some(event => event.type === 'session.update'), 'the new session opens its realtime provider connection')
+  const nextPeer = realtimePeers[nextPeerIndex]!
+  for (let event = 0; event < 101; event++) nextPeer.emit({ type: 'input_audio_buffer.speech_started', item_id: 'fixture-burst' })
+  await until(() => next.readyState === WebSocket.CLOSED && nextPeer.readyState === 3, 'a stalled realtime consumer closes both sockets when its queue is full')
+  await until(async () => (await one('SELECT last_error FROM support_phone_calls WHERE public_id = ?', [overflow.id]))?.last_error === 'realtime_backpressure', 'provider backlog is recorded as a failed media stream')
   console.log(`PASS phone HTTP and media (${checks} checks)`)
   if (process.env.SUPPORT_PHONE_BROWSER_FIXTURE === '1') {
     const statePath = process.env.SUPPORT_PHONE_FIXTURE_STATE
