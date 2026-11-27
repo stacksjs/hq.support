@@ -65,7 +65,7 @@ jobs:
         run: bun --no-env-file scripts/qualify-support-browser.ts --skip-build
       - name: Upload widget browser evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: support-browser-${{ github.run_attempt }}
           path: storage/framework/runtime/support-browser
@@ -79,7 +79,7 @@ jobs:
           SUPPORT_ELEMENTS_VERSION="$version" bun --no-env-file scripts/support-elements-release.ts prepare
           SUPPORT_ELEMENTS_VERSION="$version" bun --no-env-file scripts/support-elements-release.ts publish-dry-run
       - name: Retain same-commit component publication candidate
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: support-elements-${{ github.sha }}
           path: storage/framework/runtime/support-elements-release
@@ -131,7 +131,7 @@ jobs:
         run: bun --no-env-file scripts/qualify-reopening-browser.ts
       - name: Retain native application browser evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: support-application-browser-${{ github.run_attempt }}
           path: |

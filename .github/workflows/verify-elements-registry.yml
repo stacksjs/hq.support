@@ -44,7 +44,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: bun --no-env-file scripts/verify-elements-registry-source.ts
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.2
         with:
           artifact-ids: ${{ steps.source.outputs.artifact_id }}
           path: storage/framework/runtime/support-elements-release
