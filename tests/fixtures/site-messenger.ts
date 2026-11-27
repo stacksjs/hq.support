@@ -252,6 +252,45 @@ try {
   }
   const unauthenticated = await fetch(boundary, { headers: { referer, 'sec-fetch-site': 'same-origin' } })
   assert.equal(unauthenticated.status, 401, 'First-party reads still require a project-scoped customer credential')
+  await cdp.evaluate(`(async () => {
+    const { createSupport } = await import('/support.js')
+    const container = document.createElement('div')
+    container.id = 'inline-appearance'
+    container.style.width = 'min(100%, 620px)'
+    container.style.setProperty('--hq-support-inline-width', '100%')
+    container.style.setProperty('--hq-support-inline-intro-display', 'none')
+    container.style.setProperty('--hq-support-surface', '#23272f')
+    container.style.setProperty('--hq-support-accent', '#1766c8')
+    container.style.setProperty('--hq-support-border', '#363b45')
+    container.style.setProperty('--hq-support-control-height', '44px')
+    document.body.append(container)
+    const inline = createSupport({ container, inline: true })
+    await inline.boot({ endpoint: location.origin, project: ${JSON.stringify(project.public_id)}, externalLauncher: document.querySelector('#site-chat') })
+    inline.open()
+    globalThis.stopInlineAppearanceProof = () => { inline.shutdown(); container.remove() }
+  })()`)
+  const compactHost = "document.querySelector('#inline-appearance')"
+  const compactRoot = `${compactHost}.querySelector('[data-hq-support]').shadowRoot.querySelector('hq-support-messenger').shadowRoot`
+  await wait(`!!${compactRoot}.querySelector('#support-body')`, 'Inline Messenger renders')
+  for (const width of [1280, 320]) {
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 820, deviceScaleFactor: 1, mobile: false })
+    const appearance = await cdp.evaluate(`(() => {
+      const panel = ${compactRoot}.querySelector('.messenger')
+      const send = ${compactRoot}.querySelector('#support-send')
+      return {
+        inlineWidth: panel.getBoundingClientRect().width,
+        hostWidth: ${compactHost}.getBoundingClientRect().width,
+        panel: getComputedStyle(panel).backgroundColor,
+        border: getComputedStyle(panel).borderTopColor,
+        send: getComputedStyle(send).backgroundColor,
+        sendHeight: send.getBoundingClientRect().height,
+        emptyHistory: getComputedStyle(${compactRoot}.querySelector('#support-history')).display,
+      }
+    })()`)
+    const hostWidth = width === 1280 ? 620 : 320
+    assert.deepEqual(appearance, { inlineWidth: hostWidth, hostWidth, panel: 'rgb(35, 39, 47)', border: 'rgb(54, 59, 69)', send: 'rgb(23, 102, 200)', sendHeight: 44, emptyHistory: 'none' })
+  }
+  await cdp.evaluate('globalThis.stopInlineAppearanceProof()')
   assert.deepEqual(errors, [])
   await Bun.write(resolve(artifacts, 'typing.json'), JSON.stringify({ typingMs, runtimeErrors: errors.length }))
   console.info(`PASS homepage Messenger (typing visible in ${typingMs} ms)`)

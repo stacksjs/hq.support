@@ -104,6 +104,27 @@ bytes and the Messenger project configuration. Complete the public send and
 reply journey after cutover using the dedicated project and a clearly marked
 test conversation.
 
+### Inline Messenger appearance
+
+Mount the loader with `createSupport({ container, inline: true })` and set
+custom properties on the container in the host stylesheet. The properties
+inherit across the widget's shadow roots. The same stylesheet can provide
+different values in light and dark appearance. Unset properties use the
+Messenger defaults.
+
+| Custom properties | Where they apply |
+| --- | --- |
+| `--hq-support-font-family`, `--hq-support-text`, `--hq-support-muted` | Text family, main text, and secondary text |
+| `--hq-support-accent`, `--hq-support-accent-text`, `--hq-support-highlight`, `--hq-support-focus` | Primary action fill and text, secondary accents, and keyboard focus |
+| `--hq-support-surface`, `--hq-support-secondary-surface`, `--hq-support-input-surface` | Outer panel, alternate surfaces, and controls |
+| `--hq-support-border`, `--hq-support-control-border`, `--hq-support-radius`, `--hq-support-shadow` | Divider and panel borders, control outlines, panel radius, and shadow |
+| `--hq-support-control-height`, `--hq-support-heading-margin`, `--hq-support-panel-padding` | Close and Send target size, heading margin, and section padding |
+| `--hq-support-inline-width`, `--hq-support-inline-max-height` | Set to `100%` and `none` to size the Messenger to the host and let the page scroll |
+| `--hq-support-inline-intro-display`, `--hq-support-inline-history-min-height` | Set to `none` and `0px` for a compact composer. Conversation history appears when messages arrive and can scroll independently. |
+
+Check label, action, and focus contrast in every host theme. The layout properties
+with the `inline` prefix apply only to inline mounts.
+
 ## Qualification and cutover
 
 Run the application against PostgreSQL, Redis and isolated provider test accounts.

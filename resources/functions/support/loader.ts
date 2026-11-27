@@ -27,10 +27,12 @@ interface LauncherElement extends HTMLElement { label: string, unread: number }
 // Replaced by the artifact builder, relative to this hosted ESM entry.
 declare const SUPPORT_ELEMENT_MODULE: string
 export const supportLayoutCss = `
-:host{--support-edge:16px;--support-bottom:max(var(--support-edge),env(safe-area-inset-bottom,0px));--support-panel-height:calc(100dvh - var(--support-bottom) - 84px - env(safe-area-inset-top,0px));position:fixed;right:max(var(--support-edge),env(safe-area-inset-right,0px));bottom:var(--support-bottom);z-index:2147483000;display:flex;flex-direction:column;align-items:flex-end;gap:12px;max-width:calc(100vw - 2 * var(--support-edge))}
-:host([data-inline]){position:relative;inset:auto;z-index:auto;align-items:flex-start}
+:host{--support-edge:16px;--support-bottom:max(var(--support-edge),env(safe-area-inset-bottom,0px));--support-viewport-height:calc(100dvh - var(--support-bottom) - 84px - env(safe-area-inset-top,0px));--support-panel-height:var(--support-viewport-height);position:fixed;right:max(var(--support-edge),env(safe-area-inset-right,0px));bottom:var(--support-bottom);z-index:2147483000;display:flex;flex-direction:column;align-items:flex-end;gap:12px;max-width:calc(100vw - 2 * var(--support-edge))}
+:host([data-inline]){--support-panel-height:var(--hq-support-inline-max-height,var(--support-viewport-height));position:relative;inset:auto;z-index:auto;align-items:flex-start;max-width:100%}
+:host([data-inline]) .panel{width:var(--hq-support-inline-width,auto)}
+:host([data-inline]) hq-support-messenger{--support-messenger-width:var(--hq-support-inline-width);--support-intro-display:var(--hq-support-inline-intro-display);--support-history-height:var(--hq-support-inline-history-min-height)}
 :host([data-external-launcher]:not([data-inline])){bottom:calc(var(--support-bottom) + 70px)}
-.panel{max-height:var(--support-panel-height);overflow:auto;border-radius:20px;opacity:0;transform:translateY(8px);visibility:hidden}
+.panel{max-height:var(--support-panel-height);overflow:auto;border-radius:var(--hq-support-radius,20px);opacity:0;transform:translateY(8px);visibility:hidden}
 .panel[data-open]{opacity:1;transform:translateY(0);visibility:visible}
 hq-support-launcher{flex-shrink:0}
 @media(prefers-reduced-motion:no-preference){.panel{transition:opacity .18s ease,transform .18s ease}@starting-style{.panel[data-open]{opacity:0;transform:translateY(8px)}}}
