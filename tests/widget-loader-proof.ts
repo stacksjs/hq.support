@@ -34,8 +34,14 @@ try {
   check(ready === 1, 'ready event reaches the loader controller')
   check(fixedHost.shadowRoot!.querySelector('style')!.nonce === 'proof-style-nonce', 'layout style carries the supplied nonce property')
   check(!messenger.hasAttribute('session-token') && !messenger.outerHTML.includes('private-bootstrap-token') && !messenger.outerHTML.includes('fixture-session'), 'bootstrap and session tokens never become HTML attributes')
-  first.open()
-  await messenger.updateComplete
+  const requestFrame = globalThis.requestAnimationFrame
+  if (localization) globalThis.requestAnimationFrame = () => 0
+  try {
+    first.open()
+    await messenger.updateComplete
+    if (localization) check(messenger.shadowRoot.activeElement?.id === 'support-close', 'opening focuses the close control as soon as the panel renders')
+  }
+  finally { globalThis.requestAnimationFrame = requestFrame }
   check(!!messenger.shadowRoot.querySelector('section') && !other.opened, 'open changes only the selected controller')
   check(getComputedStyle(fixedHost).position === 'fixed', 'host layout style works under the strict script CSP')
   check(getComputedStyle(messenger.shadowRoot.querySelector('section')).borderTopLeftRadius === '20px', 'native shadow styles work with the emitted CSP hashes')
@@ -84,6 +90,7 @@ try {
   first.close()
   await messenger.updateComplete
   check(!messenger.shadowRoot.querySelector('section'), 'close hides the native panel')
+  if (localization) check(launcher.shadowRoot.activeElement === launcher.shadowRoot.querySelector('button'), 'closing refocuses the current launcher after its unread update replaced the original button')
   await first.update({ sessionToken: 'private-updated-token' })
   check(ready === 2 && !messenger.outerHTML.includes('private-updated-token'), 'identity update uses the native method without reflecting its token')
   check((await first.track('loader-proof', { source: 'plain-host' })).accepted === true, 'tracking delegates to the scoped customer API')

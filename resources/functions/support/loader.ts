@@ -17,6 +17,7 @@ export interface SupportUpdateOptions { sessionToken?: string, locale?: string }
 export interface SupportControllerOptions { container?: HTMLElement, inline?: boolean }
 interface MessengerElement extends HTMLElement {
   sessionToken: string
+  readonly updateComplete: Promise<void>
   boot(options: { url: string, project: string, token?: string, locale?: string }): Promise<void>
   update(options: { token?: string, locale?: string }): Promise<void>
   open(): void
@@ -94,21 +95,24 @@ export function createSupport(controllerOptions: SupportControllerOptions = {}) 
       root.append(button)
     }
     let opener: HTMLElement | undefined
+    let focusRequest = 0
     const focusTarget = () => options.externalLauncher ?? button?.shadowRoot?.querySelector('button') ?? button
     openMessenger = (trigger = focusTarget()) => {
       opener = trigger
+      const opening = ++focusRequest
       instance.open()
-      requestAnimationFrame(() => {
-        if (current === generation)
-          instance.shadowRoot?.querySelector<HTMLElement>('#support-close')?.focus()
+      void instance.updateComplete.then(() => {
+        if (current === generation && opening === focusRequest && panel.hasAttribute('data-open'))
+          instance.shadowRoot?.querySelector<HTMLElement>('#support-close')?.focus({ preventScroll: true })
       })
     }
     const open = () => openMessenger?.()
     const unread = (event: Event) => { if (button) button.unread = Number((event as CustomEvent).detail?.count || 0) }
     const show = () => panel.setAttribute('data-open', '')
     const restoreFocus = () => {
+      focusRequest++
       panel.removeAttribute('data-open')
-      if (opener?.isConnected) opener.focus()
+      if (opener) (opener.isConnected ? opener : focusTarget())?.focus({ preventScroll: true })
       opener = undefined
     }
     const onKey = (event: KeyboardEvent) => {
