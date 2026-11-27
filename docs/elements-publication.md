@@ -8,9 +8,9 @@ The public `alpha` tag currently points to `0.1.0-alpha.1`. The `0.1.0-alpha.2` 
 
 The original native manifest advertised a nonexistent `dist/bundle.css`, invented declarations for an internal runtime, and mapped explicit `.js` imports through a suffix-doubling wildcard. The owning fix is in Stacks actions `library/manifest.ts` and `library/build.ts`: component exports are derived from emitted files; CSS aliases are only advertised when they exist. Both suffixless and explicit `.js` module imports have exact declaration targets. The bundled root already exported the component classes correctly. No stx emitter or app compiler patch was needed.
 
-The workflow uses the retained-archive library release APIs from the installed Stacks actions package. Stacks validates the exact archive and passes its file path to Bun with the `alpha` tag. It verifies the published bytes and tags, including when the publisher exits after the registry accepted an upload.
+The workflow uses the retained-archive library release APIs from the installed Stacks actions package. Stacks validates the exact archive and passes its file path to npm with the `alpha` tag. It verifies the published bytes and tags, including when the publisher exits after the registry accepted an upload.
 
-Pantry 0.11.206 separately rejects valid `0.1.0-alpha.0` with `InvalidVersion`, reproducible with a tiny standalone package. Its owner is `pantry-pm/pantry`, `packages/zig/src/packages/publish.zig`, whose `validateVersion` currently accepts numeric X.Y.Z only. This remains an upstream follow-up. The workflow explicitly selects Bun's existing production npm publisher and uses official `bun pm pack`; it never changes the alpha into a false stable version. Bun's [publish documentation](https://bun.com/docs/pm/cli/publish) describes tarball packing, explicit tags and token configuration. It also states that Bun does not generate npm provenance. This workflow therefore requires a configured npm publishing token and does not claim an OIDC/provenance attestation.
+Bun still packs the reviewed candidate. The GitHub publish job uses Node.js 24 and npm 11.16.0 for npm trusted publishing. It requests the short-lived GitHub OIDC identity only in the publish job and installs dependencies with scripts disabled. npm generates and publishes provenance for successful trusted publication from this public repository. [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/)
 
 A first npm publication can receive the registry's initial `latest` tag in addition to the requested `alpha` tag. The verifier records actual tags and requires `alpha` to identify the exact version; it does not silently promote, remove tags or claim a stable release. Consumers in these checks pin the exact alpha version.
 
@@ -34,7 +34,14 @@ The workflow downloads that candidate from the verified run. It checks the hashe
 bun --no-env-file scripts/support-elements-release.ts publish-dry-run
 ```
 
-With the publish input selected, a separate job rechecks CI ownership and downloads the same artifact. Stacks sends the retained tarball directly and checks the registry receipt before the consumer job. Only the upload step receives the repository's masked `NPM_TOKEN`. Publication requires an explicit workflow dispatch.
+With the publish input selected, a separate job rechecks CI ownership and downloads the same artifact. Stacks sends the retained tarball directly and checks the registry receipt before the consumer verification. Publication requires an explicit workflow dispatch and a one-time npm package trust registration for the exact workflow. An npm maintainer approves the trust registration with two-factor authentication.
+
+```sh
+npm trust github @stacksjs/support-elements --repo stacksjs/hq.support \
+  --file publish-elements.yml --allow-publish
+```
+
+The trust applies to the public component package with permission to publish. [npm trust command](https://docs.npmjs.com/cli/commands/npm-trust/)
 
 After acceptance, `scripts/support-elements-release.ts registry` reads the exact version from the public npm registry, validates its SHA-512 integrity and canonical archive SHA-256 against CI, verifies all file hashes, and requires the actual alpha tag. It then installs that exact registry version in a clean consumer and repeats strict declarations and six real-browser imports. The workflow's next step verifies the separate hosted loader against the identical bundle. Existing versions are never overwritten; public readback still must match the candidate before qualification succeeds.
 

@@ -150,7 +150,7 @@ export async function releaseCommand(mode: string, artifact: string, version: st
       assert.equal(candidate.packages[0]?.archive.sha256, release.archiveSha256)
       const dryRun = mode === 'publish-dry-run'
       const receipt = await publishPreparedLibraryRelease(directory, {
-        cwd: root, source, publisher: dryRun ? 'npm' : 'bun', dryRun,
+        cwd: root, source, publisher: 'npm', dryRun,
       })
       await Bun.write(resolve(artifact, dryRun ? 'publisher-dry-run-report.json' : 'publication-report.json'), JSON.stringify(receipt, null, 2) + '\n')
       return receipt

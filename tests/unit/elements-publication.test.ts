@@ -51,9 +51,10 @@ describe('same-SHA successful main CI gate', () => {
   })
 })
 
-test('publication dry-runs the retained archive and limits write credentials to the upload step', async () => {
+test('publication dry-runs the retained archive and scopes OIDC to the publish job', async () => {
   const workflow = Bun.YAML.parse(await Bun.file(new URL('../../.github/workflows/publish-elements.yml', import.meta.url)).text()) as {
-    jobs: Record<string, { needs?: string, steps: { run?: string, env?: Record<string, string> }[] }>
+    permissions?: Record<string, string>
+    jobs: Record<string, { needs?: string, if?: string, permissions?: Record<string, string>, steps: { run?: string, uses?: string, env?: Record<string, string> }[] }>
   }
   const { verify, publish } = workflow.jobs
   expect(publish?.needs).toBe('verify')
@@ -62,9 +63,16 @@ test('publication dry-runs the retained archive and limits write credentials to 
     expect(job.steps.some(step => step.run?.includes(' libs:publish') || step.run?.endsWith(' restore'))).toBe(false)
   }
   expect(verify!.steps.some(step => step.run?.endsWith(' publish-dry-run'))).toBe(true)
-  expect(verify!.steps.some(step => step.env?.BUN_AUTH_TOKEN || step.env?.NPM_CONFIG_TOKEN)).toBe(false)
-  const writeSteps = publish!.steps.filter(step => step.env?.BUN_AUTH_TOKEN || step.env?.NPM_CONFIG_TOKEN)
-  expect(writeSteps.map(step => step.run)).toEqual(['bun --no-env-file scripts/support-elements-release.ts publish'])
+  expect(workflow.permissions?.['id-token']).toBeUndefined()
+  expect(verify!.permissions?.['id-token']).toBeUndefined()
+  expect(publish!.permissions?.['id-token']).toBe('write')
+  expect(publish!.if).toBe("inputs.publish && github.repository == 'stacksjs/hq.support' && github.ref == 'refs/heads/main'")
+  expect(publish!.steps.some(step => step.uses?.startsWith('actions/setup-node@'))).toBe(true)
+  expect(publish!.steps.some(step => step.run === 'bun install --frozen-lockfile --ignore-scripts')).toBe(true)
+  for (const job of [verify!, publish!]) {
+    expect(job.steps.some(step => Object.keys(step.env ?? {}).some(key => ['NPM_TOKEN', 'NPM_CONFIG_TOKEN', 'NODE_AUTH_TOKEN', 'BUN_AUTH_TOKEN'].includes(key)))).toBe(false)
+  }
+  expect(publish!.steps.some(step => step.run?.endsWith(' publish'))).toBe(true)
   expect(publish!.steps.some(step => step.run?.endsWith(' registry'))).toBe(true)
 })
 
