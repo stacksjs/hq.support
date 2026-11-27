@@ -3,7 +3,7 @@ import { storeJob } from '@stacksjs/queue/utils'
 import type { ChannelDependencies, ChannelSendOutcome } from './channel-providers'
 import type { Row } from './database'
 import { channelConfig, loadChannel, markChannelReady, publicChannel, requireReadyChannel } from './channels'
-import { channelOrigin, textProvider } from './channel-providers'
+import { channelOrigin, channelReceiptProviders, textProvider } from './channel-providers'
 import { shareAttachments } from './attachments'
 import { ingestProviderMedia, outboundMediaUrls, providerMediaSources, validateOutboundMedia } from './channel-media'
 import { managedCostFromMicros, reserveWallet, settleProviderWallet, settleWallet } from './billing'
@@ -242,18 +242,27 @@ export async function applyChannelInbound(id: unknown, dependencies: ChannelDepe
   })
 }
 export async function recoverChannelWork(dependencies: ChannelDependencies = {}) {
-  const rows = await query("SELECT id FROM support_channel_deliveries WHERE status IN ('pending', 'dispatching', 'cost_pending') AND lease_until <= ? ORDER BY id LIMIT 100", [Date.now()])
-  for (const row of rows) {
-    const delivery = (await one('SELECT * FROM support_channel_deliveries WHERE id = ?', [row.id]))!
-    if (delivery.status === 'cost_pending') {
-      const project = (await one('SELECT * FROM support_projects WHERE id = ?', [delivery.project_id]))!
-      await reconcileChannelDelivery(project, delivery.public_id, dependencies).catch(() => undefined)
-    }
-    else await dispatchChannelDelivery(Number(row.id), dependencies)
+  const now = Date.now()
+  const dispatches = await query("SELECT id FROM support_channel_deliveries WHERE lease_until <= ? AND (status = 'dispatching' OR (status = 'pending' AND available_at <= ?)) ORDER BY id LIMIT 100", [now, now])
+  for (const row of dispatches) await dispatchChannelDelivery(Number(row.id), dependencies)
+
+  // Invoice-only holds have no per-message receipt to poll.
+  const providers = channelReceiptProviders()
+  const receipts = providers.length === 0 ? [] : await query(
+    `SELECT d.public_id, d.project_id, d.workspace_id
+     FROM support_channel_deliveries d
+     JOIN support_channels c ON c.id = d.channel_id AND c.project_id = d.project_id AND c.workspace_id = d.workspace_id
+     WHERE d.status = 'cost_pending' AND d.lease_until <= ? AND c.provider IN (${providers.map(() => '?').join(', ')})
+     ORDER BY d.id LIMIT 100`,
+    [now, ...providers],
+  )
+  for (const row of receipts) {
+    const project = await one('SELECT * FROM support_projects WHERE id = ? AND workspace_id = ?', [row.project_id, row.workspace_id])
+    if (project) await reconcileChannelDelivery(project, row.public_id, dependencies).catch(() => undefined)
   }
   const incoming = await query("SELECT id FROM support_inbound WHERE provider LIKE 'channel:%' AND status <> 'processed' AND lease_until <= ? AND available_at <= ? ORDER BY id LIMIT 100", [Date.now(), Date.now()])
   for (const row of incoming) await applyChannelInbound(row.id, dependencies)
-  return { deliveries: rows.length, inbound: incoming.length }
+  return { deliveries: dispatches.length + receipts.length, inbound: incoming.length }
 }
 
 /** Native bot inbox pagination, with every page retained before advancing the durable cursor. */

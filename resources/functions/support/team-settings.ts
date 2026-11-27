@@ -49,8 +49,8 @@ export function createTeamSettings() {
   }
   async function createTeam() { if (await mutate(workspacePath('/support-teams'), { name: teamName() }, 'Support team created. Add active workspace members to start routing.')) teamName.set('') }
   async function renameTeam() { if (selected()) await mutate(workspacePath(`/support-teams/${selectedTeam()}`), { name: rename() }, 'Team name saved.') }
-  async function toggleTeam() { if (selected()) await mutate(workspacePath(`/support-teams/${selectedTeam()}`), { active: !selected()!.active }, selected()!.active ? 'Team disabled. Its assignments were released; conversations remain in their inboxes.' : 'Team reactivated. Existing unassigned work is retried explicitly.') }
-  async function addMember() { if (memberUser() && selected()?.active && await mutate(workspacePath(`/support-teams/${selectedTeam()}/members`), { userId: Number(memberUser()), active: true }, 'Team member added. Existing overflow remains unassigned until explicitly routed.')) memberUser.set('') }
+  async function toggleTeam() { if (selected()) await mutate(workspacePath(`/support-teams/${selectedTeam()}`), { active: !selected()!.active }, selected()!.active ? 'Team disabled. Its assignments were released and conversations remain in their inboxes.' : 'Team reactivated.') }
+  async function addMember() { if (memberUser() && selected()?.active && await mutate(workspacePath(`/support-teams/${selectedTeam()}/members`), { userId: Number(memberUser()), active: true }, 'Team member added.')) memberUser.set('') }
   async function toggleMember(row: SupportTeamMember) { if (selected()?.active && (row.active || row.workspace_status === 'active')) await mutate(workspacePath(`/support-teams/${selectedTeam()}/members`), { userId: Number(row.user_id), active: !row.active }, row.active ? 'Member removed from the support team and their assignments released.' : 'Team membership restored.') }
   async function createInbox() { if (await mutate(workspace.projectPath('/team-inboxes'), { teamId: Number(inboxTeam()), name: inboxName(), assignmentMode: inboxMode(), isDefault: inboxDefault() }, 'Team inbox created. A new default applies to new conversations only.')) { inboxName.set(''); inboxDefault.set(false) } }
   function editInbox(row: TeamInbox) { editingInbox.set(String(row.id)); editName.set(row.name); editMode.set(row.assignment_mode); editActive.set(Boolean(row.active)); editDefault.set(Boolean(row.is_default)) }
@@ -58,7 +58,7 @@ export function createTeamSettings() {
   async function saveAgent() {
     if (!agentUser() || (!workspace.canManage() && agentUser() !== self())) return
     if (workspace.canManage() && (!/^\d+$/.test(capacity()) || Number(capacity()) < 1 || Number(capacity()) > 1000)) { workspace.error.set('Capacity must be a whole number from 1 to 1000.'); return }
-    await mutate(workspacePath('/routing-agents'), { userId: Number(agentUser()), availability: availability(), ...(workspace.canManage() ? { capacity: Number(capacity()) } : {}) }, 'Routing preferences saved. Availability is explicit; existing overflow is not automatically reassigned.', false)
+    await mutate(workspacePath('/routing-agents'), { userId: Number(agentUser()), availability: availability(), ...(workspace.canManage() ? { capacity: Number(capacity()) } : {}) }, 'Routing preferences saved.', false)
   }
   function destroy() { disposed = true; revision++; workspace.destroy() }
   return { workspace, activeTeams, teams, members, inboxes, agents, identities, self, selectedTeam, selected, teamMembers, eligibleMembers, teamName, rename, memberUser, inboxName, inboxTeam, inboxMode, inboxDefault, editingInbox, editedInbox, editedTeamActive, editName, editMode, editActive, editDefault, agentUser, availability, capacity, selectedAgent, person, teamLabel, selectTeam, selectAgent, load, boot, createTeam, renameTeam, toggleTeam, addMember, toggleMember, createInbox, editInbox, saveInbox, saveAgent, destroy }

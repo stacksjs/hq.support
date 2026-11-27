@@ -243,6 +243,7 @@ declare global {
   const FormSubmission: typeof import('@stacksjs/defaults/app/Models/Forms/FormSubmission.ts')['default']
   const Websocket: typeof import('@stacksjs/defaults/app/Models/realtime/Websocket.ts')['default']
   const ApplyEnterpriseRetention: typeof import('../../../app/Jobs/ApplyEnterpriseRetention')['default']
+  const DrainInboxOverflow: typeof import('../../../app/Jobs/DrainInboxOverflow')['default']
   const IndexSupportKnowledge: typeof import('../../../app/Jobs/IndexSupportKnowledge')['default']
   const RunChannelDelivery: typeof import('../../../app/Jobs/RunChannelDelivery')['default']
   const RunSupportEmail: typeof import('../../../app/Jobs/RunSupportEmail')['default']

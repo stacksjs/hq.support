@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { startBrowserSession, browserSessionCookie } from '@stacksjs/auth'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { config, overridesReady } from '@stacksjs/config'
+import { runJob } from '@stacksjs/queue'
 import NativeSessionAction from '@stacksjs/defaults/app/Actions/Support/SessionAction.ts'
 import { injectGlobalAutoImports } from '@stacksjs/server'
 import { route } from '@stacksjs/router'
@@ -135,10 +136,10 @@ try {
   await input('#reply', 'Edited reply after failed transport'); await click('Send reply'); await text('Reply saved.')
   check(Boolean(await one('SELECT id FROM support_messages WHERE conversation_id = ? AND body = ?', [conversations[2].id, 'Edited reply after failed transport'])), 'edited retry uses a fresh payload key and persists exactly the intended reply')
   await selectConversation('First request'); await waitFor(() => evaluate(`document.querySelector('.thread-heading h2').textContent === 'First request'`), 15000, { label: 'First assigned conversation' }); await click('Resolve'); await text('Conversation resolved.')
-  await selectConversation('Waiting request'); await text('No available team member has capacity.')
-  await click('Retry automatic routing'); await text('Assigned by round robin.')
-  check(Number((await one('SELECT assignee_id FROM support_conversations WHERE id = ?', [conversations[2].id]))!.assignee_id) === agent.id, 'owner retries retained overflow after a real status transition releases capacity')
-  await evaluate(`document.querySelector('.routing-panel details').open=true`); await text('Manual change')
+  await runJob('DrainInboxOverflow')
+  await selectConversation('Waiting request')
+  await evaluate(`document.querySelector('.routing-panel details').open=true`); await text('Automatic overflow assignment')
+  check(Number((await one('SELECT assignee_id FROM support_conversations WHERE id = ?', [conversations[2].id]))!.assignee_id) === agent.id, 'scheduled routing moves waiting work after a real status transition releases capacity')
   check(await evaluate(`document.querySelectorAll('.assignment-entry').length > 1`), 'compiled inbox displays persisted assignment provenance')
   await input('#reply', 'Draft retained through rejected assignment and narrow drawer')
   const assignmentBeforeFailure = JSON.stringify(await one('SELECT assignee_id, inbox_id, status FROM support_conversations WHERE id = ?', [conversations[2].id]))

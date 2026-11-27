@@ -153,6 +153,16 @@ try {
   await createChannelReply(project, thread.conversation_id, { body: 'Reply', idempotencyKey: 'reply-1' }, Number(owner.id), dependencies); await dispatchChannelDelivery(Number(delivery.id), dependencies)
   check(providerPosts === beforePosts, 'same operation and job replay never repeats accepted provider creation')
   await assert.rejects(createChannelReply(project, thread.conversation_id, { body: 'Changed', idempotencyKey: 'reply-1' }, Number(owner.id), dependencies), /changed/)
+  const forPoll = await createChannelReply(project, thread.conversation_id, { body: 'Receipt recovered by the worker', idempotencyKey: 'reply-auto-reconcile' }, Number(owner.id), dependencies)
+  const forPollRow = (await one('SELECT id FROM support_channel_deliveries WHERE public_id = ?', [forPoll.delivery!.id]))!
+  await dispatchChannelDelivery(Number(forPollRow.id), dependencies)
+  const forPollReceipt = (await one('SELECT status, provider_message_id FROM support_channel_deliveries WHERE id = ?', [forPollRow.id]))!
+  check(forPollReceipt.status === 'cost_pending', 'provider price can arrive after send acknowledgement')
+  messages.get(String(forPollReceipt.provider_message_id))!.price = '-0.007900'
+  messages.get(String(forPollReceipt.provider_message_id))!.status = 'delivered'
+  const postsBeforePoll = providerPosts
+  await recoverChannelWork(dependencies)
+  check(providerPosts === postsBeforePoll && (await one('SELECT status FROM support_channel_deliveries WHERE id = ?', [forPollRow.id]))?.status === 'delivered', 'recovery polls an exact supported provider receipt without repeating the send')
   const uncertain = await createChannelReply(project, thread.conversation_id, { body: 'Lost acknowledgement', idempotencyKey: 'reply-unknown' }, Number(owner.id), dependencies)
   const uncertainRow = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [uncertain.delivery!.id]))!
   failure = 'unknown'; await dispatchChannelDelivery(Number(uncertainRow.id), dependencies)

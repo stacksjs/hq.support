@@ -89,7 +89,12 @@ export function createInbox() {
   function inboxName(id?: string | number) { const row = inboxes().find(item => String(item.id) === String(id)); return row ? row.name + (row.active ? '' : ' (inactive)') : Number(id) ? `Inbox #${id}` : 'Without team inbox' }
   function candidateDisabled(id: string | number) { const row = agents().find(item => String(item.user_id) === String(id)); return !!row && (row.availability !== 'available' || (current()?.status === 'open' && Number(row.open_count) >= Number(row.capacity) && String(current()?.assignee_id) !== String(id))) }
   function agentLabel(id: string | number) { const row = agents().find(item => String(item.user_id) === String(id)); return `${person(id)}${row ? ` · ${row.availability}, ${row.open_count}/${row.capacity} open` : ''}` }
-  function actorLabel(item: Assignment) { return item.source === 'workflow' ? `Workflow run #${item.workflow_run_id}` : item.source === 'ingress' ? 'Default inbox routing' : `${item.source === 'configuration' ? 'Team configuration' : 'Manual change'} · ${person(item.actor_id)}` }
+  function actorLabel(item: Assignment) {
+    if (item.source === 'workflow') return `Workflow run #${item.workflow_run_id}`
+    if (item.source === 'ingress') return 'Default inbox routing'
+    if (item.source === 'overflow') return 'Automatic overflow assignment'
+    return `${item.source === 'configuration' ? 'Team configuration' : 'Manual change'} · ${person(item.actor_id)}`
+  }
   function syncRouting(item: Conversation) { routingInbox.set(String(item.inbox_id || 0)); routingAssignee.set(String(item.assignee_id || 0)) }
   function listPath(cursor?: string | null) { const query = new URLSearchParams(); if (search().trim()) query.set('q', search().trim()); if (inboxFilter()) query.set('inboxId', inboxFilter()); if (filter() !== 'all') query.set('status', filter()); if (cursor) query.set('cursor', cursor); return `/api/support/projects/${encodeURIComponent(project())}/inbox?${query}` }
   function queryIssue() { return search().length > 200 ? 'Search is limited to 200 characters.' : search().trim().length === 1 ? 'Enter at least 2 characters to search subjects and messages.' : '' }

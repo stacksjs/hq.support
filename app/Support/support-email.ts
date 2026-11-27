@@ -109,7 +109,6 @@ export function supportEmailProvider(dependencies: EmailDependencies = {}): Chan
         return { outcome: rejected ? 'rejected' : 'unknown', error: rejected ? 'SES rejected this message.' : 'SES acknowledgement unavailable. Do not resend.', ...(status ? { httpStatus: status } : {}) }
       }
     },
-    async reconcile() { return { status: 'sent' } },
     async validateMediaSources(channel, config, record, media) { const { validateEmailMedia } = await import('./email-receipts'); await validateEmailMedia(channel, config, record, media) },
     async ingestMedia(project, channel, record, conversationId, payload) { const { ingestEmailMedia } = await import('./email-receipts'); return await ingestEmailMedia(project, channel, record, conversationId, payload) },
   }

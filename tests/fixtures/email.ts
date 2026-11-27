@@ -13,11 +13,11 @@ import { parseInboundEmail } from '@stacksjs/email/inbound-parser'
 import { runIsolated, assertIsolatedOk } from '@stacksjs/testing/isolated'
 import { emailAction } from '../../app/Actions/Support/EmailAction'
 import { channelAction } from '../../app/Actions/Support/ChannelAction'
-import { one, query } from '../../app/Support/database'
+import { insert, one, query } from '../../app/Support/database'
 import { processEmailReceipt } from '../../app/Support/email-receipts'
 import { emailReplyAddress, registerSupportEmail } from '../../app/Support/support-email'
 import { channelConfig, loadChannel } from '../../app/Support/channels'
-import { applyChannelInbound, dispatchChannelDelivery } from '../../app/Support/managed-channels'
+import { applyChannelInbound, dispatchChannelDelivery, recoverChannelWork } from '../../app/Support/managed-channels'
 import { configureWalletLimits } from '../../app/Support/billing'
 
 await overridesReady
@@ -171,11 +171,26 @@ try {
   await http(path + `/conversations/${firstThread.conversation_id}/reply`, 'POST', replyInput, owner)
   await dispatchChannelDelivery(Number(delivery.id))
   check(sends === 1, 'same operation replay never sends again')
+  for (let index = 0; index < 100; index++) {
+    await insert('support_channel_deliveries', {
+      workspace_id: accepted.workspace_id, project_id: accepted.project_id,
+      channel_id: accepted.channel_id, thread_id: accepted.thread_id, message_id: accepted.message_id,
+      public_id: crypto.randomUUID(), operation_key: `historical-ses-${index}`, request_hash: accepted.request_hash,
+      configuration_hash: accepted.configuration_hash, status: 'cost_pending', provider_message_id: `historical-provider-${index}`,
+    })
+  }
+  const recovery = await http(path + `/conversations/${firstThread.conversation_id}/reply`, 'POST', { body: 'Fresh reply behind the SES cost backlog', idempotencyKey: 'email-dispatch-recovery' }, owner)
+  check(recovery.status === 201, 'fresh outbound delivery can be queued behind a backlog')
+  const recovered = await recoverChannelWork()
+  assert.equal(recovered.deliveries, 1, 'invoice-only SES holds do not consume receipt polling work')
+  assert.equal(sends, 2, 'invoice-only SES holds cannot starve ready dispatches')
+  check((await one('SELECT status FROM support_channel_deliveries WHERE public_id = ?', [recovery.data.delivery.id]))?.status === 'cost_pending', 'recovered SES send preserves its new hold')
+  check((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [accepted.wallet_reservation_id]))?.status === 'reserved', 'worker recovery leaves prior SES cost holds intact')
   failure = 'unknown'
   const uncertain = await http(path + `/conversations/${firstThread.conversation_id}/reply`, 'POST', { body: 'Uncertain reply', idempotencyKey: 'email-unknown' }, owner)
   const uncertainRow = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [uncertain.data.delivery.id]))!
   await dispatchChannelDelivery(Number(uncertainRow.id)); await dispatchChannelDelivery(Number(uncertainRow.id))
-  check(sends === 2 && (await one('SELECT status FROM support_channel_deliveries WHERE id = ?', [uncertainRow.id]))?.status === 'unknown', 'lost provider acknowledgement persists unknown without retrying POST')
+  check(sends === 3 && (await one('SELECT status FROM support_channel_deliveries WHERE id = ?', [uncertainRow.id]))?.status === 'unknown', 'lost provider acknowledgement persists unknown without retrying POST')
   failure = 'rejected'
   const rejected = await http(path + `/conversations/${firstThread.conversation_id}/reply`, 'POST', { body: 'Rejected reply', idempotencyKey: 'email-rejected' }, owner)
   const rejectedRow = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [rejected.data.delivery.id]))!

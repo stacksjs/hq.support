@@ -139,8 +139,15 @@ const metaProvider: ChannelProvider = {
     return await new MetaMessagingClient({ provider: channel.provider === 'messenger' ? 'messenger' : 'instagram', accountId: String(config.accountId), apiVersion: String(config.apiVersion), accessToken: String(config.accessToken) }, dependencies).sendText(String(thread.recipient), String(payload.body))
   },
 }
+const nativeTextProviders: Record<string, ChannelProvider> = { sms: twilioProvider, whatsapp: twilioProvider, slack: slackProvider, discord: discordProvider, messenger: metaProvider, instagram: metaProvider }
+
 export function textProvider(provider: string): ChannelProvider {
-  const native = extensions.get(provider) || ({ sms: twilioProvider, whatsapp: twilioProvider, slack: slackProvider, discord: discordProvider, messenger: metaProvider, instagram: metaProvider } as Record<string, ChannelProvider>)[provider]
+  const native = extensions.get(provider) || nativeTextProviders[provider]
   if (!native) fail(503, 'channel_unavailable', 'This channel has no configured native delivery adapter.')
   return native
+}
+
+export function channelReceiptProviders() {
+  const providers = new Set([...Object.keys(nativeTextProviders), ...extensions.keys()])
+  return [...providers].filter(provider => textProvider(provider).reconcile !== undefined)
 }
