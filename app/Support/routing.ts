@@ -3,14 +3,14 @@ import { insert, one, query, workspaceTransaction } from './database'
 import { fail, identifier, text } from './errors'
 import { conversation, conversationStatuses, member, summary } from './service'
 
-export type RoutingActor = { userId: number, source: 'manual' } | { source: 'workflow', workflowRunId: number } | { userId: number, source: 'configuration' } | { source: 'ingress' | 'overflow' }
+export type RoutingActor = { userId: number, source: 'manual' } | { source: 'workflow', workflowRunId: number } | { userId: number, source: 'configuration' } | { source: 'ingress' | 'overflow' | 'snooze' }
 const timestamp = () => new Date().toISOString()
 const bool = (value: unknown, fallback: boolean) => {
   if (value === undefined) return fallback
   if (typeof value !== 'boolean') fail(422, 'invalid_input', 'Use a boolean value.')
   return value
 }
-const state = (row: Row) => ({ assigneeId: Number(row.assignee_id), teamId: Number(row.team_id), inboxId: Number(row.inbox_id), status: String(row.status) })
+const state = (row: Row) => ({ assigneeId: Number(row.assignee_id), teamId: Number(row.team_id), inboxId: Number(row.inbox_id), status: String(row.status), snoozedUntil: row.snoozed_until == null ? null : Number(row.snoozed_until) })
 async function audit(project: Row, before: Row, after: Row, actor: RoutingActor, reason: string) {
   await insert('support_assignment_audits', { workspace_id: project.workspace_id, project_id: project.id, conversation_id: after.id, actor_id: 'userId' in actor ? actor.userId : 0, workflow_run_id: 'workflowRunId' in actor ? actor.workflowRunId : 0, source: actor.source, reason, before_state: JSON.stringify(state(before)), after_state: JSON.stringify(state(after)) })
 }
@@ -51,9 +51,11 @@ async function assignRoundRobin(project: Row, before: Row, selected: Row) {
   }
   return 0
 }
-async function writeRouting(project: Row, before: Row, values: { assigneeId: number, inboxId: number, teamId: number, status: string }, actor: RoutingActor, reason: string) {
+async function writeRouting(project: Row, before: Row, values: { assigneeId: number, inboxId: number, teamId: number, status: string, snoozedUntil?: number | null }, actor: RoutingActor, reason: string) {
   const resolvedAt = values.status === 'closed' ? before.status === 'closed' ? Number(before.resolved_at || 0) : Date.now() : 0
-  await query('UPDATE support_conversations SET assignee_id = ?, team_id = ?, inbox_id = ?, status = ?, resolved_at = ?, routing_reason = ?, updated_at = ? WHERE id = ? AND project_id = ? AND workspace_id = ?', [values.assigneeId, values.teamId, values.inboxId, values.status, resolvedAt, reason, timestamp(), before.id, project.id, project.workspace_id])
+  const previousSnooze = state(before).snoozedUntil
+  const snoozedUntil = values.status === 'snoozed' ? values.snoozedUntil === undefined ? previousSnooze : values.snoozedUntil : null
+  await query('UPDATE support_conversations SET assignee_id = ?, team_id = ?, inbox_id = ?, status = ?, resolved_at = ?, snoozed_until = ?, routing_reason = ?, updated_at = ? WHERE id = ? AND project_id = ? AND workspace_id = ?', [values.assigneeId, values.teamId, values.inboxId, values.status, resolvedAt, snoozedUntil, reason, timestamp(), before.id, project.id, project.workspace_id])
   const after = await conversation(project, before.id)
   await audit(project, before, after, actor, reason)
   return after
@@ -69,6 +71,13 @@ export async function routeConversation(project: Row, id: unknown, input: Row, a
     if (!['manual', 'auto'].includes(String(mode))) fail(422, 'invalid_input', 'Routing mode must be manual or auto.')
     const status = input.status ?? before.status
     if (!conversationStatuses.some(value => value === status)) fail(422, 'invalid_input', 'Unknown conversation status.')
+    const snoozedUntil = input.snoozedUntil
+    if (snoozedUntil !== undefined) {
+      if (actor.source !== 'manual' || status !== 'snoozed')
+        fail(422, 'invalid_snooze', 'A follow-up time applies to a snoozed conversation.')
+      if (snoozedUntil !== null && (typeof snoozedUntil !== 'number' || !Number.isSafeInteger(snoozedUntil) || snoozedUntil <= Date.now() || !Number.isFinite(new Date(snoozedUntil).getTime())))
+        fail(422, 'invalid_snooze', 'Choose a future follow-up time.')
+    }
     const teamId = Number(selected?.team_id ?? 0)
     let assigneeId = 0, reason = 'unassigned'
     if (actor.source === 'manual' && principal && !['owner', 'admin'].includes(String(principal.role)) && (input.assigneeId !== undefined || input.inboxId !== undefined || mode === 'auto')) {
@@ -97,7 +106,7 @@ export async function routeConversation(project: Row, id: unknown, input: Row, a
         else reason = 'manual_assignment'
       }
     }
-    const after = await writeRouting(project, before, { assigneeId, inboxId: Number(selectedId), teamId, status: String(status) }, actor, reason)
+    const after = await writeRouting(project, before, { assigneeId, inboxId: Number(selectedId), teamId, status: String(status), snoozedUntil }, actor, reason)
     return { conversation: summary(after, true), routing: state(after), reason }
   })
 }
@@ -105,6 +114,21 @@ export async function routeConversation(project: Row, id: unknown, input: Row, a
 export async function routeNewConversation(project: Row, conversationId: unknown) {
   const selected = await one('SELECT i.id FROM support_team_inboxes i JOIN support_teams t ON t.id = i.team_id AND t.workspace_id = i.workspace_id WHERE i.project_id = ? AND i.workspace_id = ? AND i.is_default = ? AND i.active = ? AND t.active = ? ORDER BY i.id ASC LIMIT 1', [project.id, project.workspace_id, true, true, true])
   return selected ? await routeConversation(project, conversationId, { inboxId: Number(selected.id), mode: 'auto' }, { source: 'ingress' }) : null
+}
+
+export async function reopenSnoozedConversations() {
+  const now = Date.now()
+  const pending = await query("SELECT id, project_id, workspace_id, snoozed_until FROM support_conversations WHERE status = 'snoozed' AND snoozed_until <= ? ORDER BY snoozed_until, id LIMIT 100", [now])
+  let reopened = 0
+  for (const item of pending) {
+    reopened += await workspaceTransaction(Number(item.workspace_id), async () => {
+      const current = await one("SELECT id FROM support_conversations WHERE id = ? AND project_id = ? AND workspace_id = ? AND status = 'snoozed' AND snoozed_until = ?", [item.id, item.project_id, item.workspace_id, item.snoozed_until])
+      if (!current) return 0
+      await routeConversation({ id: item.project_id, workspace_id: item.workspace_id }, current.id, { status: 'open' }, { source: 'snooze' })
+      return 1
+    })
+  }
+  return { reopened }
 }
 
 export async function drainInboxOverflow() {

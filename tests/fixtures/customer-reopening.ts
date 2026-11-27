@@ -8,6 +8,7 @@ import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { config, overridesReady } from '@stacksjs/config'
 import { route } from '@stacksjs/router'
 import { injectGlobalAutoImports } from '@stacksjs/server'
+import { storeJob } from '@stacksjs/queue/utils'
 import { assertIsolatedOk, runIsolated } from '@stacksjs/testing/isolated'
 import { insert, one, query, workspaceTransaction } from '../../app/Support/database'
 import { customerReopenWindowMs } from '../../app/Support/reopening'
@@ -86,6 +87,51 @@ try {
     const beforeSnooze = await usage(Number(workspace.id), 'conversations')
     const resumed = await send(snoozed)
     check(resumed.status === 201 && resumed.data.message.conversation_id === snoozed && (await row(snoozed)).status === 'open' && await usage(Number(workspace.id), 'conversations') === beforeSnooze, 'snoozed requests resume their existing admission at any age')
+    const timed = await create()
+    const wakeAt = now + 60_000
+    const timedSnooze = await http(prefix + `/conversations/${timed}`, 'PATCH', { status: 'snoozed', snoozedUntil: wakeAt }, agent.token)
+    check(timedSnooze.status === 200 && timedSnooze.data.conversation.snoozed_until === wakeAt && Number((await row(timed)).snoozed_until) === wakeAt, 'an active agent can schedule the exact future follow-up on the existing conversation')
+    check((await patch(timed, { status: 'open', snoozedUntil: wakeAt })).status === 422
+      && (await patch(timed, { snoozedUntil: now })).status === 422
+      && (await patch(timed, { snoozedUntil: String(wakeAt) })).status === 422
+      && Number((await row(timed)).snoozed_until) === wakeAt, 'invalid times and conflicting status cannot alter an existing schedule')
+    check((await http(`/support/projects/${sibling.public_id}/conversations/${timed}`, 'PATCH', { status: 'snoozed', snoozedUntil: wakeAt }, agent.token)).status === 404, 'agent cannot schedule a conversation through a sibling project')
+    const customerSnooze = await fetch(base + widgetPrefix + `/conversations/${timed}`, { headers: { origin, authorization: 'Bearer ' + token } })
+    check(customerSnooze.status === 200 && !Object.hasOwn((await customerSnooze.json() as any).conversation, 'snoozed_until'), 'customer history omits the internal follow-up time')
+    const scheduledIds = []
+    for (let index = 0; index < 5; index++) {
+      const id = await create()
+      check((await patch(id, { status: 'snoozed', ...(index < 4 ? { snoozedUntil: wakeAt } : {}) })).status === 200, 'set up scheduled and indefinite snoozes')
+      scheduledIds.push(id)
+    }
+    const [retimed, closed, manuallyOpened, replied, indefinite] = scheduledIds
+    check((await patch(retimed, { snoozedUntil: wakeAt + 60_000 })).data.conversation.snoozed_until === wakeAt + 60_000, 'agent can reschedule an existing deadline')
+    check((await patch(closed, { status: 'closed' })).data.conversation.snoozed_until === null
+      && (await patch(manuallyOpened, { status: 'open' })).data.conversation.snoozed_until === null,
+    'closing and manually reopening clear the deadline')
+    const earlyReply = await send(replied)
+    check(earlyReply.status === 201 && earlyReply.data.message.conversation_id === replied && (await row(replied)).snoozed_until === null, 'earlier customer reply reopens the same conversation and clears its deadline')
+    await http(`/support/workspaces/${workspace.id}/routing-agents`, 'POST', { userId: agent.id, availability: 'available', capacity: 1 }, owner.token)
+    check((await patch(timed, { assigneeId: agent.id })).data.conversation.snoozed_until === wakeAt, 'a routing-only change preserves the scheduled time')
+    const beforeWakeUsage = await usage(Number(workspace.id), 'conversations')
+    const beforeWakeMessages = Number((await one('SELECT COUNT(*) AS count FROM support_messages WHERE conversation_id = ?', [timed]))!.count)
+    now = wakeAt
+    for (let attempt = 0; attempt < 2; attempt++)
+      await storeJob('ReopenSnoozedConversations', { queue: 'support-workflows', maxTries: 1, timeout: 30 })
+    const worker = await runIsolated('tests/fixtures/snooze-worker.ts', { args: [String(now)], env: { QUEUE_DRIVER: 'database', BUN_OPTIONS: undefined }, envFile: false, preload: [], timeoutMs: 35000 })
+    assertIsolatedOk(worker, 'PASS scheduled snooze queue')
+    const auditWake = (await http(prefix + `/conversations/${timed}/routing-audit`, 'GET', undefined, owner.token)).data.assignments
+    const openCases = (await http(prefix + '/inbox?status=open', 'GET', undefined, agent.token)).data.conversations
+    check(openCases.some((item: { id: string }) => item.id === timed) && (await row(timed)).status === 'open' && (await row(timed)).snoozed_until === null
+      && Number((await row(timed)).assignee_id) === 0 && (await row(timed)).routing_reason === 'agent_capacity'
+      && auditWake.filter((item: { source: string }) => item.source === 'snooze').length === 1, 'restarted native queue reopens a due case once and respects the occupied agent slot')
+    check((await row(retimed)).status === 'snoozed' && Number((await row(retimed)).snoozed_until) === wakeAt + 60_000
+      && (await row(closed)).status === 'closed' && (await row(manuallyOpened)).status === 'open'
+      && (await row(replied)).status === 'open' && (await row(indefinite)).status === 'snoozed', 'due work leaves rescheduled, closed, reopened and legacy snoozes alone')
+    check(await usage(Number(workspace.id), 'conversations') === beforeWakeUsage
+      && Number((await one('SELECT COUNT(*) AS count FROM support_messages WHERE conversation_id = ?', [timed]))!.count) === beforeWakeMessages,
+    'automatic follow-up adds no customer message or conversation charge')
+    await http(`/support/workspaces/${workspace.id}/routing-agents`, 'POST', { userId: agent.id, availability: 'available', capacity: 10 }, owner.token)
     // Clock remains controlled at the comparison boundary, without expiring fixture sessions.
     await query('UPDATE support_customer_sessions SET expires_at = ?', [now + 86400000])
     const unknown = await create(); await query("UPDATE support_conversations SET status = 'closed', resolved_at = 0, updated_at = ? WHERE id = ?", ['2000-01-01T00:00:00.000Z', unknown])

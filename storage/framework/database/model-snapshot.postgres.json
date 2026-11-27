@@ -984,6 +984,14 @@
             "isUnique": false,
             "isNullable": true,
             "hasDefault": false
+          },
+          {
+            "name": "snoozed_until",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": true,
+            "hasDefault": false
           }
         ],
         "indexes": [
@@ -1021,6 +1029,15 @@
               "continued_from_id"
             ],
             "type": "unique"
+          },
+          {
+            "name": "support_conversation_snoozed",
+            "columns": [
+              "status",
+              "snoozed_until",
+              "id"
+            ],
+            "type": "index"
           }
         ]
       },
@@ -10279,7 +10296,7 @@
       }
     ]
   },
-  "hash": "6da28a387382d232687f0c1512e319a81d87548e51372b7a727a25a63fb03898",
+  "hash": "f01440b9c7f0a827d07c16d8c40668f4422547c797b5ad69184afb6075f111bc",
   "dialect": "postgres",
-  "updatedAt": "2026-11-27T18:06:38.654Z"
+  "updatedAt": "2026-11-27T19:29:58.490Z"
 }

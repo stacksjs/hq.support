@@ -68,6 +68,14 @@ supports Escape, backdrop and close-button dismissal. Closing returns focus to
 the trigger. The same native assignment and claim/release controls remain
 accessible at 375px; opening or dismissing the drawer preserves the reply draft.
 
+### Scheduled follow-ups
+
+Choose **Snooze** in a conversation and set a follow-up time in your local time zone. The inbox shows the scheduled time on the thread and its list row. Open the same control to change it, or choose **Reopen now** to bring the conversation back immediately. A customer reply also reopens the conversation and clears its deadline.
+
+The existing conversation PATCH route accepts a future UTC epoch millisecond value in `snoozedUntil` when the resulting status is `snoozed`. Pass `null` to keep a conversation snoozed indefinitely. The authenticated agent list and thread return `snoozed_until`.
+
+The native `ReopenSnoozedConversations` job checks the oldest due conversations every minute on `support-workflows`. It verifies that the deadline still matches under the workspace lock and applies the normal reopen routing and capacity rules. A scheduled reopen records assignment provenance and refreshes the open inbox. The visible first page refreshes every minute and when you return to the tab. Use **Refresh inbox** to reload after paging through older results.
+
 ### Agent collaboration
 
 The selected conversation shows other signed-in viewers. A teammate composing

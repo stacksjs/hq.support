@@ -252,6 +252,7 @@ declare global {
   const DrainInboxOverflow: typeof import('../../../app/Jobs/DrainInboxOverflow')['default']
   const IndexSupportKnowledge: typeof import('../../../app/Jobs/IndexSupportKnowledge')['default']
   const PruneInboxPresence: typeof import('../../../app/Jobs/PruneInboxPresence')['default']
+  const ReopenSnoozedConversations: typeof import('../../../app/Jobs/ReopenSnoozedConversations')['default']
   const RunChannelDelivery: typeof import('../../../app/Jobs/RunChannelDelivery')['default']
   const RunSupportEmail: typeof import('../../../app/Jobs/RunSupportEmail')['default']
   const RunSupportImport: typeof import('../../../app/Jobs/RunSupportImport')['default']

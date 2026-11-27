@@ -1,4 +1,11 @@
 en:
+  snoozeConversation: "Snooze"
+  snoozeLocalTime: "Follow-up time (local)"
+  snoozeSave: "Set follow-up"
+  snoozeCancel: "Cancel"
+  snoozeFuture: "Choose a valid future time."
+  snoozedUntil: "Follow-up scheduled for {time}"
+  reopenSnoozed: "Reopen now"
   customerTyping: "Customer is typing…"
   savedReplies: "Saved replies"
   savedReplySearch: "Search saved replies"
@@ -43,6 +50,13 @@ en:
   retentionLastRedaction: "Last redaction"
 
 de:
+  snoozeConversation: "Zurückstellen"
+  snoozeLocalTime: "Wiedervorlage (Ortszeit)"
+  snoozeSave: "Wiedervorlage festlegen"
+  snoozeCancel: "Abbrechen"
+  snoozeFuture: "Wähle einen gültigen Zeitpunkt in der Zukunft."
+  snoozedUntil: "Wird am {time} wieder geöffnet"
+  reopenSnoozed: "Jetzt wieder öffnen"
   customerTyping: "Der Kunde schreibt…"
   savedReplies: "Gespeicherte Antworten"
   savedReplySearch: "Gespeicherte Antworten durchsuchen"
@@ -87,6 +101,13 @@ de:
   retentionLastRedaction: "Letzte Schwärzung"
 
 ar:
+  snoozeConversation: "تأجيل"
+  snoozeLocalTime: "وقت المتابعة (بالتوقيت المحلي)"
+  snoozeSave: "تعيين المتابعة"
+  snoozeCancel: "إلغاء"
+  snoozeFuture: "اختر وقتًا صالحًا في المستقبل."
+  snoozedUntil: "ستُفتح المحادثة مجددًا في {time}"
+  reopenSnoozed: "إعادة الفتح الآن"
   customerTyping: "العميل يكتب…"
   savedReplies: "الردود المحفوظة"
   savedReplySearch: "البحث في الردود المحفوظة"

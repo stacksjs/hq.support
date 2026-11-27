@@ -11,7 +11,7 @@ import { injectGlobalAutoImports } from '@stacksjs/server'
 import { route } from '@stacksjs/router'
 import { generateStaticSite } from '@stacksjs/stx/ssg'
 import { launch, navigate, waitFor, closeSharedBrowsers } from '@stacksjs/testing/browser'
-import { insert, one } from '../../app/Support/database'
+import { insert, one, query } from '../../app/Support/database'
 
 await overridesReady
 if (config.database.queryLogging) config.database.queryLogging.enabled = false
@@ -618,6 +618,61 @@ try {
     await evaluate(`window.fetch = window.fixtureSavedReplyFetch; delete window.fixtureSavedReplyFetch; delete window.fixtureOldSavedReplyRead`)
   }
   await text('Refund outline')
+
+  await selectConversation('Question about a refund')
+  const snoozedCase = savedCase.data.conversation.id
+  const followUpDraft = 'Draft kept while scheduling follow-up.'
+  await input('#reply', followUpDraft)
+  async function openSnoozeByKeyboard() {
+    await evaluate(`document.querySelector('#snooze-conversation-toggle').focus()`)
+    await pressEnter()
+    await waitFor(() => evaluate(`document.activeElement?.id === 'snooze-conversation-time'`), 5000, { label: 'Keyboard focuses the follow-up time' })
+  }
+  await openSnoozeByKeyboard()
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await waitFor(() => evaluate(`document.activeElement?.id === 'snooze-conversation-toggle' && !document.querySelector('#snooze-conversation-form')`), 5000, { label: 'Escape returns focus to Snooze' })
+  check(true, 'keyboard opens the snooze editor and Escape returns focus without changing the case')
+  await openSnoozeByKeyboard()
+  await input('#snooze-conversation-time', '2000-01-01T00:00')
+  await click('Set follow-up')
+  await text('Choose a valid future time.')
+  check((await one('SELECT snoozed_until FROM support_conversations WHERE id = ?', [snoozedCase]))?.snoozed_until === null, 'past local time produces accessible feedback and no write')
+  const dateInput = await cdp.evaluate<string>(`new Date(Date.now() + 7_200_000 - new Date(Date.now() + 7_200_000).getTimezoneOffset() * 60_000).toISOString().slice(0, 16)`)
+  const expectedWake = await cdp.evaluate<number>(`new Date(${JSON.stringify(dateInput)}).getTime()`)
+  async function scheduleFollowUp() {
+    await input('#snooze-conversation-time', dateInput)
+    await evaluate(`document.querySelector('#snooze-conversation-form button[type="submit"]').focus()`)
+    await pressEnter()
+    await waitFor(() => evaluate(`!!document.querySelector('#conversation-snooze-time') && document.activeElement?.id === 'snooze-conversation-toggle'`), 10000, { label: 'Follow-up is visible and keyboard focus returns' })
+  }
+  await scheduleFollowUp()
+  check(Number((await one('SELECT snoozed_until FROM support_conversations WHERE id = ?', [snoozedCase]))?.snoozed_until) === expectedWake, 'the browser saves the chosen local time as an exact UTC deadline')
+  await evaluate(`document.querySelector('#reopen-snoozed-conversation').focus()`)
+  await pressEnter()
+  await waitFor(() => evaluate(`!document.querySelector('#reopen-snoozed-conversation') && document.activeElement?.id === 'snooze-conversation-toggle'`), 10000, { label: 'Keyboard manually reopens the conversation' })
+  check(await evaluate(`document.querySelector('#reply').value === ${JSON.stringify(followUpDraft)}`), 'snoozing and reopening preserve the active reply draft')
+  await openSnoozeByKeyboard()
+  await scheduleFollowUp()
+  await click('Open')
+  const caseListed = `Array.from(document.querySelectorAll('.conversation-row strong')).some(el => el.textContent.trim() === 'Question about a refund')`
+  await waitFor(() => evaluate(`!(${caseListed}) && !document.querySelector('[aria-label="Refresh inbox"]').disabled`), 10000, { label: 'Snoozed case leaves open inbox' })
+  await query('UPDATE support_conversations SET snoozed_until = ? WHERE id = ?', [Date.now() - 1, snoozedCase])
+  await runJob('ReopenSnoozedConversations')
+  await evaluate(`document.dispatchEvent(new Event('visibilitychange'))`)
+  await waitFor(() => evaluate(`${caseListed} && !document.querySelector('#conversation-snooze-time')`), 10000, { label: 'Visible inbox sees the reopened case following the scheduled job' })
+  await text('Scheduled follow-up')
+  check(await evaluate(`document.querySelector('#reply').value === ${JSON.stringify(followUpDraft)}`), 'the completed follow-up refreshes the visible inbox, audit history and active draft')
+  await openSnoozeByKeyboard()
+  await scheduleFollowUp()
+  await click('Snoozed')
+  await waitFor(() => evaluate(`${caseListed} && !document.querySelector('[aria-label="Refresh inbox"]').disabled`), 10000, { label: 'Snoozed inbox shows the next follow-up' })
+  const earlyResponse = await fetch(apiOrigin + `/api/widget/projects/${project.public_id}/conversations/${snoozedCase}/messages`, { method: 'POST', headers: { origin, authorization: `Bearer ${customer}`, 'content-type': 'application/json' }, body: JSON.stringify({ body: 'Customer replied before the due time.', idempotencyKey: 'snooze-early-reply-browser' }) })
+  assert.equal(earlyResponse.status, 201)
+  await evaluate(`document.dispatchEvent(new Event('visibilitychange'))`)
+  await waitFor(() => evaluate(`!(${caseListed}) && !document.querySelector('#conversation-snooze-time') && !document.querySelector('#reopen-snoozed-conversation')`), 10000, { label: 'Snoozed list and selected thread both clear the future follow-up after an early reply' })
+  await text('Customer replied before the due time.')
+  check(await evaluate(`document.querySelector('#reply').value === ${JSON.stringify(followUpDraft)}`), 'early customer replies refresh the selected thread outside the snoozed filter and preserve the draft')
 
   await openMigrationSettings('owner')
   await input('#settings-project', String(project.public_id))

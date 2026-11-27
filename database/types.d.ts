@@ -1887,6 +1887,7 @@ declare module '@stacksjs/database' {
       created_at: string
       updated_at: string | null
       resolved_at: number | bigint
+      snoozed_until: number | bigint | null
       continued_from_id: number | bigint | null
       continuation_id: number | bigint | null
       team_id: number | bigint

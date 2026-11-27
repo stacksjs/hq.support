@@ -983,6 +983,14 @@
             "isUnique": false,
             "isNullable": true,
             "hasDefault": false
+          },
+          {
+            "name": "snoozed_until",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": true,
+            "hasDefault": false
           }
         ],
         "indexes": [
@@ -1020,6 +1028,15 @@
               "continued_from_id"
             ],
             "type": "unique"
+          },
+          {
+            "name": "support_conversation_snoozed",
+            "columns": [
+              "status",
+              "snoozed_until",
+              "id"
+            ],
+            "type": "index"
           }
         ]
       },
@@ -10274,7 +10291,7 @@
       }
     ]
   },
-  "hash": "cac4e7a7e684a76aa5fe8b8a106abfb2d081d1b5f8e0af0c3e43129d5cc204f7",
+  "hash": "2c0c9611a1044d087889a753290619513e4a3c0cde33ee2504bce6b40a2a7b48",
   "dialect": "sqlite",
-  "updatedAt": "2026-11-27T18:06:38.445Z"
+  "updatedAt": "2026-11-27T19:29:55.818Z"
 }

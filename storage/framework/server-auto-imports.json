@@ -160,6 +160,7 @@
     "Referral": true,
     "ReferralCode": true,
     "Release": true,
+    "ReopenSnoozedConversations": true,
     "Review": true,
     "RunChannelDelivery": true,
     "RunSupportEmail": true,

@@ -9,7 +9,7 @@ import { createInboxPresence } from './inbox-presence'
 import { createSavedReplyList } from './saved-replies'
 
 interface Project { id: string | number, public_id: string, name: string, workspace_id: string | number }
-interface Conversation { id: string | number, subject: string, status: string, channel?: string, customer_id?: string | number, updated_at?: string, unread_count?: number, assignee_id?: string | number, team_id?: string | number, inbox_id?: string | number, routing_reason?: string, resolved_at?: number, continued_from_id?: string | null, continuation_id?: string | null }
+interface Conversation { id: string | number, subject: string, status: string, channel?: string, customer_id?: string | number, updated_at?: string, unread_count?: number, assignee_id?: string | number, team_id?: string | number, inbox_id?: string | number, routing_reason?: string, resolved_at?: number, snoozed_until?: number | null, continued_from_id?: string | null, continuation_id?: string | null }
 interface ReplyImage { file: File, key: string, id?: string }
 interface Message { id: string | number, body: string, visibility: string, author_type: string, created_at: string }
 interface Contact { id?: string | number, name?: string, email?: string, company?: string }
@@ -136,6 +136,7 @@ export function createInbox() {
   })
   const drafts = new Map<string, { body: string, visibility: string, image: ReplyImage | null, key: string, fingerprint: string, cursor: string | undefined, replyAtStart: string | null }>()
   let retryFingerprint = '', retryCursor: string | undefined, routingKey = '', routingFingerprint = '', messageRefresh = 0
+  const snoozeOpen = state(false), snoozeTime = state(''), snoozeInvalid = state(false)
   const seenReply = state('0'), replyAtStart = state<string | null>(null)
   const presence = createInboxPresence(request, requestResponse, async () => { await refreshConversation() }, conversationAccessLost)
   const viewerNames = derived(() => presence.viewers().map(viewer => person(viewer.userId)).join(', '))
@@ -233,12 +234,13 @@ export function createInbox() {
     if (item.source === 'workflow') return `Workflow run #${item.workflow_run_id}`
     if (item.source === 'ingress') return 'Default inbox routing'
     if (item.source === 'overflow') return 'Automatic overflow assignment'
+    if (item.source === 'snooze') return 'Scheduled follow-up'
     return `${item.source === 'configuration' ? 'Team configuration' : 'Manual change'} · ${person(item.actor_id)}`
   }
   function syncRouting(item: Conversation) { routingInbox.set(String(item.inbox_id || 0)); routingAssignee.set(String(item.assignee_id || 0)) }
   function listPath(cursor?: string | null) { const query = new URLSearchParams(); if (search().trim()) query.set('q', search().trim()); if (inboxFilter()) query.set('inboxId', inboxFilter()); if (filter() !== 'all') query.set('status', filter()); if (cursor) query.set('cursor', cursor); return `/api/support/projects/${encodeURIComponent(project())}/inbox?${query}` }
   function queryIssue() { return search().length > 200 ? 'Search is limited to 200 characters.' : search().trim().length === 1 ? 'Enter at least 2 characters to search subjects and messages.' : '' }
-  function cancelList() { generation++; listController?.abort(); listController = undefined; debouncedSearch.cancel() }
+  function cancelList() { generation++; listController?.abort(); listController = undefined; visibleListRequest?.abort(); debouncedSearch.cancel() }
   const debouncedSearch = useDebounce(() => { if (!disposed) void refresh() }, 300)
   function searchChanged() {
     cancelList(); conversations.set([]); nextCursor.set(null); searchMode.set(''); error.set(''); searchError.set(queryIssue())
@@ -247,9 +249,10 @@ export function createInbox() {
     if (!search().trim()) void refresh()
     else debouncedSearch()
   }
-  function clearPrivateState() { presence.stop(!disposed); closeSavedReplies(); drafts.clear(); conversations.set([]); current.set(null); clearRetentionEvidence(); resetTranscript(); resetAttachments(); contact.set(null); draft.set(''); replyImage.set(null); replyImageError.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = '' }
+  function clearPrivateState() { presence.stop(!disposed); closeSavedReplies(); resetSnooze(); drafts.clear(); conversations.set([]); current.set(null); clearRetentionEvidence(); resetTranscript(); resetAttachments(); contact.set(null); draft.set(''); replyImage.set(null); replyImageError.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = '' }
   function conversationAccessLost() {
     closeSavedReplies()
+    resetSnooze()
     selection++
     clearRetentionEvidence()
     const item = current()
@@ -318,7 +321,7 @@ export function createInbox() {
   async function loadMore() {
     if (!nextCursor() || loading() || queryIssue()) return
     const version = generation, selectedProject = project(), controller = new AbortController(); listController = controller; loading.set(true)
-    try { const data = await request(listPath(nextCursor()), { signal: controller.signal }); if (disposed || version !== generation || selectedProject !== project()) return; conversations.update(rows => [...rows, ...(data.conversations || []).filter((row: Conversation) => !rows.some(item => String(item.id) === String(row.id)))]); nextCursor.set(data.nextCursor || null) }
+    try { const data = await request(listPath(nextCursor()), { signal: controller.signal }); if (disposed || version !== generation || selectedProject !== project()) return; conversations.update(rows => [...rows, ...(data.conversations || []).filter((row: Conversation) => !rows.some(item => String(item.id) === String(row.id)))]); nextCursor.set(data.nextCursor || null); loadedAdditionalPage = true }
     catch (failure) { if (!disposed && version === generation) error.set(failure instanceof Error ? failure.message : 'More conversations could not be loaded.') }
     finally { if (!disposed && version === generation) loading.set(false) }
   }
@@ -342,6 +345,8 @@ export function createInbox() {
   let activeProject = ''
   let generation = 0
   let selection = 0
+  let loadedAdditionalPage = false
+  let visibleListRequest: AbortController | undefined
   let csrf = ''
   let retryKey = ''
   let disposed = false
@@ -399,6 +404,7 @@ export function createInbox() {
     if (!project()) return
     cancelList()
     const version = generation, controller = new AbortController(); listController = controller
+    const selected = selection, item = current()
     error.set(''); searchError.set(queryIssue()); nextCursor.set(null); searchMode.set('')
     if (searchError()) { conversations.set([]); loading.set(false); return }
     loading.set(true)
@@ -406,12 +412,61 @@ export function createInbox() {
       const [data] = await Promise.all([request(listPath(), { signal: controller.signal }), loadCatalog(version)])
       if (disposed || version !== generation) return
       conversations.set(data.conversations || [])
+      loadedAdditionalPage = false
       nextCursor.set(data.nextCursor || null); searchMode.set(data.search?.mode || '')
-      const selected = (data.conversations || []).find((row: Conversation) => String(row.id) === String(current()?.id))
-      if (selected && current()) current.set({ ...current()!, ...selected })
+      await reconcileSelectedConversation(data.conversations || [], item, version, selected, controller.signal)
     }
     catch (failure) { if (!disposed && version === generation) error.set(failure instanceof Error ? failure.message : 'Inbox could not be refreshed.') }
     finally { if (!disposed && version === generation) loading.set(false) }
+  }
+
+  function canRefreshVisibleInbox() {
+    return !disposed && document.visibilityState === 'visible' && !!project() && !!user() && !loading() && !threadLoading()
+      && !sending() && !routingBusy() && !loadedAdditionalPage && !search().trim()
+  }
+
+  async function reconcileSelectedConversation(rows: Conversation[], item: Conversation | null, version: number, selected: number, signal: AbortSignal) {
+    const isCurrent = () => !disposed && !signal.aborted && generation === version && selection === selected && current() === item && !routingBusy()
+    if (!item || !isCurrent()) return
+    let updated = rows.find(row => String(row.id) === String(item.id))
+    if (!updated && item.status === 'snoozed') {
+      try {
+        const detail: ThreadDetail = await request(conversationPath(project(), item.id) + '?limit=1&attachmentLimit=1', { signal })
+        updated = detail.conversation
+      }
+      catch (failure) {
+        const status = (failure as { status?: number }).status
+        if (isCurrent() && (status === 403 || status === 404)) conversationAccessLost()
+      }
+    }
+    if (!updated || !isCurrent()) return
+    const next = { ...item, ...updated }
+    if (JSON.stringify(next) === JSON.stringify(item)) return
+    current.set(next)
+    const routingChanged = item.status !== next.status || item.snoozed_until !== next.snoozed_until
+      || item.assignee_id !== next.assignee_id || item.inbox_id !== next.inbox_id || item.routing_reason !== next.routing_reason
+    if (!routingChanged) return
+    if (routingInbox() === String(item.inbox_id || 0) && routingAssignee() === String(item.assignee_id || 0)) syncRouting(next)
+    routingNotice.set(routingReasonLabel(next.routing_reason))
+    if (item.status === 'snoozed' && next.status === 'open') void refreshConversation().catch(() => undefined)
+    await loadHistory()
+  }
+
+  async function refreshVisibleInbox() {
+    if (visibleListRequest || !canRefreshVisibleInbox()) return
+    const controller = new AbortController(), version = generation, selected = selection, item = current(), previous = conversations()
+    const timeout = setTimeout(() => controller.abort(), 8_000)
+    visibleListRequest = controller
+    try {
+      const data = await request(listPath(), { signal: controller.signal })
+      if (controller.signal.aborted || version !== generation || previous !== conversations() || !canRefreshVisibleInbox()) return
+      const rows: Conversation[] = data.conversations || []
+      if (JSON.stringify(rows) !== JSON.stringify(previous)) conversations.set(rows)
+      nextCursor.set(data.nextCursor || null)
+      await reconcileSelectedConversation(rows, item, version, selected, controller.signal)
+    }
+    catch { /* A failed background read is retried on the next visible refresh. */ }
+    finally { clearTimeout(timeout); if (visibleListRequest === controller) visibleListRequest = undefined }
   }
 
   async function changeProject() {
@@ -420,6 +475,7 @@ export function createInbox() {
     cancelList(); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); conversations.set([]); threadLoading.set(false)
     selection++
     closeSavedReplies()
+    resetSnooze()
     clearRetentionEvidence()
     current.set(null)
     contact.set(null)
@@ -574,6 +630,7 @@ export function createInbox() {
     if (sending() || routingBusy()) return
     stashDraft()
     closeSavedReplies()
+    resetSnooze()
     presence.stop()
     const version = ++selection
     const selectedProject = project()
@@ -743,19 +800,77 @@ export function createInbox() {
     current.set(data.conversation)
   }
 
-  async function changeStatus() {
+  function resetSnooze() {
+    snoozeOpen.set(false)
+    snoozeTime.set('')
+    snoozeInvalid.set(false)
+  }
+
+  async function dismissSnooze() {
+    const selected = selection
+    resetSnooze()
+    await nextTick()
+    if (!disposed && selected === selection) document.getElementById('snooze-conversation-toggle')?.focus()
+  }
+
+  function localDateInput(date: Date) {
+    const pad = (value: number) => String(value).padStart(2, '0')
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+  }
+
+  async function toggleSnooze() {
+    if (snoozeOpen()) { await dismissSnooze(); return }
+    const item = current(), selected = selection
+    if (!item || item.status === 'closed' || threadLoading() || sending() || routingBusy()) return
+    snoozeTime.set(localDateInput(new Date(item.snoozed_until || Date.now() + 3_600_000)))
+    snoozeOpen.set(true)
+    await nextTick()
+    if (!disposed && selected === selection && snoozeOpen()) document.getElementById('snooze-conversation-time')?.focus()
+  }
+
+  function snoozeKey(event: KeyboardEvent) {
+    if (event.key !== 'Escape' || sending()) return
+    event.preventDefault()
+    event.stopPropagation()
+    void dismissSnooze()
+  }
+
+  async function saveSnooze() {
+    const value = snoozeTime()
+    const previous = current()?.snoozed_until
+    const date = previous && localDateInput(new Date(previous)) === value ? new Date(previous) : new Date(value)
+    const time = date.getTime()
+    if (!Number.isFinite(time) || time <= Date.now() || localDateInput(date) !== value) {
+      snoozeInvalid.set(true)
+      return
+    }
+    if (await changeStatus('snoozed', time)) await dismissSnooze()
+  }
+
+  async function reopenSnoozed() {
+    if (current()?.status === 'snoozed' && await changeStatus('open')) await dismissSnooze()
+  }
+
+  function formatSnooze(time: number, locale: string) {
+    return new Date(time).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' })
+  }
+
+  async function changeStatus(nextStatus?: 'open' | 'closed' | 'snoozed', snoozedUntil?: number) {
     const item = current(), selectedProject = project(), selected = selection
     if (!item || !contact() || threadLoading() || sending() || routingBusy()) return
     sending.set(true)
     error.set('')
     try {
-      const status = item.status === 'closed' ? 'open' : 'closed'
-      const data = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(item.id))}`, { method: 'PATCH', body: JSON.stringify({ status }) })
+      const status = nextStatus ?? (item.status === 'closed' ? 'open' : 'closed')
+      const data = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(item.id))}`, { method: 'PATCH', body: JSON.stringify({ status, snoozedUntil }) })
       if (disposed || selectedProject !== project() || selected !== selection) return
       current.set(data.conversation); syncRouting(data.conversation)
       conversations.update(items => items.map(row => String(row.id) === String(item.id) ? { ...row, ...data.conversation } : row))
-      routingNotice.set(routingReasonLabel(data.reason)); await Promise.all([loadCatalog(generation), loadHistory()])
-      notice.set(status === 'closed' ? 'Conversation resolved.' : 'Conversation reopened.')
+      routingNotice.set(routingReasonLabel(data.reason))
+      if (status === 'closed') resetSnooze()
+      notice.set(status === 'snoozed' ? '' : status === 'closed' ? 'Conversation resolved.' : 'Conversation reopened.')
+      await Promise.all([refresh(), loadHistory()])
+      return selected === selection && selectedProject === project() && !disposed
     }
     catch (failure) { if (!disposed && selected === selection) error.set(failure instanceof Error ? failure.message : 'Status could not be changed.') }
     finally { if (!disposed && selected === selection) sending.set(false) }
@@ -790,7 +905,11 @@ export function createInbox() {
     const date = new Date(value)
     return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(locale, { month: 'short', day: 'numeric' })
   }
-  function setupPresence() { detailsCleanup.push(presence.listen()) }
+  function setupPresence() {
+    const refreshOnReturn = useEventListener('visibilitychange', () => void refreshVisibleInbox(), { target: document })
+    const refreshTimer = setInterval(() => void refreshVisibleInbox(), 60_000)
+    detailsCleanup.push(presence.listen(), () => { refreshOnReturn.remove(); clearInterval(refreshTimer) })
+  }
   function destroy() { presence.stop(); disposed = true; cancelList(); selection++; clearPrivateState(); user.set(null); workspaces.set([]); projects.set([]); project.set(''); activeProject = '';  for (const cleanup of detailsCleanup.splice(0)) cleanup(); detailsScroll?.set(false); detailsOpener = null }
-  return { savedReplies, savedRepliesOpen, savedReplyTooLong, toggleSavedReplies, savedReplyPickerKey, savedReplySearchKey, insertSavedReply, retentionEvidence, retentionLoading, retentionError, loadRetentionEvidence, messagesNext, messagesLoading, messagesError, newerMessagesAvailable, pendingAgentReply, replyTimelineBlocked, loadOlderMessages, attachments, attachmentsNext, attachmentsLoading, attachmentsError, attachmentDownloadPath, loadOlderAttachments, canAttachReplyImage, hasReply, replyImage, replyImageError, selectReplyImage, removeReplyImage, searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy, setupPresence, viewerNames, composingNames, customerTyping: presence.customerTyping, replyChanged, collision, draftActivity, visibilityActivity, reviewReply }
+  return { snoozeOpen, snoozeTime, snoozeInvalid, toggleSnooze, dismissSnooze, snoozeKey, saveSnooze, reopenSnoozed, formatSnooze, savedReplies, savedRepliesOpen, savedReplyTooLong, toggleSavedReplies, savedReplyPickerKey, savedReplySearchKey, insertSavedReply, retentionEvidence, retentionLoading, retentionError, loadRetentionEvidence, messagesNext, messagesLoading, messagesError, newerMessagesAvailable, pendingAgentReply, replyTimelineBlocked, loadOlderMessages, attachments, attachmentsNext, attachmentsLoading, attachmentsError, attachmentDownloadPath, loadOlderAttachments, canAttachReplyImage, hasReply, replyImage, replyImageError, selectReplyImage, removeReplyImage, searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy, setupPresence, viewerNames, composingNames, customerTyping: presence.customerTyping, replyChanged, collision, draftActivity, visibilityActivity, reviewReply }
 }
