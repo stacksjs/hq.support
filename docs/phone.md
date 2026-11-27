@@ -79,6 +79,9 @@ must belong to that parent call and are aggregated before settlement.
   can use one media socket at a time. New calls receive HTTP 503 when capacity
   is full and can connect when an existing session closes. Launch capacity
   still needs a measured rehearsal on the intended voice host.
+- Each active call can queue up to 100 events and 128,000 bytes across both
+  provider streams. Exceeding either bound closes the media session and records
+  which provider encountered backpressure for operator review.
 - Server-only `OPENAI_API_KEY` for the native OpenAI Realtime adapter.
 - `SUPPORT_PHONE_PRICING`, a JSON object keyed by provider account SID. Every
   policy supplies positive integer `telephonyCeilingCentsPerMinute`,
