@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, rm, copyFile, lstat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
+import { retainLibraryRelease } from '@stacksjs/actions/library/release-artifacts'
+import { publishPreparedLibraryRelease } from '@stacksjs/actions/library/release-registry'
 import { launch, navigate, waitFor } from '@stacksjs/testing/browser'
 import { archivePayload, assertRealInstall, directoryPayload, elements, inspectPayload, materialize, packageName, payloadHashes, sha256, siteWidgetPayload } from './lib/support-elements-artifact'
 import type { Payload } from './lib/support-elements-artifact'
@@ -124,6 +126,35 @@ export async function releaseCommand(mode: string, artifact: string, version: st
     return release
   }
   const { release, payload, hosted } = await readRelease(artifact, version, expectedSha)
+  if (mode === 'publish' || mode === 'publish-dry-run') {
+    await reviewedConfig(version)
+    assert.equal(await sha(), expectedSha)
+    const source = { repository: 'stacksjs/hq.support', commit: expectedSha }
+    const temporary = await mkdtemp(resolve(tmpdir(), 'hq-support-retained-release-'))
+    const directory = resolve(temporary, 'candidate')
+    try {
+      const candidate = await retainLibraryRelease({
+        directory, source, tag: 'alpha',
+        packages: [{
+          name: packageName, version, dir: root, access: 'public', registry: 'npm', tarballFiles: payload.size,
+          archivePath: resolve(artifact, 'package.tgz'),
+          hosted: {
+            manifest: 'widgets/manifest.json',
+            files: Object.entries(release.hosted).map(([path, sha256]) => ({
+              path, source: resolve(artifact, 'hosted', path), sha256,
+              ...(path === 'widgets/bundle.js' ? { packagePath: 'dist/bundle.js' } : {}),
+            })),
+          },
+        }],
+      })
+      assert.equal(candidate.packages[0]?.archive.sha256, release.archiveSha256)
+      const dryRun = mode === 'publish-dry-run'
+      const receipt = await publishPreparedLibraryRelease(directory, { cwd: root, source, publisher: 'bun', dryRun })
+      await Bun.write(resolve(artifact, dryRun ? 'publisher-dry-run-report.json' : 'publication-report.json'), JSON.stringify(receipt, null, 2) + '\n')
+      return receipt
+    }
+    finally { await rm(temporary, { recursive: true, force: true }) }
+  }
   if (mode === 'restore') { await reviewedConfig(version); assert.equal(await sha(), expectedSha); await rm(generated, { recursive: true, force: true }); await materialize(payload, generated); return release }
   if (mode === 'verify') { await verifyElementsConsumer(payload, resolve(artifact, 'package.tgz'), version, false); return release }
   if (mode === 'stage-site') {
@@ -132,7 +163,7 @@ export async function releaseCommand(mode: string, artifact: string, version: st
     await materialize(siteWidgetPayload(hosted), resolve(root, 'public'))
     return { version, sourceSha: release.sourceSha }
   }
-  assert.equal(mode, 'registry', 'Expected inspect, prepare, restore, verify, stage-site or registry')
+  assert.equal(mode, 'registry', 'Expected inspect, prepare, restore, verify, stage-site, publish-dry-run, publish or registry')
   const { published, tags } = await readPublishedElements(release)
   const outcome = await verifyElementsConsumer(published, '', version, true)
   await Bun.write(resolve(artifact, 'registry-report.json'), JSON.stringify({ version, sourceSha: expectedSha, verifierSha: await sha(), archiveSha256: release.archiveSha256, tags, ...outcome }, null, 2))

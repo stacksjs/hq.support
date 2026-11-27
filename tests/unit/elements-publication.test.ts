@@ -50,6 +50,24 @@ describe('same-SHA successful main CI gate', () => {
     for (const change of [{ head_sha: 'b'.repeat(40) }, { head_branch: 'feature' }, { event: 'pull_request' }, { status: 'in_progress' }, { conclusion: 'failure' }, { path: '.github/workflows/other.yml' }, { head_repository: { full_name: 'other/fork' } }]) expect(() => assertElementsCiRun({ ...run, ...change }, repository, sha)).toThrow()
   })
 })
+
+test('publication dry-runs the retained archive and limits write credentials to the upload step', async () => {
+  const workflow = Bun.YAML.parse(await Bun.file(new URL('../../.github/workflows/publish-elements.yml', import.meta.url)).text()) as {
+    jobs: Record<string, { needs?: string, steps: { run?: string, env?: Record<string, string> }[] }>
+  }
+  const { verify, publish } = workflow.jobs
+  expect(publish?.needs).toBe('verify')
+  for (const job of [verify!, publish!]) {
+    expect(job.steps.some(step => step.run?.includes('scripts/verify-elements-ci.ts'))).toBe(true)
+    expect(job.steps.some(step => step.run?.includes(' libs:publish') || step.run?.endsWith(' restore'))).toBe(false)
+  }
+  expect(verify!.steps.some(step => step.run?.endsWith(' publish-dry-run'))).toBe(true)
+  expect(verify!.steps.some(step => step.env?.BUN_AUTH_TOKEN || step.env?.NPM_CONFIG_TOKEN)).toBe(false)
+  const writeSteps = publish!.steps.filter(step => step.env?.BUN_AUTH_TOKEN || step.env?.NPM_CONFIG_TOKEN)
+  expect(writeSteps.map(step => step.run)).toEqual(['bun --no-env-file scripts/support-elements-release.ts publish'])
+  expect(publish!.steps.some(step => step.run?.endsWith(' registry'))).toBe(true)
+})
+
 test('production stages the qualified widget bytes and only their supported public paths', () => {
   const version = '0.0.0-0123456789abcdef'
   const prefix = `widgets/${version}`

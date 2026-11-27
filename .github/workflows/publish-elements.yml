@@ -52,19 +52,14 @@ jobs:
           path: storage/framework/runtime/support-elements-release
           run-id: ${{ inputs.ci_run_id }}
           github-token: ${{ github.token }}
-      - name: Restore exact reviewed package without rebuilding
-        run: bun --no-env-file scripts/support-elements-release.ts restore
       - name: Verify archive, strict clean consumer and per-element browser imports
         run: bun --no-env-file scripts/support-elements-release.ts verify
       - name: Verify hosted loader against the same package bundle
         env:
           SUPPORT_BROWSER_ASSETS: storage/framework/runtime/support-elements-release/hosted
         run: bun --no-env-file scripts/qualify-support-browser.ts --skip-build
-      - name: Native npm dry run with explicit alpha tag
-        env:
-          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
-          BUN_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: ./buddy libs:publish --publisher bun --tag alpha --dry-run
+      - name: Dry-run publication of the exact retained archive
+        run: bun --no-env-file scripts/support-elements-release.ts publish-dry-run
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -105,12 +100,11 @@ jobs:
           path: storage/framework/runtime/support-elements-release
           run-id: ${{ inputs.ci_run_id }}
           github-token: ${{ github.token }}
-      - run: bun --no-env-file scripts/support-elements-release.ts restore
-      - name: Publish the restored artifact through native Buddy
+      - name: Publish the original CI archive through native Buddy
         env:
           NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
           BUN_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: ./buddy libs:publish --publisher bun --tag alpha
+        run: bun --no-env-file scripts/support-elements-release.ts publish
       - name: Verify actual public npm bytes, strict install and browser consumers
         run: bun --no-env-file scripts/support-elements-release.ts registry
       - name: Verify hosted loader against the published npm bundle
