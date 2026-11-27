@@ -44,6 +44,47 @@ export async function previewRetention(workspaceId: number) {
   const rows = await candidates(workspaceId, Number(policy.days), 100, Date.now())
   return { policy, conversations: rows.map(row => ({ id: row.id, projectId: row.project_id, updatedAt: row.updated_at })), limit: 100 }
 }
+
+export async function conversationRetentionEvidence(workspaceId: number, conversationId: unknown) {
+  const id = identifier(conversationId)
+  const row = await one(`
+    SELECT c.id, c.project_id, c.status, p.days AS policy_days, p.enabled AS policy_enabled,
+      COALESCE(h.active, FALSE) AS held, e.id AS redaction_id, e.created_at AS redaction_at,
+      (c.subject <> '' AND c.subject <> ?) AS subject_present,
+      (SELECT COUNT(*) FROM support_messages m
+        WHERE m.workspace_id = c.workspace_id AND m.project_id = c.project_id AND m.conversation_id = c.id AND m.body <> '' AND m.body <> ?) AS message_bodies,
+      (SELECT COUNT(*) FROM support_attachments a
+        WHERE a.workspace_id = c.workspace_id AND a.project_id = c.project_id AND a.conversation_id = c.id) AS attachment_records,
+      (SELECT COUNT(*) FROM support_attachments a
+        WHERE a.workspace_id = c.workspace_id AND a.project_id = c.project_id AND a.conversation_id = c.id AND a.status <> 'deleted') AS attachments_not_deleted
+    FROM support_conversations c
+    LEFT JOIN support_enterprise_retention_policies p ON p.workspace_id = c.workspace_id
+    LEFT JOIN support_enterprise_retention_holds h ON h.workspace_id = c.workspace_id AND h.conversation_id = c.id
+    LEFT JOIN support_enterprise_audit_events e ON e.id = (
+      SELECT MAX(audit.id) FROM support_enterprise_audit_events audit
+      WHERE audit.workspace_id = c.workspace_id AND audit.action = 'retention.conversation.redacted' AND audit.target_id = CAST(c.id AS text)
+    )
+    WHERE c.workspace_id = ? AND c.id = ?
+  `, [retentionMarker, retentionMarker, workspaceId, id])
+  if (!row) fail(404, 'not_found', 'Conversation not found.')
+
+  return {
+    scope: 'closed_conversation_content',
+    conversationId: String(row.id),
+    projectId: String(row.project_id),
+    status: row.status,
+    held: Boolean(row.held),
+    policy: row.policy_days == null ? null : { days: Number(row.policy_days), enabled: Boolean(row.policy_enabled) },
+    content: {
+      subjectPresent: Boolean(row.subject_present),
+      messageBodies: Number(row.message_bodies),
+      attachmentRecords: Number(row.attachment_records),
+      attachmentsNotDeleted: Number(row.attachments_not_deleted),
+    },
+    lastRedaction: row.redaction_id == null ? null : { auditEventId: String(row.redaction_id), occurredAt: row.redaction_at },
+  }
+}
+
 function redact(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redact)
   if (!value || typeof value !== 'object') return value

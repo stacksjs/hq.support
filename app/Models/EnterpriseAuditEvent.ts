@@ -6,6 +6,7 @@ export default defineModel({
   table: 'support_enterprise_audit_events',
   traits: { useTimestamps: true },
   dashboard: { access: false },
+  indexes: [{ name: 'support_enterprise_audit_target', columns: ['workspace_id', 'action', 'target_id', 'id'] }],
   attributes: {
     workspaceId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
     actorId: { type: 'bigint', fillable: true, nullable: true, validation: { rule: schema.number().integer() } },

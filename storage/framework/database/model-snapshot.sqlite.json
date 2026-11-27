@@ -4349,7 +4349,18 @@
             "hasDefault": false
           }
         ],
-        "indexes": []
+        "indexes": [
+          {
+            "name": "support_enterprise_audit_target",
+            "columns": [
+              "workspace_id",
+              "action",
+              "target_id",
+              "id"
+            ],
+            "type": "index"
+          }
+        ]
       },
       {
         "table": "support_enterprise_identities",
@@ -10046,7 +10057,7 @@
       }
     ]
   },
-  "hash": "084ab00243d5d372e57093e0f86bae91297d0ae3152a21b88f887735d98d985d",
+  "hash": "8b906b6a337b926d04def3beccfd5011ef6888c26f356cf46094303346b1d249",
   "dialect": "sqlite",
-  "updatedAt": "2026-11-27T05:51:11.945Z"
+  "updatedAt": "2026-11-27T12:36:34.239Z"
 }

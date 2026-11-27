@@ -198,6 +198,19 @@ threads. PUT `/retention/holds/{conversationId}` with `{ "active": true,
 "reason": "..." }` protects a conversation. Hold placement and disabling the
 policy stay available after entitlement expiry; expired licenses stop deletion.
 
+Owners and admins can read `GET /retention/conversations/{conversationId}` for a
+single workspace case. The response gives the current policy, hold and
+conversation state, counts of remaining message bodies and attachment records,
+and the latest completed redaction audit event when one exists. The read stays
+available after licence expiry. Use its `closed_conversation_content` scope and
+audit reference in the protected case record, then record the separate
+disposition of the other stores listed below.
+
+These counts reflect the database at read time. The subject and message counts
+exclude empty values and the retention marker. The attachment counts cover all
+metadata rows and the subset whose status is other than `deleted`. Physical
+storage or backup verification requires evidence from those systems.
+
 A thread must be closed and inactive for the complete window. Open/recent
 threads, legal holds, active AI work, and unfinished attachment writes are
 excluded. Each run redacts message body, conversation subject, associated ticket

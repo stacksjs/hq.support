@@ -34,5 +34,6 @@ route.delete('/scim/v2/{workspace}/Groups/{id}', enterpriseAction('scim.groups.d
 route.get('/support/workspaces/{workspace}/enterprise/retention', enterpriseAction('retention.get', 'GET')).middleware('auth')
 route.put('/support/workspaces/{workspace}/enterprise/retention', enterpriseAction('retention.configure', 'PUT')).middleware('auth')
 route.get('/support/workspaces/{workspace}/enterprise/retention/preview', enterpriseAction('retention.preview', 'GET')).middleware('auth')
+route.get('/support/workspaces/{workspace}/enterprise/retention/conversations/{id}', enterpriseAction('retention.evidence', 'GET')).middleware('auth')
 route.post('/support/workspaces/{workspace}/enterprise/retention/run', enterpriseAction('retention.run', 'POST')).middleware('auth').rateLimit(6, 'hour')
 route.put('/support/workspaces/{workspace}/enterprise/retention/holds/{id}', enterpriseAction('retention.hold', 'PUT')).middleware('auth')

@@ -7,13 +7,13 @@ import { insert, one, query, workspaceTransaction } from '../app/Support/databas
 import { SupportError, fail, identifier } from '../app/Support/errors'
 import { member, object, workspace } from '../app/Support/service'
 import { inspectLicense, requireEnterprise } from './license'
-import { applyRetention, configureRetention, previewRetention, retentionHold, retentionPolicy } from './retention'
+import { applyRetention, configureRetention, conversationRetentionEvidence, previewRetention, retentionHold, retentionPolicy } from './retention'
 import { directoryGroup, groupResource, writeGroup } from './groups'
 import { audit, configureProvider, issueScimToken, oidcConfig, samlConfig, provider, provision, revokeScimToken, scimIdentity, scimPrincipal, scimResource, setProvisionedActive } from './identity'
 import { scimDiscovery } from './scim-discovery'
 import { scimEqualityFilter } from './scim-filter'
 
-export type EnterpriseOperation = 'retention.get' | 'retention.configure' | 'retention.preview' | 'retention.run' | 'retention.hold' | 'status' | 'configure' | 'token.issue' | 'token.revoke' | 'audit' | 'oidc.start' | 'oidc.link' | 'oidc.callback' | 'scim.config' | 'scim.schemas' | 'scim.resource-types' | 'scim.list' | 'scim.get' | 'scim.create' | 'scim.replace' | 'scim.patch' | 'scim.delete' | 'scim.groups.list' | 'scim.groups.get' | 'scim.groups.create' | 'scim.groups.replace' | 'scim.groups.patch' | 'scim.groups.delete' | 'saml.start' | 'saml.link' | 'saml.callback'
+export type EnterpriseOperation = 'retention.get' | 'retention.configure' | 'retention.preview' | 'retention.evidence' | 'retention.run' | 'retention.hold' | 'status' | 'configure' | 'token.issue' | 'token.revoke' | 'audit' | 'oidc.start' | 'oidc.link' | 'oidc.callback' | 'scim.config' | 'scim.schemas' | 'scim.resource-types' | 'scim.list' | 'scim.get' | 'scim.create' | 'scim.replace' | 'scim.patch' | 'scim.delete' | 'scim.groups.list' | 'scim.groups.get' | 'scim.groups.create' | 'scim.groups.replace' | 'scim.groups.patch' | 'scim.groups.delete' | 'saml.start' | 'saml.link' | 'saml.callback'
 const json = (body: unknown, status = 200, scim = false) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', ...(scim ? { 'Content-Type': 'application/scim+json' } : {}) } })
 async function account(request: RequestInstance) {
   const user = await request.user()
@@ -185,6 +185,7 @@ export async function enterpriseHttp(request: RequestInstance, operation: Enterp
     if (operation === 'retention.get') return json({ policy: await retentionPolicy(workspaceId) })
     if (operation === 'retention.configure') return json({ policy: await configureRetention(workspaceId, input, user.id) })
     if (operation === 'retention.preview') return json(await previewRetention(workspaceId))
+    if (operation === 'retention.evidence') return json(await conversationRetentionEvidence(workspaceId, request.getParam('id')))
     if (operation === 'retention.hold') return json(await retentionHold(workspaceId, request.getParam('id'), input, user.id))
     if (operation === 'retention.run') return json(await applyRetention(workspaceId, user.id))
     if (operation === 'status') return json({ license: inspectLicense(String((await workspace(workspaceId)).public_id)), provider: await one('SELECT public_id, protocol, issuer, client_id, enabled FROM support_enterprise_providers WHERE workspace_id = ?', [workspaceId]), samlAvailable: true })
