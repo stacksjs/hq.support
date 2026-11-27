@@ -28,6 +28,7 @@ const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQ
 let applicationOrigin = '', providerMediaGets = 0, lastMediaUrl = '', inboundMediaUrlOverride = '', providerMediaDownloads = 0
 let rotateSlack: (() => Promise<void>) | undefined
 let discordPollReads = 0, failNextDiscordPoll = false
+let discordMediaPosts = 0
 let providerPosts = 0, failure: 'unknown' | 'rejected' | undefined, smsCallback = '', whatsappCallback = ''
 const accountSid = `AC${'a'.repeat(32)}`, numberSid = `PN${'b'.repeat(32)}`, senderSid = `XE${'c'.repeat(32)}`, contentSid = `HX${'d'.repeat(32)}`, authToken = 'channel-fixture-secret'
 process.env.SUPPORT_MESSAGING_PRICING = JSON.stringify({ [accountSid]: { smsMaxMicrosPerSegment: 20000, mmsMaxMicros: 100000, whatsappMaxMicros: 100000 } })
@@ -79,9 +80,24 @@ const provider = Bun.serve({ port: 0, hostname: '127.0.0.1', async fetch(request
   }
   if (original.hostname === 'discord.com') {
     assert.ok(auth === 'Bot tenant-discord' || auth === 'Bot rotated-discord')
-    if (original.pathname.endsWith('/messages') && request.method === 'POST') { providerPosts++; return Response.json({ id: '103' }) }
     if (original.pathname.endsWith('/users/@me')) return Response.json({ id: '123', bot: true })
     if (original.pathname === '/api/v10/channels/456') return Response.json({ id: '456', type: 0, last_message_id: '100' })
+    if (original.pathname.endsWith('/messages') && request.method === 'POST') {
+      providerPosts++
+      assert.equal(original.pathname, '/api/v10/channels/456/messages')
+      if (request.headers.get('content-type') === 'application/json') return Response.json({ id: '104' })
+      discordMediaPosts++
+      const form = await request.formData()
+      const payload = JSON.parse(String(form.get('payload_json')))
+      assert.deepEqual(payload.allowed_mentions, { parse: [] })
+      assert.ok(!payload.content, 'media-only Discord replies do not invent text')
+      assert.deepEqual(payload.attachments, [{ id: 0, filename: 'attachment.png' }])
+      const file = form.get('files[0]')
+      assert.ok(file instanceof File)
+      assert.equal(file.type, 'image/png')
+      assert.deepEqual(Buffer.from(await file.arrayBuffer()), image)
+      return Response.json({ id: '103' })
+    }
     if (original.pathname.endsWith('/messages') && request.method === 'GET') {
       discordPollReads++
       if (failNextDiscordPoll) { failNextDiscordPoll = false; return Response.json({ message: 'Fixture room unavailable' }, { status: 403 }) }
@@ -264,7 +280,7 @@ try {
   check((await pollDiscordChannel(project, discord.id, dependencies)).retained === 1, 'native Discord poll retains customer traffic and ignores own bot echo')
   await processLastInbound()
   check((await pollDiscordChannel(project, discord.id, dependencies)).retained === 0, 'durable Discord cursor resumes after retained page')
-  const discordThread = (await one('SELECT * FROM support_channel_threads WHERE channel_id = ?', [discord.id]))!
+  const discordThread = (await one('SELECT * FROM support_channel_threads WHERE project_id = ? AND channel_id = ?', [project.id, discord.id]))!
   const discordSettings = `/support/projects/${project.public_id}/channels/${discord.id}`
   const drift = await http(discordSettings, 'POST', { provider: 'discord', configuration: { botToken: 'tenant-discord', channelId: '654' } }, token)
   check(drift.status === 409 && drift.data.error?.code === 'channel_room_immutable', 'a verified Discord connection cannot move existing conversations and its cursor to another room')
@@ -286,6 +302,25 @@ try {
   const sameRoomDelivery = (await one('SELECT id FROM support_channel_deliveries WHERE public_id = ?', [sameRoomReply.data.delivery?.id]))!
   const sameRoomOutcome = await dispatchChannelDelivery(Number(sameRoomDelivery.id), dependencies)
   check(sameRoomOutcome.outcome === 'accepted' && providerPosts === postsBeforeRoomMismatch + 1, 'a valid original-room reply still submits exactly once after rotation')
+  const discordFile = (await upload(project, discordThread.conversation_id, new File([image], 'private-client-image.png', { type: 'image/png' }), 'discord-private-image')).attachment
+  const replyInput = { body: '', attachmentIds: [discordFile.id], idempotencyKey: 'discord-private-image-reply' }
+  const queuedImage = await http(discordReply, 'POST', replyInput, token)
+  check(queuedImage.status === 201 && queuedImage.data.delivery?.status === 'pending',
+    `the native agent reply queues a private Discord image: ${queuedImage.status}`)
+  const foreignImage = await http(discordReply, 'POST', { body: '', attachmentIds: [mediaFile.id], idempotencyKey: 'discord-outside-thread' }, token)
+  check(foreignImage.status === 404 && discordMediaPosts === 0, 'Discord cannot send another conversation’s attachment')
+  const discordDelivery = (await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [queuedImage.data.delivery.id]))!
+  check((await dispatchChannelDelivery(Number(discordDelivery.id), dependencies)).outcome === 'accepted', 'Discord accepts the actual private image bytes through the native driver')
+  const acceptedImage = (await one('SELECT * FROM support_channel_deliveries WHERE id = ?', [discordDelivery.id]))!
+  check(acceptedImage.provider_message_id === '103' && discordMediaPosts === 1, 'one Discord upload stores the exact provider receipt')
+  const duplicateImage = await http(discordReply, 'POST', replyInput, token)
+  check(duplicateImage.status === 201 && duplicateImage.data.delivery.id === queuedImage.data.delivery.id
+    && !(await dispatchChannelDelivery(Number(discordDelivery.id), dependencies)).dispatched && discordMediaPosts === 1,
+    'HTTP and worker replay do not duplicate a Discord image')
+  const discordMediaPath = `channel-media/${discordDelivery.public_id}/${discordFile.id}`
+  const capability = createSignedStorageToken(discordMediaPath, { expiresIn: 60, issuer: 'hq-support-provider-media' })
+  const publicDownload = await fetch(`${base}/channels/media/${discordDelivery.public_id}/${discordFile.id}?token=${encodeURIComponent(capability)}`)
+  check(publicDownload.status === 404, 'Discord images are not exposed through a provider-fetch URL')
   const meter = (await one("SELECT * FROM support_usage WHERE workspace_id = ? AND meter = 'conversations'", [project.workspace_id]))!
   const priorUsed = Number(meter.used)
   await query('UPDATE support_usage SET used = 120 WHERE id = ?', [meter.id])

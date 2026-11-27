@@ -25,19 +25,22 @@ async function storedBytes(row: Row) {
   if (hash !== row.sha256) fail(503, 'attachment_integrity', 'Stored attachment checksum changed.')
   return bytes
 }
-/** Select only existing, scoped, fully stored private attachments; never accept arbitrary fetch URLs. */
-export async function validateOutboundMedia(project: Row, conversationId: unknown, provider: string, payload: Row) {
+function usesSignedMediaUrl(provider: string) { return provider === 'sms' || provider === 'whatsapp' }
+
+/** Read one scoped image and verify its stored bytes before provider delivery. */
+export async function readOutboundMedia(project: Row, conversationId: unknown, provider: string, payload: Row) {
   const ids = Array.isArray(payload.attachmentIds) ? payload.attachmentIds : []
   if (!ids.length) return []
-  if (!['sms', 'whatsapp'].includes(provider) || ids.length !== 1 || payload.contentSid) fail(422, 'unsupported_channel_media', 'Send one JPEG or PNG image through SMS/WhatsApp; templates use their approved content flow.')
+  if ((!usesSignedMediaUrl(provider) && provider !== 'discord') || ids.length !== 1 || payload.contentSid) fail(422, 'unsupported_channel_media', 'Send one JPEG or PNG image through SMS, WhatsApp or Discord. Templates use their approved content flow.')
   const row = await attachment(project, ids[0])
   if (row.status !== 'stored' || String(row.conversation_id) !== String(identifier(conversationId))) fail(404, 'attachment_not_found', 'Stored attachment does not belong to this conversation.')
   if (Number(row.bytes) + Buffer.byteLength(String(payload.body || '')) >= 5000000) fail(413, 'provider_media_limit', 'Combined media and text must be smaller than 5 MB.')
   const bytes = await storedBytes(row), mime = imageMime(bytes)
   if (!mime || !['image/jpeg', 'image/png'].includes(String(row.mime_type)) || mime !== row.mime_type) fail(422, 'unsupported_channel_media', 'The stored bytes must match JPEG or PNG MIME type.')
-  return [{ id: String(row.id), mimeType: mime, bytes: bytes.length }]
+  return [{ filename: mime === 'image/png' ? 'attachment.png' : 'attachment.jpg', contentType: mime, content: bytes }]
 }
 export async function outboundMediaUrls(delivery: Row, payload: Row) {
+  if (!usesSignedMediaUrl(String(payload.provider))) return []
   const ids = Array.isArray(payload.attachmentIds) ? payload.attachmentIds : []
   if (!ids.length) return []
   return ids.map(value => {
@@ -54,14 +57,13 @@ export async function providerMediaResponse(deliveryId: string, attachmentId: un
   const delivery = await one('SELECT * FROM support_channel_deliveries WHERE public_id = ?', [deliveryId])
   if (!delivery || !['dispatching', 'unknown', 'cost_pending', 'accepted', 'settled', 'delivered'].includes(String(delivery.status))) fail(404, 'provider_media_unavailable', 'This provider media operation is unavailable.')
   const payload = object(JSON.parse(String(delivery.payload)))
-  if (!Array.isArray(payload.attachmentIds) || !payload.attachmentIds.map(String).includes(String(id))) fail(404, 'provider_media_unavailable', 'This media does not belong to the authorized operation.')
+  const provider = String(payload.provider)
+  if (!usesSignedMediaUrl(provider) || !Array.isArray(payload.attachmentIds) || !payload.attachmentIds.map(String).includes(String(id))) fail(404, 'provider_media_unavailable', 'This media does not belong to an authorized provider fetch.')
   const project = (await one('SELECT * FROM support_projects WHERE id = ? AND workspace_id = ?', [delivery.project_id, delivery.workspace_id]))!
   const thread = await deliveryChannelThread(project, delivery)
   if (!thread) fail(404, 'provider_media_unavailable', 'The media conversation is unavailable.')
-  await validateOutboundMedia(project, thread.conversation_id, String(payload.provider), payload)
-  const row = await attachment(project, id), bytes = await storedBytes(row)
-  const extension = row.mime_type === 'image/png' ? 'png' : 'jpg', filename = `attachment.${extension}`
-  return new Response(head ? null : new Uint8Array(bytes).buffer, { headers: { 'Content-Type': String(row.mime_type), 'Content-Length': String(bytes.length), 'Content-Disposition': `inline; filename="${filename}"`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': 'sandbox' } })
+  const image = (await readOutboundMedia(project, thread.conversation_id, provider, payload))[0]!
+  return new Response(head ? null : new Uint8Array(image.content).buffer, { headers: { 'Content-Type': image.contentType, 'Content-Length': String(image.content.length), 'Content-Disposition': `inline; filename="${image.filename}"`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': 'sandbox' } })
 }
 /** Native pinned HTTPS performs DNS/redirect validation; this allowlist also protects provider credentials. */
 export function providerMediaSources(channel: Row, config: Row, record: Row, media: unknown): MediaSource[] {

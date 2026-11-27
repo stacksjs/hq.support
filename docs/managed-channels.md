@@ -160,6 +160,10 @@ exact operation and attachment; unsigned, expired or substituted paths fail.
 GET and HEAD serve the verified MIME type and length. Arbitrary public media
 URLs and incompatible template/image combinations are refused.
 
+Discord accepts the same single JPEG or PNG selection on an agent reply, with
+optional text. The worker verifies the stored bytes and checksum before uploading
+them directly with the bot message. It stores the provider receipt on acceptance.
+
 Inbound provider media uses strict provider host/account/message paths and
 native pinned public HTTPS with bounded bytes and redirects. Credentials are
 removed by the native fetcher on an origin change. Native private Storage and

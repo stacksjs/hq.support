@@ -1,3 +1,4 @@
+import type { ChatAttachment } from '@stacksjs/types'
 import type { Row } from './database'
 import { fail, text } from './errors'
 import { object } from './service'
@@ -11,7 +12,7 @@ export interface ChannelProvider {
   validateMediaSources?(channel: Row, config: Row, record: Row, media: unknown): void | Promise<void>
   ingestMedia?(project: Row, channel: Row, record: Row, conversationId: unknown, payload: Row, dependencies: ChannelDependencies): Promise<unknown>
   estimate(config: Row, payload: Row): number
-  send(channel: Row, config: Row, thread: Row, payload: Row, callbackUrl: string, dependencies: ChannelDependencies): Promise<ChannelSendOutcome>
+  send(channel: Row, config: Row, thread: Row, payload: Row & { discordAttachments?: ChatAttachment[] }, callbackUrl: string, dependencies: ChannelDependencies): Promise<ChannelSendOutcome>
   reconcile?(config: Row, messageId: string, dependencies: ChannelDependencies): Promise<{ status: string, priceMicros?: number, currency?: string, from?: string, to?: string, createdAt?: string }>
 }
 const extensions = new Map<string, ChannelProvider>()
@@ -124,7 +125,12 @@ const discordProvider: ChannelProvider = {
   estimate: () => 0,
   async send(channel, config, thread, payload, callbackUrl, dependencies) {
     const { discord } = await import('@stacksjs/chat')
-    const result = await new discord.DiscordDriver({ botToken: String(config.botToken), maxRetries: 0 }, { fetch: dependencies.fetch }).send({ to: String(config.channelId), content: String(payload.body), data: { allowedMentions: { parse: [] } } })
+    const result = await new discord.DiscordDriver({ botToken: String(config.botToken), maxRetries: 0 }, { fetch: dependencies.fetch }).send({
+      to: String(config.channelId),
+      content: String(payload.body),
+      data: { allowedMentions: { parse: [] } },
+      attachments: payload.discordAttachments,
+    })
     return { outcome: result.data?.outcome ?? 'unknown', messageId: result.messageId, error: result.success ? undefined : result.message }
   },
 }

@@ -5,7 +5,7 @@ import type { Row } from './database'
 import { channelConfig, loadChannel, markChannelReady, publicChannel, requireReadyChannel } from './channels'
 import { channelOrigin, channelReceiptProviders, textProvider } from './channel-providers'
 import { shareAttachments } from './attachments'
-import { ingestProviderMedia, outboundMediaUrls, providerMediaSources, validateOutboundMedia } from './channel-media'
+import { ingestProviderMedia, outboundMediaUrls, providerMediaSources, readOutboundMedia } from './channel-media'
 import { managedCostFromMicros, reserveWallet, settleProviderWallet, settleWallet } from './billing'
 import { insert, one, query, workspaceTransaction } from './database'
 import { fail, identifier, text } from './errors'
@@ -57,7 +57,7 @@ export async function createChannelReply(project: Row, conversationId: unknown, 
   }
   const previous = await one('SELECT * FROM support_channel_deliveries WHERE project_id = ? AND operation_key = ?', [project.id, key])
   if (previous) return await replayDelivery(previous)
-  await validateOutboundMedia(project, conversationId, String(channel.provider), payload)
+  await readOutboundMedia(project, conversationId, String(channel.provider), payload)
   await provider.validate?.(channel, config, thread, payload, dependencies)
   const providerCeiling = provider.estimate(config, payload), maximumCents = managedCostFromMicros(providerCeiling)
   return await workspaceTransaction(Number(project.workspace_id), async () => {
@@ -130,6 +130,7 @@ export async function dispatchChannelDelivery(id: number, dependencies: ChannelD
   if (!row) return { dispatched: false }
   const project = (await one('SELECT * FROM support_projects WHERE id = ? AND workspace_id = ?', [row.project_id, row.workspace_id]))!
   let channel: Row, config: Row, thread: Row, payload: Row
+  let media: Awaited<ReturnType<typeof readOutboundMedia>>
   try {
     channel = await requireReadyChannel(project, row.channel_id)
     if (digest(String(channel.configuration)) !== row.configuration_hash) fail(409, 'channel_changed', 'Channel credentials changed before dispatch.')
@@ -137,7 +138,7 @@ export async function dispatchChannelDelivery(id: number, dependencies: ChannelD
     thread = await deliveryChannelThread(project, row)
     if (!thread) fail(404, 'channel_thread_not_found', 'Channel thread no longer exists.')
     payload = object(JSON.parse(String(row.payload)))
-    await validateOutboundMedia(project, thread.conversation_id, String(channel.provider), payload)
+    media = await readOutboundMedia(project, thread.conversation_id, String(channel.provider), payload)
     await textProvider(String(channel.provider)).validate?.(channel, config, thread, payload, dependencies)
     if (channel.provider === 'email') {
       const { emailPolicy, sesBillingScope } = await import('./support-email')
@@ -159,7 +160,14 @@ export async function dispatchChannelDelivery(id: number, dependencies: ChannelD
     return { dispatched: false }
   }
   let outcome: ChannelSendOutcome
-  try { outcome = await textProvider(String(channel.provider)).send(channel, config, thread, { ...payload, _deliveryPublicId: row.public_id, mediaUrls: await outboundMediaUrls(row, payload) }, `${channelOrigin()}/api/channels/${channel.public_id}/deliveries/${row.public_id}/status`, dependencies) }
+  try {
+    outcome = await textProvider(String(channel.provider)).send(channel, config, thread, {
+      ...payload,
+      _deliveryPublicId: row.public_id,
+      mediaUrls: await outboundMediaUrls(row, payload),
+      ...(channel.provider === 'discord' && media.length ? { discordAttachments: media } : {}),
+    }, `${channelOrigin()}/api/channels/${channel.public_id}/deliveries/${row.public_id}/status`, dependencies)
+  }
   catch { outcome = { outcome: 'unknown', error: 'Provider acknowledgement unavailable. Reconcile before any resend.' } }
   await writeOutcome(row, outcome)
   if (outcome.outcome === 'accepted' && outcome.messageId) await reconcileChannelDelivery(project, row.public_id, dependencies).catch(() => undefined)
