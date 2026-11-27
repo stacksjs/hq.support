@@ -221,6 +221,34 @@ try {
   await resumeInNewProcess(replayedFiles.data.run.id, 'worker')
   const replayedFileStatus = (await http(`${prefix}/imports/${replayedFiles.data.run.id}`, 'GET', undefined, token)).data
   check(replayedFileStatus.run.skipped === 1 && (await query('SELECT id FROM support_attachments WHERE conversation_id = ?', [fileStatus.records[0].target_id])).length === 2, 'cross-archive replay does not duplicate conversation attachments')
+  const repeatedAttachmentPreview = await upload({ ...fileBundle, conversations: Array.from({ length: 102 }, () => fileBundle.conversations[0]!) }, { dryRun: true })
+  check(repeatedAttachmentPreview.status === 200 && repeatedAttachmentPreview.data.skippedRecords === 102 && repeatedAttachmentPreview.data.reviewRecords === 0, 'preview reuses verified file checks for repeated conversation records')
+  const privateAttachment = await one('SELECT storage_disk, storage_key FROM support_attachments WHERE id = ?', [files[1]!.id])
+  const privateDisk = Storage.disk(String(privateAttachment!.storage_disk))
+  const privateKey = String(privateAttachment!.storage_key)
+  const originalBytes = Buffer.from(privateFile.supplied.data, 'base64')
+  const storageBeforeIntegrityCheck = await one('SELECT storage_bytes FROM support_workspaces WHERE id = ?', [workspace.id])
+  await privateDisk.write(privateKey, Buffer.concat([originalBytes, Buffer.from([0])]))
+  const resizedAttachmentPreview = await upload(fileBundle, { dryRun: true })
+  check(resizedAttachmentPreview.data.records[0].errorCode === 'import_attachment_changed', 'preview detects a stored attachment with a different length')
+  const changedBytes = Buffer.from(originalBytes)
+  changedBytes[0] = changedBytes[0]! ^ 1
+  await privateDisk.write(privateKey, changedBytes)
+  const changedAttachmentPreview = await upload(fileBundle, { dryRun: true })
+  check(changedAttachmentPreview.data.records[0].errorCode === 'import_attachment_changed', 'preview detects changed stored bytes with the original file length')
+  const changedAttachmentRun = await upload({ ...fileBundle, rehearsal: 'changed-attachment' })
+  await resumeInNewProcess(changedAttachmentRun.data.run.id, 'worker')
+  const changedAttachmentStatus = (await http(`${prefix}/imports/${changedAttachmentRun.data.run.id}`, 'GET', undefined, token)).data
+  check(changedAttachmentStatus.run.status === 'needs_review' && changedAttachmentStatus.records[0].error_code === 'import_attachment_changed', 'worker reports changed stored bytes on replay')
+  assert.deepEqual(await privateDisk.readToBuffer(privateKey), changedBytes, 'replay leaves the stored object untouched for operator review')
+  await privateDisk.write(privateKey, originalBytes)
+  await http(`${prefix}/imports/${changedAttachmentRun.data.run.id}/resume`, 'POST', {}, token)
+  await resumeInNewProcess(changedAttachmentRun.data.run.id, 'worker')
+  const restoredAttachmentStatus = (await http(`${prefix}/imports/${changedAttachmentRun.data.run.id}`, 'GET', undefined, token)).data
+  check(restoredAttachmentStatus.run.status === 'completed' && restoredAttachmentStatus.run.skipped === 1, 'a restored attachment resumes replay without importing it twice')
+  check((await query('SELECT id FROM support_attachments WHERE conversation_id = ?', [fileStatus.records[0].target_id])).length === 2
+    && Number((await one('SELECT storage_bytes FROM support_workspaces WHERE id = ?', [workspace.id]))?.storage_bytes) === Number(storageBeforeIntegrityCheck?.storage_bytes),
+  'integrity review and recovery preserve existing attachment records and storage charges')
   const badChecksum = await upload({ ...fileBundle, attachmentFiles: [{ ...publicFile.supplied, sha256: '0'.repeat(64) }] })
   check(badChecksum.status === 422 && badChecksum.data.error.code === 'attachment_checksum_mismatch', 'corrupted sidecar bytes are rejected before queueing')
   const incompleteFiles = await upload({ ...fileBundle, attachmentFiles: [publicFile.supplied] }, { integration: true, key: keys.ingestKey, dryRun: true })

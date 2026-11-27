@@ -9,8 +9,8 @@ import { contact, member, object, secret } from './service'
 import { knowledgeText, localeOf } from './knowledge'
 import type { KnowledgeAuthor } from './knowledge'
 import { importIntercomArticle, importIntercomCollection } from './import-articles'
-import type { ImportArchive, ImportAttachment } from './import-attachments'
-import { checkImportedAttachments, importAttachmentLimit, parseImportAttachmentFiles, sourceAttachments, storeImportedAttachments } from './import-attachments'
+import type { ImportAttachment, ImportAttachmentVerification } from './import-attachments'
+import { checkImportedAttachments, importAttachmentLimit, importAttachmentVerification, parseImportAttachmentFiles, sourceAttachments, storeImportedAttachments } from './import-attachments'
 
 export const importLimits = { bytes: 10_000_000, records: 5000, attachmentFiles: importAttachmentLimit, batch: 25, leaseMs: 60000, maximumConversationParts: 500, maximumPaginatedParts: 5000 } as const
 export type IntercomBundle = { version: 1, provider: 'intercom', format: 'html' | 'plaintext', contacts: Row[], conversations: Row[], articles: Row[], collections: Row[], articleLocale?: string, attachmentFiles: ReturnType<typeof parseImportAttachmentFiles> }
@@ -153,11 +153,11 @@ async function importRunAuthor(project: Row, runId: unknown): Promise<KnowledgeA
   }
   fail(409, 'import_actor_invalid', 'The persisted migration principal requires operator review.')
 }
-async function importRecord(project: Row, item: ImportRecord, bundle: IntercomBundle, author: () => Promise<KnowledgeAuthor>, archive?: ImportArchive) {
+async function importRecord(project: Row, item: ImportRecord, bundle: IntercomBundle, author: () => Promise<KnowledgeAuthor>, verification: ImportAttachmentVerification) {
   if (item.type === 'contact') return await importContact(project, item.payload)
   if (item.type === 'conversation') {
     if (bundle.attachmentFiles.size) await author()
-    return await importConversation(project, item.payload, bundle, archive)
+    return await importConversation(project, item.payload, bundle, verification)
   }
   const context = { fingerprint, external, timestamp, mapping, remember, author, defaultLocale: bundle.articleLocale }
   return item.type === 'collection' ? await importIntercomCollection(project, item.payload, context) : await importIntercomArticle(project, item.payload, context)
@@ -192,7 +192,7 @@ function authorType(author: Row) {
   if (author.type === 'bot') return 'automation'
   fail(422, 'unsupported_source_author', 'Unknown source author type is retained for review rather than attributed to an invented agent.')
 }
-async function importMessage(project: Row, conversation: Row, sourceId: string, source: Row, bundle: IntercomBundle, created: unknown, visibility: 'public' | 'internal', staged: ImportAttachment[]) {
+async function importMessage(project: Row, conversation: Row, sourceId: string, source: Row, bundle: IntercomBundle, created: unknown, visibility: 'public' | 'internal', staged: ImportAttachment[], verification: ImportAttachmentVerification) {
   if (source.redacted === true) fail(422, 'source_body_missing', 'Source message was redacted and requires review.')
   const at = timestamp(created, 'message.created_at')
   const files = sourceAttachments(source, sourceId, bundle.attachmentFiles, visibility)
@@ -203,7 +203,7 @@ async function importMessage(project: Row, conversation: Row, sourceId: string, 
     const message = await one('SELECT created_at FROM support_messages WHERE id = ? AND conversation_id = ? AND project_id = ?', [previous.target_id, conversation.id, project.id])
     if (!message) fail(409, 'import_target_missing', 'A previously mapped message was removed. Review erasure/retention before importing again.')
     if (parseSqlDateTime(message.created_at)?.getTime() !== Date.parse(at)) fail(409, 'source_message_timestamp_changed', 'The source message timestamp differs from the imported message. Native history was preserved for review.')
-    await checkImportedAttachments(project, conversation, files)
+    await checkImportedAttachments(project, conversation, files, verification)
     return false
   }
   const body = files.length && source.body === '' ? '' : await messageBody(source.body, bundle.format)
@@ -269,7 +269,7 @@ function completeConversation(source: Row): Row {
   if (parts.length > importLimits.maximumPaginatedParts) fail(422, 'source_parts_limit', 'A paginated conversation exceeds the 5000-part operational batch bound.')
   return { ...first!.response, ...(recordedUpdate ? { updated_at: recordedUpdate.original } : {}), conversation_parts: { conversation_parts: parts, total_count: parts.length, pages: { page: 1, next: null }, complete_page_sequence: true }, import_page_provenance: provenance }
 }
-async function importConversation(project: Row, source: Row, bundle: IntercomBundle, archive?: ImportArchive) {
+async function importConversation(project: Row, source: Row, bundle: IntercomBundle, verification: ImportAttachmentVerification) {
   const paginated = Array.isArray(source.pages)
   source = completeConversation(source)
   const id = external(source.id), partsContainer = object(source.conversation_parts), parts = partsContainer.conversation_parts
@@ -307,15 +307,15 @@ async function importConversation(project: Row, source: Row, bundle: IntercomBun
   }
   const staged: ImportAttachment[] = []
   const initialTime = initial.created_at === undefined ? source.created_at : initial.created_at
-  let appended = await importMessage(project, row, `${id}:source:${initial.id == null ? 'root' : external(initial.id)}`, initial, bundle, initialTime, 'public', staged) ? 1 : 0
+  let appended = await importMessage(project, row, `${id}:source:${initial.id == null ? 'root' : external(initial.id)}`, initial, bundle, initialTime, 'public', staged, verification) ? 1 : 0
   for (const candidate of parts) {
     const part = object(candidate), partId = external(part.id), kind = String(part.part_type)
-    if (kind === 'comment' || kind === 'note') appended += await importMessage(project, row, `${id}:part:${partId}`, part, bundle, part.created_at, kind === 'note' ? 'internal' : 'public', staged) ? 1 : 0
+    if (kind === 'comment' || kind === 'note') appended += await importMessage(project, row, `${id}:part:${partId}`, part, bundle, part.created_at, kind === 'note' ? 'internal' : 'public', staged, verification) ? 1 : 0
     else if ((part.body != null && part.body !== '') || (Array.isArray(part.attachments) && part.attachments.length)) fail(422, 'unsupported_source_part', 'Unknown message-bearing conversation part is retained for review rather than silently skipped.')
     else await remember(project, 'part_metadata', `${id}:${partId}`, 0, part)
   }
   await remember(project, 'conversation', id, row.id, source)
-  await storeImportedAttachments(project, row, staged, archive)
+  await storeImportedAttachments(project, row, staged, verification.archive)
   return { id: row.id, skipped: !newConversation && appended === 0 }
 }
 export async function processImportBatch(id: unknown, options: { batchSize?: number } = {}) {
@@ -334,6 +334,7 @@ export async function processImportBatch(id: unknown, options: { batchSize?: num
     const bytes = await Storage.disk(String(claimed.source_disk)).readToBuffer(String(claimed.source_key))
     if (bytes.byteLength !== Number(claimed.source_bytes) || createHash('sha256').update(bytes).digest('hex') !== claimed.source_hash) fail(409, 'source_archive_changed', 'Private migration source failed its stored byte/hash verification.')
     const bundle = parseIntercomBundle(new Uint8Array(bytes)), records = importRecords(bundle)
+    const verification = importAttachmentVerification({ disk: String(claimed.source_disk), key: String(claimed.source_key) })
     let advanced = 0
     for (let count = 0; count < batchSize; count++) {
       const result = await workspaceTransaction(Number(claimed.workspace_id), async () => {
@@ -344,7 +345,7 @@ export async function processImportBatch(id: unknown, options: { batchSize?: num
         const project = (await one('SELECT * FROM support_projects WHERE id = ? AND workspace_id = ?', [run.project_id, run.workspace_id]))!
         let outcome: { id?: unknown, skipped?: boolean, message?: string } = {}, review: SupportError | undefined
         try {
-          outcome = await db.transaction(async () => await importRecord(project, item, bundle, () => importRunAuthor(project, runId), { disk: String(run.source_disk), key: String(run.source_key) }))
+          outcome = await db.transaction(async () => await importRecord(project, item, bundle, () => importRunAuthor(project, runId), verification))
         }
         catch (error) { if (error instanceof SupportError) review = error; else throw error }
         const status = review ? 'needs_review' : outcome.skipped ? 'skipped' : 'imported', previous = await one('SELECT id, status, target_id FROM support_import_records WHERE import_run_id = ? AND position = ?', [run.id, cursor])
@@ -432,13 +433,14 @@ export async function previewIntercomBundle(project: Row, principal: ImportPrinc
   await authorizeImport(project, principal)
   if (!file.size || file.size > importLimits.bytes) fail(413, 'import_size', 'Migration bundles must be 1 to 10000000 bytes.')
   const bundle = parseIntercomBundle(new Uint8Array(await file.arrayBuffer())), records = importRecords(bundle)
+  const verification = importAttachmentVerification()
   try {
     await workspaceTransaction(Number(project.workspace_id), async () => {
       await authorizeImport(project, principal)
       const reports: ImportPreviewReport[] = []
       for (const item of records) {
         try {
-          const result = await db.transaction(async () => await importRecord(project, item, bundle, () => importPrincipalAuthor(project, principal)))
+          const result = await db.transaction(async () => await importRecord(project, item, bundle, () => importPrincipalAuthor(project, principal), verification))
           reports.push({ status: result.skipped ? 'skipped' : 'compatible', code: '', message: '' })
         }
         catch (error) { if (error instanceof SupportError) reports.push({ status: 'needs_review', code: error.code, message: error.message }); else throw error }

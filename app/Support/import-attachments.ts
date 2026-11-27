@@ -28,6 +28,11 @@ export interface ImportArchive {
   key: string
 }
 
+export function importAttachmentVerification(archive?: ImportArchive) {
+  return { archive, verified: new Set<string>(), attemptedFiles: 0, attemptedBytes: 0 }
+}
+export type ImportAttachmentVerification = ReturnType<typeof importAttachmentVerification>
+
 export function parseImportAttachmentFiles(value: unknown): Map<string, SuppliedFile> {
   const files = new Map<string, SuppliedFile>()
   if (value === undefined) return files
@@ -67,14 +72,26 @@ export function sourceAttachments(source: Row, sourceId: string, files: Map<stri
   })
 }
 
-export async function checkImportedAttachments(project: Row, conversation: Row, files: ImportAttachment[]) {
+export async function checkImportedAttachments(project: Row, conversation: Row, files: ImportAttachment[], verification: ImportAttachmentVerification) {
   for (const file of files) {
     const row = await one("SELECT sha256, storage_disk, storage_key FROM support_attachments WHERE project_id = ? AND conversation_id = ? AND idempotency_key = ? AND status = 'stored'", [project.id, conversation.id, file.key])
     if (!row || row.sha256 !== file.sha256)
       fail(409, 'import_target_missing', 'A previously imported attachment is missing. Review native erasure or storage before importing again.')
     const key = String(row.storage_key)
-    if (!key.startsWith('support-import-preview/') && !await Storage.disk(String(row.storage_disk)).fileExists(key))
+    if (!verification.archive && key.startsWith('support-import-preview/')) continue
+    const diskName = String(row.storage_disk)
+    const identity = JSON.stringify([diskName, key, file.bytes.byteLength, file.sha256])
+    if (verification.verified.has(identity)) continue
+    if (verification.attemptedFiles >= importAttachmentLimit || verification.attemptedBytes + file.bytes.byteLength > importAttachmentBytes)
+      fail(422, 'source_attachment_limit', 'Split the export into smaller bundles to verify existing attachment bytes.')
+    verification.attemptedFiles++
+    verification.attemptedBytes += file.bytes.byteLength
+    const disk = Storage.disk(diskName)
+    if (!await disk.fileExists(key))
       fail(409, 'import_target_missing', 'A previously imported attachment is missing from private storage.')
+    if (await disk.fileSize(key) !== file.bytes.byteLength || await disk.checksum(key, { algorithm: 'sha256' }) !== file.sha256)
+      fail(409, 'import_attachment_changed', 'A previously imported attachment differs from the verified source. Restore the original bytes before resuming.')
+    verification.verified.add(identity)
   }
 }
 
