@@ -1,6 +1,8 @@
 # Authorized realtime HTTP
 
-Six explicitly registered POST routes add `/realtime/snapshot`, `/realtime/replay` and `/realtime/stream` under the existing agent `/api/support/projects/{project}` and customer `/api/widget/projects/{project}` prefixes. Set `SUPPORT_REALTIME_HTTP_ENABLED=false` to withhold this bundle independently. The additive schema remains safe to retain; unused enrollments expire. No browser subscription or UI behavior is changed by this slice.
+Six durable POST routes expose `/realtime/snapshot`, `/realtime/replay` and `/realtime/stream` under the agent `/api/support/projects/{project}` and customer `/api/widget/projects/{project}` prefixes. Set `SUPPORT_REALTIME_HTTP_ENABLED=false` to disable those routes and the agent typing stream. Unused replay enrollments expire.
+
+The open inbox subscribes to `POST /api/support/projects/{project}/conversations/{id}/typing/stream` with the same agent authentication. It receives `invalidated` frames with `data: null`. The browser reads the selected conversation’s typing status through the authenticated `GET …/typing` endpoint. Explicit start and stop changes publish after the lease transaction commits. The presence heartbeat still reads typing during outages and after lease expiry or session revocation. Typing streams use a separate subscription budget from durable replay and expire after ten minutes. Hidden pages and conversation changes close the browser’s stream.
 
 Agent requests use the native token cookie or hashed durable browser-session cookie, the native CSRF header/cookie pair, and the exact configured `config.app.url` Origin. Bearers, project keys and impersonation/identity overrides do not authorize these routes. Each checkpoint freshly validates native token ownership, revocation and password version, or resolves the current durable session, followed by current project/workspace and active membership checks. Neither Host nor forwarding headers configure authority.
 

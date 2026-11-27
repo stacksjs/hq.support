@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
 import { resolve, sep } from 'node:path'
 import { browserSessionCookie, startBrowserSession } from '@stacksjs/auth'
-import { overridesReady } from '@stacksjs/config'
+import { config, overridesReady } from '@stacksjs/config'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { route } from '@stacksjs/router'
 import { injectGlobalAutoImports } from '@stacksjs/server'
@@ -21,7 +21,15 @@ let sessions = 0
 let newRequests = 0
 const releaseSend = Promise.withResolvers<void>()
 let agentCookie = ''
+let typingStreamAvailable = true
+let typingForward: AbortController | undefined
 const traffic: string[] = []
+const heldResponses = new Map<string, { arrived: boolean, hold: ReturnType<typeof Promise.withResolvers<void>> }>()
+function holdResponse(method: string, path: string) {
+  const entry = { arrived: false, hold: Promise.withResolvers<void>() }
+  heldResponses.set(`${method} ${path}`, entry)
+  return entry
+}
 const host = Bun.serve({
   hostname: '127.0.0.1',
   port: 0,
@@ -29,6 +37,10 @@ const host = Bun.serve({
     const url = new URL(request.url)
     if (url.pathname === '/_fixture/agent') return new Response(null, { status: 303, headers: { location: '/app', 'set-cookie': agentCookie } })
     if (url.pathname.startsWith('/api/')) {
+      if (!typingStreamAvailable && url.pathname.endsWith('/typing/stream')) {
+        traffic.push(`${request.method} ${url.pathname} 503`)
+        return new Response(null, { status: 503 })
+      }
       if (request.method === 'POST' && url.pathname.endsWith('/session')) sessions++
       if (request.method === 'POST' && /^\/api\/widget\/projects\/[^/]+\/conversations$/.test(url.pathname)) {
         newRequests++
@@ -36,12 +48,20 @@ const host = Bun.serve({
       }
       const headers = new Headers(request.headers)
       headers.delete('host')
+      const signal = url.pathname.endsWith('/typing/stream') ? (typingForward = new AbortController()).signal : undefined
       const response = await fetch(new URL(url.pathname + url.search, api.url), {
         method: request.method,
         headers,
         body: request.body,
+        signal,
       })
       traffic.push(`${request.method} ${url.pathname} ${response.status}`)
+      const held = heldResponses.get(`${request.method} ${url.pathname}`)
+      if (held) {
+        heldResponses.delete(`${request.method} ${url.pathname}`)
+        held.arrived = true
+        await held.hold.promise
+      }
       const outgoing = new Headers(response.headers)
       outgoing.delete('content-encoding')
       outgoing.delete('content-length')
@@ -58,6 +78,7 @@ let browser: Awaited<ReturnType<typeof launch>> | undefined
 let agentBrowser: Awaited<ReturnType<typeof launch>> | undefined
 try {
   const origin = host.url.origin
+  config.app.url = origin
   delete process.env.SUPPORT_SITE_MESSENGER_PROJECT_ID
   const seed = await fetch(new URL('/api/csrf-token', api.url))
   const csrf = (await seed.json() as { token: string }).token
@@ -185,9 +206,15 @@ try {
   await waitFor(() => agent.evaluate(`document.querySelector('#reply')?.disabled === false`), 15000, { label: 'Agent opens the visitor conversation' })
   const customerTyping = (value: string) => waitFor(() => agent.evaluate(`document.querySelector('#customer-typing')?.textContent.trim() === ${JSON.stringify(value)}`), 15000, { label: value || 'Customer typing clears' })
   await customerTyping('')
+  const customerTypingPath = `/api${prefix}/conversations/${id}/typing`
+  const typingReads = () => traffic.filter(entry => entry === `GET ${customerTypingPath} 200`).length
+  await waitFor(() => traffic.includes(`POST ${customerTypingPath}/stream 200`) && typingReads() > 0, 15000, { label: 'Agent reads the typing snapshot after opening the stream' })
   await cdp.evaluate(`${composer}.focus()`)
+  const readsBeforeTyping = typingReads(), customerStarted = performance.now()
   await cdp.send('Input.insertText', { text: 'Unsent customer draft' })
   await customerTyping('Customer is typing…')
+  const customerTypingMs = Math.round(performance.now() - customerStarted)
+  assert.ok(typingReads() > readsBeforeTyping && customerTypingMs < 2500, 'Customer start wakes a read-only typing check before the lease heartbeat')
   assert.equal(await agent.evaluate(`document.querySelector('#customer-typing').getAttribute('aria-atomic')`), 'true')
   assert.equal(await agent.evaluate(`document.querySelector('#customer-typing').getAttribute('role')`), 'status')
   assert.equal(await agent.evaluate(`document.querySelector('#agent-message-history').textContent.includes('Unsent customer draft')`), false)
@@ -207,19 +234,52 @@ try {
   await cdp.evaluate('globalThis.originalAbortTimeout = AbortSignal.timeout; AbortSignal.timeout = undefined')
   await cdp.send('Input.insertText', { text: ' still private' })
   await customerTyping('Customer is typing…')
+  const readsBeforeClose = typingReads(), customerClosed = performance.now()
   await clickChat()
   await customerTyping('')
+  const customerClearMs = Math.round(performance.now() - customerClosed)
+  assert.ok(typingReads() > readsBeforeClose && customerClearMs < 2500, 'Customer close wakes a read-only typing check before the lease heartbeat')
   await cdp.evaluate('AbortSignal.timeout = globalThis.originalAbortTimeout; delete globalThis.originalAbortTimeout')
   await clickChat()
   await wait(`!!${composer}`, 'Reopen the customer composer')
   await cdp.evaluate(`(() => { const field = ${composer}; field.value = ''; field.dispatchEvent(new Event('input', { bubbles: true })) })()`)
   await cdp.evaluate(`${sendButton}.focus()`)
   await wait(sendFocused, 'Focus Send before checking incoming replies')
+
   const typeReply = (value: string) => agent.evaluate(`(() => {
     const draft = document.querySelector('#reply')
     draft.value = ${JSON.stringify(value)}
     draft.dispatchEvent(new Event('input', { bubbles: true }))
   })()`)
+  const heldRead = holdResponse('GET', customerTypingPath)
+  await cdp.evaluate(`${composer}.focus()`)
+  await cdp.send('Input.insertText', { text: 'Customer draft during a slow heartbeat' })
+  await waitFor(() => heldRead.arrived, 8000, { label: 'The fast customer typing read is ready' })
+  const heldHeartbeat = holdResponse('POST', `/api${prefix}/conversations/${id}/presence`)
+  await typeReply('Agent draft starts a heartbeat')
+  await waitFor(() => heldHeartbeat.arrived, 8000, { label: 'A newer heartbeat starts before the fast read returns' })
+  heldRead.hold.resolve()
+  await customerTyping('Customer is typing…')
+  await cdp.evaluate(`(() => { const field = ${composer}; field.value = ''; field.dispatchEvent(new Event('input', { bubbles: true })) })()`)
+  await customerTyping('')
+  heldHeartbeat.hold.resolve()
+  await Bun.sleep(200)
+  await customerTyping('')
+  await typeReply('')
+
+  typingStreamAvailable = false
+  assert.ok(typingForward, 'An established typing stream can be interrupted')
+  typingForward.abort()
+  await waitFor(() => traffic.includes(`POST ${customerTypingPath}/stream 503`), 15000, { label: 'Native typing stream is unavailable' })
+  const readsWithoutStream = typingReads()
+  await cdp.evaluate(`${composer}.focus()`)
+  await cdp.send('Input.insertText', { text: 'Private draft during the stream outage' })
+  await customerTyping('Customer is typing…')
+  await cdp.evaluate(`(() => { const field = ${composer}; field.value = ''; field.dispatchEvent(new Event('input', { bubbles: true })) })()`)
+  await customerTyping('')
+  assert.equal(typingReads(), readsWithoutStream, 'The lease heartbeat still shows and clears customer typing during an outage')
+  typingStreamAvailable = true
+  await cdp.evaluate(`${sendButton}.focus()`)
   const typingStatus = `${shadow}?.querySelector('.typing-status')`
   const typingShown = `${typingStatus}?.textContent.trim() === 'Support is typing…'`
   const typingHidden = `${typingStatus}?.textContent.trim() === ''`
@@ -327,7 +387,7 @@ try {
   }
   await cdp.evaluate('globalThis.stopInlineAppearanceProof()')
   assert.deepEqual(errors, [])
-  await Bun.write(resolve(artifacts, 'typing.json'), JSON.stringify({ typingMs, runtimeErrors: errors.length }))
+  await Bun.write(resolve(artifacts, 'typing.json'), JSON.stringify({ typingMs, customerTypingMs, customerClearMs, runtimeErrors: errors.length }))
   console.info(`PASS homepage Messenger (typing visible in ${typingMs} ms)`)
 }
 catch (error) {

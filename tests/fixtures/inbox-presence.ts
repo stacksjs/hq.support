@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
+import { authCookie } from '@stacksjs/auth/cookie'
 import { overridesReady } from '@stacksjs/config'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { route } from '@stacksjs/router'
 import { injectGlobalAutoImports } from '@stacksjs/server'
+import { assertIsolatedOk, runIsolated } from '@stacksjs/testing/isolated'
 import { one, insert, query } from '../../app/Support/database'
-import { inboxPresenceLeaseMs, pruneInboxPresence, updateCustomerPresence } from '../../app/Support/inbox-presence'
+import { inboxPresenceLeaseMs, pruneInboxPresence, supportTypingInvalidations, updateCustomerPresence } from '../../app/Support/inbox-presence'
 
 await overridesReady
 assert.equal((await migrateAuthTables()).success, true)
@@ -94,6 +96,32 @@ try {
   assert.equal((await http(typingPath, session.data.token)).status, 403)
   assert.equal((await http(presence, session.data.token, payload(otherTab, 3, 'viewing'))).status, 401)
   const widgetPresence = widgetRoot + '/presence'
+  const agentTyping = detail + '/typing'
+  const priorLease = await one('SELECT sequence, expires_at FROM support_inbox_presences WHERE workspace_id = ? AND user_id = ? AND tab_id = ?', [workspace.id, owner.id, primaryTab])
+  const priorReplay = await one('SELECT COUNT(*) AS count FROM support_replay_events')
+  assert.deepEqual((await http(agentTyping, owner.token)).data, { typing: false })
+  assert.equal((await http(agentTyping, outsider.token)).status, 403)
+  assert.equal((await http(agentTyping, session.data.token)).status, 401)
+  assert.equal((await http(`${second.agent}/conversations/${project.thread}/typing`, owner.token)).status, 404)
+  const streamHeaders = { origin: 'https://operator.example', cookie: cookie + '; ' + authCookie(owner.token).split(';')[0]!, 'x-csrf-token': csrf }
+  const deniedStream = await fetch(base + agentTyping + '/stream', { method: 'POST', headers: { ...streamHeaders, origin: 'https://widget.example.test' } })
+  assert.equal(deniedStream.status, 403)
+  const streamAbort = new AbortController()
+  const openStream = (signal: AbortSignal) => fetch(base + agentTyping + '/stream', {
+    method: 'POST', signal,
+    headers: streamHeaders,
+  })
+  const streamSignal = AbortSignal.any([streamAbort.signal, AbortSignal.timeout(12_000)])
+  const stream = await openStream(streamSignal)
+  assert.equal(stream.status, 200)
+  const extraStreams = await Promise.all(Array.from({ length: 3 }, () => openStream(streamSignal)))
+  assert.ok(extraStreams.every(response => response.status === 200))
+  const capped = await openStream(streamSignal)
+  assert.equal(capped.status, 429)
+  assert.equal((await capped.json()).error.code, 'typing_stream_limit')
+  const streamReader = stream.body!.getReader()
+  const readStream = async () => new TextDecoder().decode((await streamReader.read()).value)
+  assert.ok((await readStream()).includes(': connected'))
   const customerTab = crypto.randomUUID(), customerExtra = crypto.randomUUID()
   const composing = payload(customerTab, 1, 'composing')
   assert.equal((await http(widgetPresence, session.data.token, composing)).status, 403)
@@ -106,6 +134,33 @@ try {
   assert.deepEqual(active.data, { accepted: true })
   assert.equal(active.headers.get('cache-control'), 'no-store')
   assert.equal(active.headers.get('access-control-allow-origin'), 'https://widget.example.test')
+  const hint = await readStream()
+  assert.ok(hint.includes('"event":"invalidated","data":null'))
+  const frames = hint.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)))
+  assert.deepEqual(frames, [{ channel: `support.typing.${project.id}.${project.thread}`, event: 'invalidated', data: null }])
+  assert.deepEqual((await http(agentTyping, owner.token)).data, { typing: true })
+  const sendTyping = async (state: 'away' | 'composing', sequence: number) => {
+    const input = payload(customerTab, sequence, state)
+    if (process.env.SUPPORT_REALTIME_REDIS_URL) {
+      const result = await runIsolated('tests/fixtures/typing-producer.ts', { stdin: JSON.stringify({ projectId: project.public_id, conversationId: project.thread, token: session.data.token, input }), envFile: false, preload: [], timeoutMs: 7500 })
+      assertIsolatedOk(result, 'PASS independent typing producer')
+    }
+    else assert.equal((await http(widgetPresence, session.data.token, input, true)).status, 200)
+  }
+  await sendTyping('away', 2)
+  assert.ok((await readStream()).includes('"event":"invalidated","data":null'))
+  assert.deepEqual((await http(agentTyping, owner.token)).data, { typing: false })
+  await sendTyping('composing', 3)
+  assert.ok((await readStream()).includes('"event":"invalidated","data":null'))
+  assert.deepEqual((await http(agentTyping, owner.token)).data, { typing: true })
+  assert.deepEqual(await one('SELECT sequence, expires_at FROM support_inbox_presences WHERE workspace_id = ? AND user_id = ? AND tab_id = ?', [workspace.id, owner.id, primaryTab]), priorLease)
+  assert.deepEqual(await one('SELECT COUNT(*) AS count FROM support_replay_events'), priorReplay)
+  streamAbort.abort()
+  await streamReader.cancel().catch(() => undefined)
+  await Promise.allSettled(extraStreams.map(response => response.body?.cancel()))
+  const reopened = await openStream(AbortSignal.timeout(5000))
+  assert.equal(reopened.status, 200)
+  await reopened.body?.cancel()
   const agentStatus = (sequence: number, path = presence) => http(path, teammate.token, payload(otherTab, sequence, 'viewing'))
   const whileComposing = await agentStatus(3)
   assert.equal(whileComposing.data.customerTyping, true)
@@ -119,13 +174,13 @@ try {
   assert.equal(newTabs.filter(result => result.status === 200).length, 16)
   assert.equal(newTabs.find(result => result.status === 429)?.data.error.code, 'presence_tab_limit')
   await http(widgetPresence, session.data.token, payload(customerExtra, 1, 'composing'), true)
-  await http(widgetPresence, session.data.token, payload(customerTab, 2, 'away'), true)
+  await http(widgetPresence, session.data.token, payload(customerTab, 4, 'away'), true)
   assert.equal((await agentStatus(6)).data.customerTyping, true)
   await http(`/widget/projects/${project.public_id}/session/revoke`, capSession.data.token, {}, true)
   await http(widgetPresence, session.data.token, payload(customerExtra, 2, 'away'), true)
   await http(widgetPresence, session.data.token, payload(customerExtra, 1, 'composing'), true)
   assert.equal((await agentStatus(7)).data.customerTyping, false)
-  await http(widgetPresence, session.data.token, payload(customerTab, 3, 'composing'), true)
+  await http(widgetPresence, session.data.token, payload(customerTab, 5, 'composing'), true)
   await query('UPDATE support_customer_presences SET expires_at = ? WHERE conversation_id = ?', [Date.now() - 1, project.thread])
   assert.equal((await agentStatus(8)).data.customerTyping, false)
   await pruneInboxPresence()
@@ -166,11 +221,14 @@ try {
   assert.equal((await http(replies, accounts[winner]!.token, input[winner]!)).data.message.id, winnerReply)
   assert.equal((await http(replies, accounts[loser]!.token, { ...input[loser], afterAgentReplyId: winnerReply })).status, 201)
   assert.equal((await http(replies, owner.token, { body: 'Bad cursor', idempotencyKey: 'bad-cursor', afterAgentReplyId: '01' })).status, 422)
-  assert.equal((await http(widgetPresence, session.data.token, payload(customerTab, 4, 'composing'), true)).status, 200)
+  assert.equal((await http(widgetPresence, session.data.token, payload(customerTab, 6, 'composing'), true)).status, 200)
   assert.equal((await agentStatus(13)).data.customerTyping, true)
   assert.equal((await http(`/widget/projects/${project.public_id}/session/revoke`, session.data.token, {}, true)).status, 200)
   assert.equal((await agentStatus(14)).data.customerTyping, false)
-  assert.equal((await http(widgetPresence, session.data.token, payload(customerTab, 5, 'composing'), true)).status, 401)
+  assert.equal((await http(widgetPresence, session.data.token, payload(customerTab, 7, 'composing'), true)).status, 401)
   console.log('PASS inbox presence and collision protection')
 }
-finally { server.stop(true) }
+finally {
+  server.stop(true)
+  await supportTypingInvalidations().close()
+}

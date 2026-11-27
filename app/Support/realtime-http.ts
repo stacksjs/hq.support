@@ -11,8 +11,9 @@ import type { Row, WorkspaceTransaction } from './database'
 import { one, query, replayOperatorTransaction, workspaceTransaction } from './database'
 import { boundedEnvelope, boundedPage, customerProjectionLimits } from './customer-projection'
 import { fail, identifier, SupportError } from './errors'
+import { customerTypingChannel, maxTypingStreams, supportTypingInvalidations } from './inbox-presence'
 import { agentReplayChannel, customerReplayChannel, supportReplayInvalidations, supportReplayStore } from './replay'
-import { conversations, detail, digest, member, project } from './service'
+import { conversation, conversations, detail, digest, member, project } from './service'
 
 export type RealtimeOperation = 'snapshot' | 'replay' | 'stream'
 const leaseMs = 120_000, renewalMs = 30_000
@@ -20,6 +21,16 @@ const caps = { project: 1536, workspace: 2048, operator: 3072 } as const
 const json = (body: unknown, status = 200) => Response.json(boundedEnvelope(body), { status, headers: { 'Cache-Control': 'no-store' } })
 const snapshotRequired = (status = 409, body: Row = {}) => json({ ...body, cursor: null, snapshotRequired: true }, status)
 interface Principal { project: Row, person?: Row, agentId?: number, channel: string, origin: string }
+const typingStreams = new Map<symbol, { workspaceId: number, agentId: number }>()
+
+function reserveTypingStream(workspaceId: number, agentId: number) {
+  const workspace = [...typingStreams.values()].filter(value => value.workspaceId === workspaceId)
+  if (typingStreams.size >= maxTypingStreams || workspace.length >= 128 || workspace.filter(value => value.agentId === agentId).length >= 4)
+    fail(429, 'typing_stream_limit', 'Typing stream capacity is in use. The inbox will keep refreshing.')
+  const slot = Symbol('typing stream')
+  typingStreams.set(slot, { workspaceId, agentId })
+  return () => { typingStreams.delete(slot) }
+}
 
 function exactOrigin(value: unknown): value is string {
   if (typeof value !== 'string' || !value || value === 'null') return false
@@ -200,6 +211,37 @@ async function stream(request: RequestInstance, widget: boolean, principal: Prin
   catch (error) { await response.body?.cancel(); throw error }
   finally { opening = false }
   return response.status === 200 ? response : json({ error: { code: 'realtime_unavailable', message: 'Realtime stream could not be opened.' } }, response.status)
+}
+
+export async function handleCustomerTypingStream(request: RequestInstance): Promise<Response> {
+  let release: (() => void) | undefined
+  try {
+    if (new URL(request.url).search) fail(422, 'invalid_input', 'Typing streams do not take query parameters.')
+    const principal = await authority(request, false)
+    const selected = await conversation(principal.project, request.getParam('id'))
+    release = reserveTypingStream(Number(principal.project.workspace_id), principal.agentId!)
+    const authorize = async () => {
+      await authority(request, false, principal)
+      await conversation(principal.project, selected.id)
+      return true
+    }
+    createBroadcastHub()
+    const result = await createBroadcastResponse({
+      channels: [customerTypingChannel(principal.project, selected.id)],
+      invalidations: supportTypingInvalidations(), signal: AbortSignal.any([request.signal, AbortSignal.timeout(600_000)]),
+      heartbeatMs: 15_000, maxPending: 8, onClose: release,
+      authorize: () => authorize().catch(() => false),
+    })
+    if (!result.ok) release()
+    try { await authorize() }
+    catch (error) { await result.body?.cancel(); throw error }
+    return result
+  }
+  catch (error) {
+    release?.()
+    const status = error instanceof SupportError ? error.status : typeof error === 'object' && error && 'statusCode' in error && error.statusCode === 403 ? 403 : 503
+    return json({ error: { code: error instanceof SupportError ? error.code : 'typing_stream_unavailable', message: 'Typing updates could not be streamed.' } }, status)
+  }
 }
 
 export async function handleRealtime(request: RequestInstance, widget: boolean, operation: RealtimeOperation): Promise<Response> {

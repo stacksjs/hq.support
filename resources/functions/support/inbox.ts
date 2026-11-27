@@ -133,7 +133,7 @@ export function createInbox() {
   const drafts = new Map<string, { body: string, visibility: string, image: ReplyImage | null, key: string, fingerprint: string, cursor: string | undefined, replyAtStart: string | null }>()
   let retryFingerprint = '', retryCursor: string | undefined, routingKey = '', routingFingerprint = '', messageRefresh = 0
   const seenReply = state('0'), replyAtStart = state<string | null>(null)
-  const presence = createInboxPresence(request, async () => { await refreshConversation() }, conversationAccessLost)
+  const presence = createInboxPresence(request, requestResponse, async () => { await refreshConversation() }, conversationAccessLost)
   const viewerNames = derived(() => presence.viewers().map(viewer => person(viewer.userId)).join(', '))
   const composingNames = derived(() => presence.viewers().filter(viewer => viewer.composing).map(viewer => person(viewer.userId)).join(', '))
   const replyChanged = derived(() => visibility() === 'public' && hasReply() && replyAtStart() !== null && Number(presence.latestReply()) > Number(replyAtStart()))
@@ -300,20 +300,25 @@ export function createInbox() {
   const customerName = derived(() => contact()?.name || contact()?.email || 'Customer')
   const customerInitial = derived(() => customerName().charAt(0).toUpperCase())
 
-  async function request(path: string, options: RequestInit = {}) {
+  async function requestResponse(path: string, options: RequestInit = {}) {
     if (options.method && options.method !== 'GET' && !csrf) {
       const response = await fetch('/api/csrf-token', { credentials: 'include', cache: 'no-store' })
       const data = await response.json()
       csrf = data.token || data.csrf_token || data.csrfToken || ''
     }
     const response = await fetch(path, { ...options, cache: 'no-store', credentials: 'include', headers: { ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), Accept: 'application/json', ...(csrf ? { 'X-CSRF-TOKEN': csrf } : {}), ...options.headers } })
-    const data = await response.json().catch(() => { if (response.ok) throw new Error('The server response could not be read. Retry the same operation; your draft is unchanged.'); return {} })
     if (response.status === 401) {
       if (!disposed) sessionExpired()
       const failure = new Error('Sign in to open your workspace.')
       Object.assign(failure, { unauthorized: true })
       throw failure
     }
+    return response
+  }
+
+  async function request(path: string, options: RequestInit = {}) {
+    const response = await requestResponse(path, options)
+    const data = await response.json().catch(() => { if (response.ok) throw new Error('The server response could not be read. Retry the same operation; your draft is unchanged.'); return {} })
     if (!response.ok) { const failure = new Error(data.message || data.error?.message || (typeof data.error === 'string' ? data.error : '') || `Request failed (${response.status}).`); Object.assign(failure, { code: data.error?.code, status: response.status }); throw failure }
     return data
   }
@@ -536,7 +541,7 @@ export function createInbox() {
       showMessages(data)
       contact.set(data.contact || null)
       if (draft().trim() && replyAtStart() === null) replyAtStart.set(seenReply())
-      presence.start(path + '/presence', seenReply())
+      presence.start(path, seenReply())
       notice.set(''); await loadHistory()
     }
     catch (failure) { if (!disposed && version === selection) { error.set(failure instanceof Error ? failure.message : 'Conversation could not be loaded.'); notice.set('') } }

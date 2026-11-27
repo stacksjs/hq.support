@@ -1,3 +1,5 @@
+import { createMemoryInvalidationBus, createRedisInvalidationBus } from '@stacksjs/realtime'
+import type { InvalidationBus } from '@stacksjs/realtime'
 import type { Row } from './database'
 import { db, one, query, workspaceTransaction } from './database'
 import { fail } from './errors'
@@ -5,6 +7,33 @@ import { conversation, digest, latestAgentReplyId, member } from './service'
 
 export const inboxPresenceLeaseMs = 24_000
 const maxActiveTabs = 16
+export const maxTypingStreams = 512
+export const customerTypingChannel = (project: Row, conversationId: unknown) => `support.typing.${project.id}.${conversationId}`
+let typingInvalidations: InvalidationBus | undefined
+
+export function supportTypingInvalidations(): InvalidationBus {
+  if (!typingInvalidations) {
+    const bounds = { maxChannels: maxTypingStreams, maxSubscriptions: maxTypingStreams }
+    const url = process.env.SUPPORT_REALTIME_REDIS_URL
+    const namespace = 'hq-support-typing-' + new Bun.CryptoHasher('sha256').update(process.env.SUPPORT_REALTIME_NAMESPACE || 'hq-support-replay-v1').digest('hex')
+    typingInvalidations = url ? createRedisInvalidationBus({ ...bounds, url, namespace }) : createMemoryInvalidationBus(bounds)
+  }
+  return typingInvalidations
+}
+
+async function hasCustomerTyping(project: Row, selected: Row, now = Date.now()): Promise<boolean> {
+  const composing = await one(`SELECT 1 AS typing FROM support_customer_presences p
+    JOIN support_customer_sessions s ON s.id = p.session_id AND s.workspace_id = p.workspace_id AND s.project_id = p.project_id
+    WHERE p.workspace_id = ? AND p.project_id = ? AND p.conversation_id = ? AND s.contact_id = ?
+      AND p.state = 'composing' AND p.expires_at > ? AND s.expires_at > ? LIMIT 1`,
+  [project.workspace_id, project.id, selected.id, selected.contact_id, now, now])
+  return Boolean(composing)
+}
+
+export async function customerTyping(project: Row, reference: unknown) {
+  const selected = await conversation(project, reference)
+  return { typing: await hasCustomerTyping(project, selected) }
+}
 
 export async function supportTyping(project: Row, reference: unknown, customer: Row) {
   const selected = await conversation(project, reference, customer)
@@ -27,7 +56,7 @@ function decodePresence(input: Row, allowViewing: boolean) {
 
 export async function updateCustomerPresence(project: Row, reference: unknown, token: string, input: Row, acceptedAt: number) {
   const { tabId, sequence, state } = decodePresence(input, false)
-  return await db.transaction(async () => {
+  const changed = await db.transaction(async () => {
     // Lock only this session, so its tab limit and credential revocation serialize.
     const session = await one(`UPDATE support_customer_sessions SET expires_at = expires_at
       WHERE digest = ? AND workspace_id = ? AND project_id = ? AND expires_at > ? RETURNING id, contact_id, expires_at`,
@@ -36,9 +65,9 @@ export async function updateCustomerPresence(project: Row, reference: unknown, t
     if (!session || Number(session.expires_at) <= now) fail(401, 'invalid_session', 'Customer session is invalid or expired.')
     const selected = await conversation(project, reference, { id: session.contact_id })
     const expiresAt = acceptedAt + inboxPresenceLeaseMs
-    if (expiresAt <= now) return { accepted: true }
-    const previous = await one('SELECT sequence, expires_at FROM support_customer_presences WHERE session_id = ? AND tab_id = ?', [session.id, tabId])
-    if (previous && Number(previous.sequence) >= sequence) return { accepted: true }
+    if (expiresAt <= now) return []
+    const previous = await one('SELECT conversation_id, sequence, state, expires_at FROM support_customer_presences WHERE session_id = ? AND tab_id = ?', [session.id, tabId])
+    if (previous && Number(previous.sequence) >= sequence) return []
     if (!previous || Number(previous.expires_at) <= now) {
       const tabs = await one('SELECT COUNT(*) AS total FROM support_customer_presences WHERE session_id = ? AND expires_at > ?', [session.id, now])
       if (Number(tabs?.total) >= maxActiveTabs) fail(429, 'presence_tab_limit', 'Close an extra support tab to show typing here.')
@@ -48,8 +77,13 @@ export async function updateCustomerPresence(project: Row, reference: unknown, t
       ON CONFLICT (session_id, tab_id) DO UPDATE SET conversation_id = excluded.conversation_id, sequence = excluded.sequence,
         state = excluded.state, expires_at = excluded.expires_at`,
     [project.workspace_id, project.id, selected.id, session.id, tabId, sequence, state, expiresAt])
-    return { accepted: true }
+    const prior = previous?.state === 'composing' && Number(previous.expires_at) > now ? customerTypingChannel(project, previous.conversation_id) : undefined
+    const current = state === 'composing' ? customerTypingChannel(project, selected.id) : undefined
+    return prior === current ? [] : [prior, current].filter(channel => channel !== undefined)
   })
+  // A hint belongs only to a committed change. Renewal and stale requests need no hint.
+  await Promise.allSettled(changed.map(async channel => await supportTypingInvalidations().publish(channel)))
+  return { accepted: true }
 }
 
 export async function updateInboxPresence(project: Row, reference: unknown, userId: number, input: Row) {
@@ -79,12 +113,7 @@ export async function updateInboxPresence(project: Row, reference: unknown, user
       WHERE p.workspace_id = ? AND p.project_id = ? AND p.conversation_id = ? AND p.user_id <> ?
         AND p.state IN ('viewing', 'composing') AND p.expires_at > ?
       GROUP BY p.user_id ORDER BY composing DESC, p.user_id LIMIT 50`, [project.workspace_id, project.id, selected.id, userId, now])
-    const composing = await one(`SELECT 1 AS typing FROM support_customer_presences p
-      JOIN support_customer_sessions s ON s.id = p.session_id AND s.workspace_id = p.workspace_id AND s.project_id = p.project_id
-      WHERE p.workspace_id = ? AND p.project_id = ? AND p.conversation_id = ? AND s.contact_id = ?
-        AND p.state = 'composing' AND p.expires_at > ? AND s.expires_at > ? LIMIT 1`,
-    [project.workspace_id, project.id, selected.id, selected.contact_id, now, now])
-    return { viewers: viewers.map(row => ({ userId: String(row.user_id), composing: Number(row.composing) === 1 })), lastAgentReplyId: await latestAgentReplyId(project, selected.id), customerTyping: Boolean(composing) }
+    return { viewers: viewers.map(row => ({ userId: String(row.user_id), composing: Number(row.composing) === 1 })), lastAgentReplyId: await latestAgentReplyId(project, selected.id), customerTyping: await hasCustomerTyping(project, selected, now) }
   })
 }
 
