@@ -360,8 +360,18 @@ try {
     check(!await evaluate(`document.body.textContent.includes('Archive case 010')`) && await evaluate(`document.querySelector('#reply').value === 'Private draft retained while searching persisted history'`), 'visible fallback refresh applies the same filtered range and preserves the draft when replay is unavailable')
   }
   finally { failAgentReplay = false }
-  await evaluate(`document.querySelector('[aria-label="Refresh inbox"]').click()`); await text('New matching arrival')
-  check(searchTraffic.at(-1)?.q === 'nebularoute' && !searchTraffic.at(-1)?.cursor && await evaluate(`document.querySelector('#team-inbox').value === ${JSON.stringify(String(archive.id))}`), 'explicit refresh starts a new query page with the current filters and includes new arrivals')
+  const refreshArrival = 'New arrival for explicit refresh'
+  await archived(refreshArrival, 'nebularoute')
+  const beforeExplicitRefresh = searchTraffic.length
+  await evaluate(`document.querySelector('[aria-label="Refresh inbox"]').click()`)
+  await waitFor(
+    () => searchTraffic.slice(beforeExplicitRefresh).some(entry =>
+      entry.q === 'nebularoute' && entry.inboxId === String(archive.id) && entry.status === 'open' && !entry.cursor && !entry.limit),
+    15000, { label: 'Explicit native refresh request with no continuation cursor' },
+  )
+  await waitFor(() => matchingRows(50), 15000, { label: 'Explicit refresh renders the first filtered page' })
+  check(await evaluate(`document.querySelector('#team-inbox').value === ${JSON.stringify(String(archive.id))}
+    && document.querySelector('.conversation-row strong')?.textContent === ${JSON.stringify(refreshArrival)}`), 'explicit refresh starts a new query page with the current filters and includes new arrivals')
   await input(searchInput, ''); await waitFor(() => evaluate(`document.querySelector('[aria-label="Refresh inbox"]').disabled === false`), 15000, { label: 'Empty query refresh' })
   check(searchTraffic.at(-1)?.q === null && searchTraffic.at(-1)?.inboxId === String(archive.id) && searchTraffic.at(-1)?.status === 'open', 'empty search omits q and preserves the status and inbox filters')
   const beforeLong = searchTraffic.length; await input(searchInput, 'a'.repeat(201)); await text('Search is limited to 200 characters.'); await Bun.sleep(400)
