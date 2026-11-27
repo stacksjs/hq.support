@@ -53,7 +53,7 @@ A timeout, 5xx or malformed acknowledgement becomes durable `unknown`. Workers a
 
 The app reuses the native `EmailSuppression` schema and `isSuppressed` lookup, with no generated unscoped CRUD endpoints. Missing suppression storage fails closed for managed email. Suppressed recipients are refused before send. Bounce/complaint feedback ingestion, suppression administration, outbound attachments, delivery tracking and sending-authorization delegation still need separate qualification. This adapter supports transactional agent replies, not broadcast campaigns.
 
-`RunSupportEmail` runs each minute on `support-email`; `RunChannelDelivery` handles admitted inbox work and outbound operations on `support-channels`. Explicit scheduler registration and database workers are required even when Redis is used for cache/presence. Native receipt leases, unique inbox admission and attachment idempotency allow process restart without duplicate messages.
+`RunSupportEmail` runs each minute on `support-email`; `RunChannelDelivery` handles admitted inbox work and outbound operations on `support-channels`. Dispatch recovery has its own batch, and periodic receipt polling covers only providers that can retrieve a receipt. SES invoice holds stay pending without blocking either batch. Explicit scheduler registration and database workers are required even when Redis is used for cache/presence. Native receipt leases, unique inbox admission and attachment idempotency allow process restart without duplicate messages.
 
 ## Verification
 
