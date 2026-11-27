@@ -5,12 +5,12 @@
 // resolves. Values are paths rather than import thunks on purpose: thunks
 // would make every compilation that touches a name resolve every module.
 export const middleware = {
+  'Cors': '../../../app/Middleware/Cors.ts',
   'Abilities': '@stacksjs/defaults/app/Middleware/Abilities.ts',
   'Api': '@stacksjs/defaults/app/Middleware/Api.ts',
   'Auth': '@stacksjs/defaults/app/Middleware/Auth.ts',
   'Can': '@stacksjs/defaults/app/Middleware/Can.ts',
   'Compress': '@stacksjs/defaults/app/Middleware/Compress.ts',
-  'Cors': '@stacksjs/defaults/app/Middleware/Cors.ts',
   'Csrf': '@stacksjs/defaults/app/Middleware/Csrf.ts',
   'EnsureEmailIsVerified': '@stacksjs/defaults/app/Middleware/EnsureEmailIsVerified.ts',
   'Env': '@stacksjs/defaults/app/Middleware/Env.ts',

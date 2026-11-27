@@ -4,6 +4,7 @@ import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { overridesReady } from '@stacksjs/config'
 import { injectGlobalAutoImports } from '@stacksjs/server'
 import { route } from '@stacksjs/router'
+import corsMiddleware from '../../app/Middleware/Cors'
 import { insert, one, query } from '../../app/Support/database'
 
 await overridesReady
@@ -11,6 +12,7 @@ assert.equal((await migrateAuthTables()).success, true)
 assert.equal((await runDatabaseMigration()).isOk, true)
 assert.equal((await migrateAuthTables()).success, true)
 await injectGlobalAutoImports()
+route.use(corsMiddleware.toRouterHandler())
 await route.importRoutes()
 const server = await route.serve({ port: 0, hostname: '127.0.0.1' }), base = `http://127.0.0.1:${server.port}/api`
 let cookie = '', csrf = '', checks = 0
@@ -37,6 +39,8 @@ try {
   const prefix = `/support/projects/${project.public_id}`, widget = `/widget/projects/${project.public_id}`
   const keys = (await http(prefix + '/keys', first.token, 'POST', {})).data
   const origin = 'https://customer.example.test'
+  const nativePreflight = await fetch(base + '/login', { method: 'OPTIONS', headers: { origin, 'access-control-request-method': 'POST', 'access-control-request-headers': 'Content-Type' } })
+  check(nativePreflight.status === 204 && nativePreflight.headers.get('access-control-allow-origin') === '*', 'other API routes retain the native CORS policy')
   assert.equal((await http(prefix, first.token, 'PATCH', { allowedOrigins: [origin] })).status, 200)
   async function session(externalId: string) { return (await http(`/v1/projects/${project.public_id}/sessions`, keys.ingestKey, 'POST', { externalId })).data.token as string }
   const customer = await session('customer'), stranger = await session('stranger')
@@ -65,8 +69,12 @@ try {
   check(offered.status === 200 && offered.data.available && offered.data.survey.question === 'How did we do?' && offered.headers.get('access-control-allow-origin') === origin, 'resolved own conversation receives exact current question and origin-scoped response')
   const preflight = await fetch(base + path, { method: 'OPTIONS', headers: { origin, 'access-control-request-method': 'POST', 'access-control-request-headers': 'Authorization, Content-Type' } })
   check(preflight.status === 204 && preflight.headers.get('access-control-allow-origin') === origin, 'the real native cross-origin customer request has a permitted bearer preflight')
+  const invalidOrigin = 'https://unapproved.example.test'
+  const refusedPreflight = await fetch(base + path, { method: 'OPTIONS', headers: { origin: invalidOrigin, 'access-control-request-method': 'POST', 'access-control-request-headers': 'Authorization, Content-Type' } })
+  check(refusedPreflight.status === 403 && !refusedPreflight.headers.has('access-control-allow-origin'), 'an unapproved project origin receives no browser preflight grant')
   check((await customerRequest(path, stranger)).status === 404, 'another customer cannot inspect or rate this conversation')
-  check((await customerRequest(path, customer, undefined, 'https://unapproved.example.test')).status === 403, 'bearer token does not bypass exact origin policy')
+  const refusedRequest = await customerRequest(path, customer, undefined, invalidOrigin)
+  check(refusedRequest.status === 403 && !refusedRequest.headers.has('access-control-allow-origin'), 'bearer token does not bypass exact origin policy')
   check((await customerRequest(`/widget/projects/${sibling.public_id}/conversations/${id}/csat`)).status === 403, 'sibling project cannot reuse this origin or customer token')
   const input = { score: 5, comment: 'Helpful support.', revision: 1, idempotencyKey: 'once-only-rating' }
   for (const score of [0, 6, 1.5, true, '5']) check((await customerRequest(path, customer, { ...input, score })).status === 422, 'score requires a whole number from one through five')
