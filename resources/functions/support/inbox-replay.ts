@@ -5,6 +5,8 @@ interface ReplaySession {
   root: string
   controller: AbortController
   cursor?: DurableReplayCursor
+  snapshotCursor?: DurableReplayCursor
+  snapshotRetries: number
   stream?: ReturnType<typeof useBroadcastStream>
   interval?: ReturnType<typeof setInterval>
   hintTimer?: ReturnType<typeof setTimeout>
@@ -61,12 +63,12 @@ export function createInboxReplay(request: FetchResponse, refresh: (signal: Abor
     }
   }
 
-  function wake(session: ReplaySession) {
+  function wake(session: ReplaySession, delay = 150) {
     if (active !== session || session.hintTimer) return
     session.hintTimer = setTimeout(() => {
       session.hintTimer = undefined
       void sync(session)
-    }, 150)
+    }, delay)
   }
 
   function connect(session: ReplaySession) {
@@ -92,14 +94,24 @@ export function createInboxReplay(request: FetchResponse, refresh: (signal: Abor
   }
 
   async function snapshot(session: ReplaySession) {
-    const response = await read(session, 'snapshot', {})
+    if (!session.snapshotCursor) {
+      const response = await read(session, 'snapshot', {})
+      if (active !== session) return
+      if (rejected(response.status, response.body) || !response.ok) return
+      session.snapshotCursor = readCursor(response.body.checkpoint)
+    }
+    const applied = await refresh(session.controller.signal)
     if (active !== session) return
-    if (rejected(response.status, response.body)) return
-    if (!response.ok) return
-    const checkpoint = readCursor(response.body.checkpoint)
-    if (!await refresh(session.controller.signal) || active !== session) return
-    session.cursor = checkpoint
-    connect(session)
+    if (!applied && session.snapshotCursor && session.snapshotRetries < 5) {
+      const delay = 250 * 2 ** session.snapshotRetries
+      session.snapshotRetries++
+      wake(session, delay)
+      return
+    }
+    if (applied) session.cursor = session.snapshotCursor
+    session.snapshotCursor = undefined
+    session.snapshotRetries = 0
+    if (applied) connect(session)
   }
 
   async function sync(session: ReplaySession) {
@@ -141,7 +153,7 @@ export function createInboxReplay(request: FetchResponse, refresh: (signal: Abor
     if (active?.root === root) return
     stop()
     if (!project) return
-    const session: ReplaySession = { root, controller: new AbortController(), running: false, pending: false }
+    const session: ReplaySession = { root, controller: new AbortController(), running: false, pending: false, snapshotRetries: 0 }
     active = session
     session.interval = setInterval(() => void sync(session), 30_000)
     void sync(session)

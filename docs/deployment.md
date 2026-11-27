@@ -41,10 +41,11 @@ into both web and API processes. `config/cache.ts` reads `CACHE_DRIVER` and
 `CACHE_PREFIX`; the configured native cache no longer stays on memory when the
 blueprint selects Redis. Production keeps `hq-support:cache` / `hq-support:queue`,
 staging uses `hq-support-staging:cache` / `hq-support-staging:queue`, and development
-uses `hq-support-development:cache` / `hq-support-development:queue`. The replay
-hint bus receives the corresponding `SUPPORT_REALTIME_NAMESPACE`, ending in
-`:replay-v1`. PostgreSQL database and owner selection remains per deployment;
-Redis prefixes do not isolate SQL rows.
+uses `hq-support-development:cache` / `hq-support-development:queue`. Buddy also
+sets `SUPPORT_REALTIME_DRIVER=redis` for replay and typing hints across the API
+and workers. They use the managed Redis endpoint and the deployment's
+`SUPPORT_REALTIME_NAMESPACE`. A dedicated `SUPPORT_REALTIME_REDIS_URL` takes
+precedence. PostgreSQL uses the database and owner selected for each deployment.
 
 Without deployment overrides, the configuration projects memory cache and a
 database queue, with `hq-support-development:*` local prefixes. Native development

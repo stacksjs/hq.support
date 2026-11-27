@@ -2,17 +2,18 @@ import { createMemoryInvalidationBus, createRedisInvalidationBus, createSqlDurab
 import type { InvalidationBus } from '@stacksjs/realtime'
 import type { Row, WorkspaceTransaction } from './database'
 import { one, requireWorkspaceTransaction } from './database'
+import { supportRealtimeRedisUrl } from './realtime-config'
 
 // One policy for every process. Policy changes require an explicit incarnation reset.
 const replayPolicy = { maxEvents: 100, ttlMs: 300_000, maxPayloadBytes: 32, maxReplayBytes: 32_768 } as const
 export const agentReplayChannel = (project: Row) => `support.agent.${Number(project.id)}`
 export const customerReplayChannel = (project: Row, contactId: number) => `support.customer.${Number(project.id)}.${contactId}`
 let invalidations: InvalidationBus | undefined
-/** Explicit Redis opt-in; otherwise hints are local to this process. SQL remains authoritative. */
+/** SQL remains authoritative even when Redis hints are enabled. */
 export function supportReplayInvalidations(): InvalidationBus {
   if (!invalidations) {
     const bounds = { maxChannels: 4096, maxSubscriptions: 4096 }
-    const url = process.env.SUPPORT_REALTIME_REDIS_URL
+    const url = supportRealtimeRedisUrl()
     invalidations = url
       ? createRedisInvalidationBus({ ...bounds, url, namespace: process.env.SUPPORT_REALTIME_NAMESPACE || 'hq-support-replay-v1' })
       : createMemoryInvalidationBus(bounds)

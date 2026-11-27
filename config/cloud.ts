@@ -24,7 +24,7 @@ function variablesFor(environment: 'production' | 'staging' | 'development') {
     QUEUE_DRIVER: 'database', CACHE_DRIVER: 'redis',
     QUEUE_PREFIX: `${prefix}:queue`, CACHE_PREFIX: `${prefix}:cache`,
     QUEUE_FAILED_PREFIX: `${prefix}:failed`, QUEUE_BATCH_PREFIX: `${prefix}:batches`,
-    SUPPORT_REALTIME_NAMESPACE: `${prefix}:replay-v1`,
+    SUPPORT_REALTIME_DRIVER: 'redis', SUPPORT_REALTIME_NAMESPACE: `${prefix}:replay-v1`,
   }
 }
 const variables = variablesFor(target)

@@ -15,6 +15,7 @@ import { markRead } from '../../app/Support/reads'
 import { upload } from '../../app/Support/attachments'
 import { Storage } from '@stacksjs/storage'
 import { supportReplayStore, supportReplayInvalidations, agentReplayChannel, customerReplayChannel } from '../../app/Support/replay'
+import { supportRealtimeRedisUrl } from '../../app/Support/realtime-config'
 
 await overridesReady
 config.database.queryLogging.enabled = false
@@ -49,7 +50,7 @@ const bus = supportReplayInvalidations()
 let subscriber: TestService | undefined, subscriberUrl: string | undefined, subscriberDirectory: string | undefined
 let unsubscribe = () => {}
 try {
-if (process.env.SUPPORT_REALTIME_REDIS_URL) {
+if (supportRealtimeRedisUrl()) {
   subscriberDirectory = await mkdtemp(join(tmpdir(), 'support-replay-subscriber-'))
   const bunfig = join(subscriberDirectory, 'bunfig.toml')
   await writeFile(bunfig, 'preload = []\n')

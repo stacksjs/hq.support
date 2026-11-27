@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { createRedisInvalidationBus } from '@stacksjs/realtime'
 import { notifyTestServiceReady } from '@stacksjs/testing/service'
+import { supportRealtimeRedisUrl } from '../../app/Support/realtime-config'
 
-assert(process.env.SUPPORT_REALTIME_REDIS_URL)
-const bus = createRedisInvalidationBus({ url: process.env.SUPPORT_REALTIME_REDIS_URL, namespace: process.env.SUPPORT_REALTIME_NAMESPACE!, maxChannels: 4096, maxSubscriptions: 4096 })
+const redisUrl = supportRealtimeRedisUrl()
+assert(redisUrl)
+const bus = createRedisInvalidationBus({ url: redisUrl, namespace: process.env.SUPPORT_REALTIME_NAMESPACE!, maxChannels: 4096, maxSubscriptions: 4096 })
 const channels = JSON.parse(process.argv[2]!) as string[]
 const notices: string[] = []
 const unsubscribe = await bus.subscribe({ channels, onInvalidate: notice => { if (notice.reason === 'hint') notices.push(...notice.channels) } })

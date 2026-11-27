@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import { assertIsolatedOk, runIsolated } from '@stacksjs/testing'
+import { supportRealtimeRedisUrl } from '../app/Support/realtime-config'
 
 interface DeploymentProjection {
   project: { slug: string }, stateDir: string, cloud: { provider: string, attachTo?: string },
@@ -9,6 +10,16 @@ interface DeploymentProjection {
   mail: { domain: string, mailboxes: { email: string, passwordPolicy: string }[], enabled: boolean, attachTo: string, exactMailboxes: boolean },
   database: { name: string, username: string }, sslDomains: string[],
 }
+
+test('deployed realtime reuses managed Redis settings or a dedicated Redis URL', () => {
+  expect(supportRealtimeRedisUrl({ CACHE_DRIVER: 'redis' })).toBeUndefined()
+  expect(supportRealtimeRedisUrl({ SUPPORT_REALTIME_DRIVER: 'redis', REDIS_HOST: '127.0.0.1' })).toBe('redis://127.0.0.1:6379/0')
+  const url = 'rediss://cache.example.test:6380/2'
+  expect(supportRealtimeRedisUrl({ SUPPORT_REALTIME_DRIVER: 'redis', REDIS_URL: url })).toBe(url)
+  expect(supportRealtimeRedisUrl({ SUPPORT_REALTIME_REDIS_URL: url, REDIS_URL: 'redis://other.example.test' })).toBe(url)
+  const encoded = supportRealtimeRedisUrl({ SUPPORT_REALTIME_DRIVER: 'redis', REDIS_HOST: '::1', REDIS_PORT: '6381', REDIS_DB: '3', REDIS_USERNAME: 'worker user', REDIS_PASSWORD: 'p@ss%word' })
+  expect(encoded).toBe('redis://worker%20user:p%40ss%25word@[::1]:6381/3')
+})
 
 test('deployment targets isolate domains, ports, database ownership and release state', async () => {
   const siteMessengerProject = '9cdd1242-1272-4878-9c49-024aae67d541'
@@ -28,6 +39,8 @@ test('deployment targets isolate domains, ports, database ownership and release 
     expect(api.env.HOST).toBe('127.0.0.1')
     expect(main.env.APP_ENV).toBe(target)
     expect(api.env.APP_ENV).toBe(target)
+    expect(main.env.SUPPORT_REALTIME_DRIVER).toBe('redis')
+    expect(api.env.SUPPORT_REALTIME_DRIVER).toBe('redis')
     expect(main.env.DB_DATABASE).toBe(config.database.name)
     expect(api.env.DB_USERNAME).toBe(config.database.username)
     expect(main.env.PORT_API).toBe(String(api.port))

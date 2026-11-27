@@ -3,6 +3,7 @@ import type { InvalidationBus } from '@stacksjs/realtime'
 import type { Row } from './database'
 import { db, one, query, workspaceTransaction } from './database'
 import { fail } from './errors'
+import { supportRealtimeRedisUrl } from './realtime-config'
 import { conversation, digest, latestAgentReplyId, member } from './service'
 
 export const inboxPresenceLeaseMs = 24_000
@@ -14,7 +15,7 @@ let typingInvalidations: InvalidationBus | undefined
 export function supportTypingInvalidations(): InvalidationBus {
   if (!typingInvalidations) {
     const bounds = { maxChannels: maxTypingStreams, maxSubscriptions: maxTypingStreams }
-    const url = process.env.SUPPORT_REALTIME_REDIS_URL
+    const url = supportRealtimeRedisUrl()
     const namespace = 'hq-support-typing-' + new Bun.CryptoHasher('sha256').update(process.env.SUPPORT_REALTIME_NAMESPACE || 'hq-support-replay-v1').digest('hex')
     typingInvalidations = url ? createRedisInvalidationBus({ ...bounds, url, namespace }) : createMemoryInvalidationBus(bounds)
   }
