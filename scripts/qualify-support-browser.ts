@@ -79,7 +79,7 @@ async function snapshotAssets() {
 }
 interface RequestRecord { url: string, method: string, postData?: string }
 interface LogEntry { text: string, source?: string, url?: string, networkRequestId?: string }
-async function qualify(assets: string, path: '/proof' | '/loader-proof', viewport: { width: number, height: number }, label: string) {
+async function qualify(assets: string, path: '/proof' | '/loader-proof', viewport: { width: number, height: number }, label: string, scheme: 'light' | 'dark') {
   if (stopping) throw new Error('Browser qualification interrupted')
   preview = await createWidgetPreview({ port: 0, assetsDirectory: assets, native: false })
   const origin = preview.server.url.origin, url = origin + path, policy = (await fetch(url)).headers.get('content-security-policy') || ''
@@ -87,6 +87,7 @@ async function qualify(assets: string, path: '/proof' | '/loader-proof', viewpor
   const requests = new Map<string, RequestRecord>(), failures: string[] = [], forbidden: string[] = [], expectedFailures = new Set<string>(), logs: LogEntry[] = []
   browser = await launch({ headless: true, shared: false, viewport, chromePath: process.env.CHROME_PATH || process.env.BROWSE_BROWSER, args: process.platform === 'linux' ? ['--disable-dev-shm-usage', ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])] : [], startTimeoutMs: 60000, commandTimeoutMs: 20000 })
   const cdp = browser.cdp
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: scheme }] })
   cdp.on('Network.requestWillBeSent', event => requests.set(event.requestId, event.request))
   cdp.on('Log.entryAdded', event => logs.push(event.entry))
   cdp.on('Network.responseReceived', event => {
@@ -126,8 +127,8 @@ async function qualify(assets: string, path: '/proof' | '/loader-proof', viewpor
     for (const text of allowed) { const index = errors.indexOf(text); if (index >= 0) errors.splice(index, 1) }
     assert.deepEqual(errors, [], 'No browser console/runtime/network errors beyond the exact expected negative request')
     const version = await cdp.send('Browser.getVersion')
-    results.push({ label, path, passed: true, viewport, browser: version.product, protocolVersion: version.protocolVersion, policy, checks: proof.checks, expectedNegativeResponses: expectedFailures.size, requests: requests.size })
-    console.info(`PASS ${label} ${path}: ${proof.checks.filter(check => check.startsWith('PASS')).length} rendered checks, strict CSP, ${version.product}`)
+    results.push({ label, path, passed: true, viewport, scheme, browser: version.product, protocolVersion: version.protocolVersion, policy, checks: proof.checks, expectedNegativeResponses: expectedFailures.size, requests: requests.size })
+    console.info(`PASS ${label} ${scheme} ${path}: ${proof.checks.filter(check => check.startsWith('PASS')).length} rendered checks, strict CSP, ${version.product}`)
     passed = true
   }
   finally {
@@ -147,7 +148,13 @@ try {
   if (!args.includes('--skip-build')) await build()
   const { assets, manifest } = await snapshotAssets()
   await Bun.write(resolve(output, 'report.json'), JSON.stringify({ passed: false, version: manifest.version, reason: 'Qualification in progress' }, null, 2))
-  for (const [label, viewport] of [['desktop', { width: 1280, height: 900 }], ['mobile', { width: 390, height: 844 }]] as const) for (const path of ['/proof', '/loader-proof'] as const) await qualify(assets, path, viewport, label)
+  const appearances = [
+    { label: 'desktop', viewport: { width: 1280, height: 900 }, scheme: 'light' },
+    { label: 'mobile', viewport: { width: 390, height: 844 }, scheme: 'dark' },
+  ] as const
+  for (const { label, viewport, scheme } of appearances) {
+    for (const path of ['/proof', '/loader-proof'] as const) await qualify(assets, path, viewport, label, scheme)
+  }
   await Bun.write(resolve(output, 'report.json'), JSON.stringify({ passed: true, built: !args.includes('--skip-build'), version: manifest.version, results }, null, 2))
   console.info(`PASS support browser qualification: ${results.length} Chromium journeys. Artifacts: ${output}`)
 }

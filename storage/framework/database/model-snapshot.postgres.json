@@ -9473,10 +9473,138 @@
             "type": "unique"
           }
         ]
+      },
+      {
+        "table": "support_inbox_presences",
+        "columns": [
+          {
+            "name": "id",
+            "type": "bigint",
+            "isPrimaryKey": true,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "workspace_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "project_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "conversation_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "user_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "tab_id",
+            "type": "string",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "sequence",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "state",
+            "type": "enum",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false,
+            "enumValues": [
+              "viewing",
+              "composing",
+              "away"
+            ],
+            "enumTypeName": "support_inbox_presences_state_type"
+          },
+          {
+            "name": "expires_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "created_at",
+            "type": "datetime",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": "UTC_TIMESTAMP"
+          },
+          {
+            "name": "updated_at",
+            "type": "datetime",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": true,
+            "hasDefault": false
+          }
+        ],
+        "indexes": [
+          {
+            "name": "support_inbox_presence_tab",
+            "columns": [
+              "workspace_id",
+              "user_id",
+              "tab_id"
+            ],
+            "type": "unique"
+          },
+          {
+            "name": "support_inbox_presence_conversation",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "conversation_id",
+              "expires_at"
+            ],
+            "type": "index"
+          },
+          {
+            "name": "support_inbox_presence_expiry",
+            "columns": [
+              "expires_at"
+            ],
+            "type": "index"
+          }
+        ]
       }
     ]
   },
-  "hash": "a88c093a8316929c9ea9d327d80854ee93fe510d485f12ddd25deca14f0510ba",
+  "hash": "049915fb4e6a2489ae54af0c768a2b3b140e1c206164bc698fcb0800abd3e18b",
   "dialect": "postgres",
-  "updatedAt": "2026-11-26T23:59:50.356Z"
+  "updatedAt": "2026-11-27T01:09:25.885Z"
 }

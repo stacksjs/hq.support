@@ -5,11 +5,13 @@ import { useScrollLock } from '@stacksjs/stx/composables/use-scroll-lock'
 import { useDebounce } from '@stacksjs/stx/composables/use-timer'
 import type { AgentIdentity, Assignment, RoutingAgent, SupportTeamMember, SupportTeam, TeamInbox } from './team-routing'
 import { routingReasonLabel } from './team-routing'
+import { createInboxPresence } from './inbox-presence'
 
 interface Project { id: string | number, public_id: string, name: string, workspace_id: string | number }
 interface Conversation { id: string | number, subject: string, status: string, customer_id?: string | number, updated_at?: string, unread_count?: number, assignee_id?: string | number, team_id?: string | number, inbox_id?: string | number, routing_reason?: string, resolved_at?: number, continued_from_id?: string | null, continuation_id?: string | null }
 interface Message { id: string | number, body: string, visibility: string, author_type: string, created_at: string }
 interface Contact { id?: string | number, name?: string, email?: string, company?: string }
+interface ThreadDetail { conversation: Conversation, messages: Message[], contact: Contact | null, lastAgentReplyId?: string }
 
 export function createInbox() {
   const user = state<{ id: string | number, name: string, email: string } | null>(null)
@@ -80,11 +82,24 @@ export function createInbox() {
     const selected = inboxes().find(row => String(row.id) === routingInbox())
     return identities().filter(row => !selected || teamMembers().some(item => String(item.team_id) === String(selected.team_id) && String(item.user_id) === String(row.id) && item.active && item.workspace_status === 'active'))
   })
-  const drafts = new Map<string, { body: string, visibility: string, key: string, fingerprint: string }>()
-  let retryFingerprint = '', routingKey = '', routingFingerprint = ''
+  const drafts = new Map<string, { body: string, visibility: string, key: string, fingerprint: string, cursor: string | undefined, replyAtStart: string | null }>()
+  let retryFingerprint = '', retryCursor: string | undefined, routingKey = '', routingFingerprint = '', messageRefresh = 0
+  const seenReply = state('0'), replyAtStart = state<string | null>(null)
+  const presence = createInboxPresence(request, async () => { await refreshConversation() }, conversationAccessLost)
+  const viewerNames = derived(() => presence.viewers().map(viewer => person(viewer.userId)).join(', '))
+  const composingNames = derived(() => presence.viewers().filter(viewer => viewer.composing).map(viewer => person(viewer.userId)).join(', '))
+  const replyChanged = derived(() => visibility() === 'public' && !!draft().trim() && replyAtStart() !== null && Number(presence.latestReply()) > Number(replyAtStart()))
+  const collision = derived(() => visibility() === 'public' && !!draft().trim() && (replyChanged() || !!composingNames()))
+  function trackReplyDraft(value: string, mode: string, editing = false) {
+    if (!value.trim()) replyAtStart.set(null)
+    else if (replyAtStart() === null) replyAtStart.set(seenReply())
+    presence.update(editing && mode === 'public' && !!value.trim())
+  }
+  function draftActivity(event: Event) { trackReplyDraft((event.target as HTMLTextAreaElement).value, visibility(), true) }
+  function visibilityActivity(event: Event) { trackReplyDraft(draft(), (event.target as HTMLSelectElement).value) }
   function draftId(selectedProject: string, item: Conversation) { return `${selectedProject}:${item.id}` }
-  function stashDraft(selectedProject = project()) { const item = current(); if (!item) return; const key = draftId(selectedProject, item); if (draft()) drafts.set(key, { body: draft(), visibility: visibility(), key: retryKey, fingerprint: retryFingerprint }); else drafts.delete(key) }
-  function restoreDraft(item: Conversation) { const saved = drafts.get(draftId(project(), item)); draft.set(saved?.body || ''); visibility.set(saved?.visibility || 'public'); retryKey = saved?.key || ''; retryFingerprint = saved?.fingerprint || '' }
+  function stashDraft(selectedProject = project()) { const item = current(); if (!item) return; const key = draftId(selectedProject, item); if (draft()) drafts.set(key, { body: draft(), visibility: visibility(), key: retryKey, fingerprint: retryFingerprint, cursor: retryCursor, replyAtStart: replyAtStart() }); else drafts.delete(key) }
+  function restoreDraft(item: Conversation) { const saved = drafts.get(draftId(project(), item)); draft.set(saved?.body || ''); visibility.set(saved?.visibility || 'public'); retryKey = saved?.key || ''; retryFingerprint = saved?.fingerprint || ''; retryCursor = saved?.cursor; replyAtStart.set(saved?.replyAtStart ?? null) }
   function person(id?: string | number) { return Number(id) ? identities().find(row => String(row.id) === String(id))?.name || `User #${id}` : 'Unassigned' }
   function inboxName(id?: string | number) { const row = inboxes().find(item => String(item.id) === String(id)); return row ? row.name + (row.active ? '' : ' (inactive)') : Number(id) ? `Inbox #${id}` : 'Without team inbox' }
   function candidateDisabled(id: string | number) { const row = agents().find(item => String(item.user_id) === String(id)); return !!row && (row.availability !== 'available' || (current()?.status === 'open' && Number(row.open_count) >= Number(row.capacity) && String(current()?.assignee_id) !== String(id))) }
@@ -107,7 +122,15 @@ export function createInbox() {
     if (!search().trim()) void refresh()
     else debouncedSearch()
   }
-  function clearPrivateState() { drafts.clear(); conversations.set([]); current.set(null); messages.set([]); contact.set(null); draft.set(''); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; routingKey = ''; routingFingerprint = ''; csrf = '' }
+  function clearPrivateState() { presence.stop(!disposed); drafts.clear(); conversations.set([]); current.set(null); messages.set([]); contact.set(null); draft.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = '' }
+  function conversationAccessLost() {
+    selection++
+    const item = current()
+    if (item) drafts.delete(draftId(project(), item))
+    current.set(null); contact.set(null); messages.set([]); assignments.set([]); draft.set(''); replyAtStart.set(null); seenReply.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined
+    threadLoading.set(false); sending.set(false); routingBusy.set(false)
+    error.set('This conversation is no longer available to your account.')
+  }
   function sessionExpired() { cancelList(); selection++; clearPrivateState(); user.set(null); workspaces.set([]); projects.set([]); project.set(''); activeProject = ''; needsWorkspace.set(false); workspaceName.set(''); projectName.set(''); loading.set(false); threadLoading.set(false); sending.set(false); routingBusy.set(false); creating.set(false); notice.set(''); error.set('Sign in to open your workspace.'); if (narrowDetails()) void closeDetails() }
   async function loadCatalog(version: number) {
     const selectedProject = project(), workspace = selectedWorkspace()
@@ -178,7 +201,7 @@ export function createInbox() {
       Object.assign(failure, { unauthorized: true })
       throw failure
     }
-    if (!response.ok) { const failure = new Error(data.message || data.error?.message || (typeof data.error === 'string' ? data.error : '') || `Request failed (${response.status}).`); Object.assign(failure, { code: data.error?.code }); throw failure }
+    if (!response.ok) { const failure = new Error(data.message || data.error?.message || (typeof data.error === 'string' ? data.error : '') || `Request failed (${response.status}).`); Object.assign(failure, { code: data.error?.code, status: response.status }); throw failure }
     return data
   }
 
@@ -223,19 +246,28 @@ export function createInbox() {
 
   async function changeProject() {
     stashDraft(activeProject)
+    presence.stop()
     cancelList(); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); conversations.set([]); threadLoading.set(false)
     selection++
     current.set(null)
     contact.set(null)
     messages.set([])
     draft.set('')
-    retryKey = ''; retryFingerprint = ''; inboxFilter.set(''); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); activeProject = project()
+    retryKey = ''; retryFingerprint = ''; retryCursor = undefined; seenReply.set('0'); replyAtStart.set(null); inboxFilter.set(''); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); activeProject = project()
     await refresh()
   }
 
-  async function select(item: Conversation, loaded?: { conversation: Conversation, messages: Message[], contact: Contact | null }) {
+  function conversationPath(selectedProject: string, id: string | number) { return `/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(id))}` }
+  function showMessages(data: ThreadDetail) {
+    const threadMessages = data.messages || []
+    const last = threadMessages.reduce((latest, message) => message.visibility === 'public' && message.author_type === 'agent' && Number(message.id) > Number(latest) ? String(message.id) : latest, data.lastAgentReplyId ?? '0')
+    messages.set(threadMessages)
+    seenReply.set(last)
+  }
+  async function select(item: Conversation, loaded?: ThreadDetail) {
     if (sending() || routingBusy()) return
     stashDraft()
+    presence.stop()
     const version = ++selection
     const selectedProject = project()
     current.set(item)
@@ -246,11 +278,14 @@ export function createInbox() {
     error.set('')
     notice.set('Loading conversation...'); threadLoading.set(true)
     try {
-      const data = loaded ?? await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(item.id))}`)
+      const path = conversationPath(selectedProject, item.id)
+      const data: ThreadDetail = loaded ?? await request(path)
       if (disposed || version !== selection || selectedProject !== project()) return
       current.set(data.conversation); syncRouting(data.conversation)
-      messages.set(data.messages || [])
+      showMessages(data)
       contact.set(data.contact || null)
+      if (draft().trim() && replyAtStart() === null) replyAtStart.set(seenReply())
+      presence.start(path + '/presence', seenReply())
       notice.set(''); await loadHistory()
     }
     catch (failure) { if (!disposed && version === selection) { error.set(failure instanceof Error ? failure.message : 'Conversation could not be loaded.'); notice.set('') } }
@@ -285,33 +320,62 @@ export function createInbox() {
     catch (failure) { if (!disposed) notice.set(failure instanceof Error ? failure.message : 'The read marker could not be saved.') }
   }
 
-  async function send() {
+  async function refreshConversation() {
+    const item = current(), selectedProject = project(), selected = selection, refresh = ++messageRefresh
+    if (!item) return
+    const data: ThreadDetail = await request(conversationPath(selectedProject, item.id))
+    if (!disposed && selectedProject === project() && selected === selection && messageRefresh === refresh) showMessages(data)
+  }
+  async function reviewReply() {
+    try { await refreshConversation() }
+    catch (failure) { if (!disposed) error.set(failure instanceof Error ? failure.message : 'The conversation could not be refreshed.') }
+  }
+  async function send(confirmed = false) {
     const body = draft().trim()
     const item = current()
     if (!item || !body || !contact() || threadLoading() || sending() || routingBusy()) return
     const selectedProject = project()
+    const mode = visibility(), isPublic = mode === 'public'
+    const fingerprint = JSON.stringify({ project: selectedProject, id: item.id, body, visibility: mode })
+    const retrying = !!retryKey && retryFingerprint === fingerprint
+    if (!retrying && !confirmed && collision()) return
+    const acknowledged = Number(presence.latestReply()) > Number(seenReply()) ? presence.latestReply() : seenReply()
     sending.set(true)
+    if (isPublic) presence.update(false)
     error.set('')
     try {
-      const fingerprint = JSON.stringify({ project: selectedProject, id: item.id, body, visibility: visibility() })
-      if (!retryKey || retryFingerprint !== fingerprint) { retryKey = crypto.randomUUID(); retryFingerprint = fingerprint }
-      const result = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(item.id))}/messages`, { method: 'POST', body: JSON.stringify({ body, visibility: visibility(), idempotencyKey: retryKey }) })
+      if (isPublic && confirmed && !retrying && acknowledged !== seenReply()) {
+        await refreshConversation()
+        if (seenReply() !== acknowledged) return
+      }
+      if (disposed || selectedProject !== project() || current()?.id !== item.id) return
+      if (!retrying) { retryKey = crypto.randomUUID(); retryFingerprint = fingerprint; retryCursor = isPublic ? confirmed ? acknowledged : replyAtStart() ?? seenReply() : undefined }
+      const result = await request(conversationPath(selectedProject, item.id) + '/messages', { method: 'POST', body: JSON.stringify({ body, visibility: mode, idempotencyKey: retryKey, afterAgentReplyId: retryCursor }) })
       if (!result.message?.id) throw new Error('Reply could not be confirmed. Retry without changing the draft to recover the same message.')
       if (disposed || selectedProject !== project()) return
       notice.set(visibility() === 'internal' ? 'Internal note saved.' : 'Reply saved.')
       draft.set(''); drafts.delete(draftId(selectedProject, item))
-      retryKey = ''; retryFingerprint = ''
+      retryKey = ''; retryFingerprint = ''; retryCursor = undefined; trackReplyDraft('', visibility())
       await selectAfterSend(item, selectedProject)
     }
-    catch (failure) { if (!disposed) { stashDraft(); error.set(failure instanceof Error ? failure.message : 'Message was not sent. Your draft is saved here.') } }
+    catch (failure) {
+      if (!disposed && selectedProject === project() && current()?.id === item.id) {
+        if ((failure as { code?: string }).code === 'agent_reply_changed') {
+          retryKey = ''; retryFingerprint = ''; retryCursor = undefined
+          void presence.refresh()
+        }
+        stashDraft()
+        error.set(failure instanceof Error ? failure.message : 'Message was not sent. Your draft is saved here.')
+      }
+    }
     finally { if (!disposed) sending.set(false) }
   }
 
   async function selectAfterSend(item: Conversation, selectedProject: string) {
-    const selected = selection
+    const selected = selection, refresh = ++messageRefresh
     const data = await request(`/api/support/projects/${encodeURIComponent(selectedProject)}/conversations/${encodeURIComponent(String(item.id))}`)
     if (disposed || selectedProject !== project() || selected !== selection) return
-    messages.set(data.messages || [])
+    if (messageRefresh === refresh) showMessages(data)
     current.set(data.conversation)
     notice.set(visibility() === 'internal' ? 'Internal note saved.' : 'Reply saved.')
   }
@@ -363,6 +427,7 @@ export function createInbox() {
     const date = new Date(value)
     return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   }
-  function destroy() { disposed = true; cancelList(); selection++; clearPrivateState(); user.set(null); workspaces.set([]); projects.set([]); project.set(''); activeProject = '';  for (const cleanup of detailsCleanup.splice(0)) cleanup(); detailsScroll?.set(false); detailsOpener = null }
-  return { searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy }
+  function setupPresence() { detailsCleanup.push(presence.listen()) }
+  function destroy() { presence.stop(); disposed = true; cancelList(); selection++; clearPrivateState(); user.set(null); workspaces.set([]); projects.set([]); project.set(''); activeProject = '';  for (const cleanup of detailsCleanup.splice(0)) cleanup(); detailsScroll?.set(false); detailsOpener = null }
+  return { searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy, setupPresence, viewerNames, composingNames, replyChanged, collision, draftActivity, visibilityActivity, reviewReply }
 }

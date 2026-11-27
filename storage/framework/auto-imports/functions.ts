@@ -9,6 +9,7 @@ export { createAutomations } from '../../../resources/functions/support/automati
 export { createSupportConsole } from '../../../resources/functions/support/console'
 export type { SupportProject, SupportWorkspace } from '../../../resources/functions/support/console'
 export { createCustomerSatisfaction } from '../../../resources/functions/support/customer-satisfaction'
+export { createInboxPresence } from '../../../resources/functions/support/inbox-presence'
 export { createInbox } from '../../../resources/functions/support/inbox'
 export { createKnowledge } from '../../../resources/functions/support/knowledge'
 export { createSupport, supportLayoutCss, support } from '../../../resources/functions/support/loader'

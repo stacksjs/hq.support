@@ -9470,10 +9470,137 @@
             "type": "unique"
           }
         ]
+      },
+      {
+        "table": "support_inbox_presences",
+        "columns": [
+          {
+            "name": "id",
+            "type": "bigint",
+            "isPrimaryKey": true,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "workspace_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "project_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "conversation_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "user_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "tab_id",
+            "type": "string",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "sequence",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "state",
+            "type": "enum",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false,
+            "enumValues": [
+              "viewing",
+              "composing",
+              "away"
+            ]
+          },
+          {
+            "name": "expires_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "created_at",
+            "type": "datetime",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": "UTC_TIMESTAMP"
+          },
+          {
+            "name": "updated_at",
+            "type": "datetime",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": true,
+            "hasDefault": false
+          }
+        ],
+        "indexes": [
+          {
+            "name": "support_inbox_presence_tab",
+            "columns": [
+              "workspace_id",
+              "user_id",
+              "tab_id"
+            ],
+            "type": "unique"
+          },
+          {
+            "name": "support_inbox_presence_conversation",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "conversation_id",
+              "expires_at"
+            ],
+            "type": "index"
+          },
+          {
+            "name": "support_inbox_presence_expiry",
+            "columns": [
+              "expires_at"
+            ],
+            "type": "index"
+          }
+        ]
       }
     ]
   },
-  "hash": "1d1ba1eb0cb4c741255ac65a1690277d719fc705ff2cdcf1a95ac06bd1712af8",
+  "hash": "5583b48851ff8434ccaa0cc1d583288c9abf80dd5b69aca67a0ee881ad24e0ef",
   "dialect": "sqlite",
-  "updatedAt": "2026-11-26T23:59:50.161Z"
+  "updatedAt": "2026-11-27T01:09:25.366Z"
 }

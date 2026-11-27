@@ -167,6 +167,14 @@ export function summary(row: Row, routing = false) {
 export function messageView(row: Row) {
   return { id: String(row.id), conversation_id: String(row.conversation_id), body: String(row.body), visibility: String(row.visibility), author_type: String(row.author_type), created_at: isoTime(row.created_at), delivery_status: String(row.delivery_status) }
 }
+export async function latestAgentReplyId(project: Row, conversationId: unknown) {
+  const row = await one("SELECT id FROM support_messages WHERE workspace_id = ? AND project_id = ? AND conversation_id = ? AND visibility = 'public' AND author_type = 'agent' ORDER BY id DESC LIMIT 1", [project.workspace_id, project.id, identifier(conversationId)])
+  return String(row?.id ?? '0')
+}
+export async function assertAgentReplyCursor(project: Row, conversationId: unknown, cursor: unknown) {
+  if (typeof cursor !== 'string' || (cursor !== '0' && (!/^[1-9]\d*$/.test(cursor) || !Number.isSafeInteger(Number(cursor))))) fail(422, 'invalid_reply_cursor', 'Use the latest agent reply identifier from this conversation.')
+  if (cursor !== await latestAgentReplyId(project, conversationId)) fail(409, 'agent_reply_changed', 'The conversation has a new public reply. Review it before sending your draft.')
+}
 export async function conversation(projectRow: Row, id: unknown, person?: Row): Promise<Row> {
   const row = await one(`SELECT * FROM support_conversations WHERE id = ? AND project_id = ?${person ? ' AND contact_id = ?' : ''}`, [identifier(id), projectRow.id, ...(person ? [identifier(person.id)] : [])])
   if (!row) fail(404, 'not_found', 'Conversation not found.')
@@ -194,6 +202,7 @@ export async function conversations(projectRow: Row, person?: Row, cursor?: stri
 }
 export async function detail(projectRow: Row, id: unknown, person?: Row, beforeMessage?: string | null, options: { limit?: unknown, beforeAttachment?: string | null, attachmentLimit?: unknown } = {}) {
   const row = await conversation(projectRow, id, person)
+  const lastAgentReplyId = person || beforeMessage ? undefined : await latestAgentReplyId(projectRow, row.id)
   const before = historyCursor(beforeMessage), attachmentBefore = historyCursor(options.beforeAttachment)
   // The messenger replaces its transcript and does not consume older cursors; retain its 500-row default.
   const limit = historyLimit(options.limit, 500, 500), attachmentLimit = historyLimit(options.attachmentLimit, 100, 100)
@@ -202,7 +211,7 @@ export async function detail(projectRow: Row, id: unknown, person?: Row, beforeM
   const personRow = await one('SELECT * FROM support_contacts WHERE id = ? AND project_id = ? AND workspace_id = ?', [row.contact_id, projectRow.id, projectRow.workspace_id])
   const files = await query(`SELECT id, file_name, mime_type, bytes, status, visibility FROM support_attachments WHERE workspace_id = ? AND project_id = ? AND conversation_id = ? AND id < ? AND status = 'stored'${person ? " AND (visibility = 'public' OR contact_id = ?)" : ''} ORDER BY id DESC LIMIT ?`, [projectRow.workspace_id, projectRow.id, row.id, attachmentBefore, ...(person ? [person.id] : []), attachmentLimit + 1])
   const attachments = boundedPage(files, attachmentLimit, customerProjectionLimits.attachmentBytes, file => ({ id: String(file.id), fileName: file.file_name, mimeType: file.mime_type, bytes: Number(file.bytes), status: file.status, visibility: file.visibility }))
-  return boundedEnvelope({ attachments: attachments.items.reverse(), attachmentsNextCursor: attachments.nextCursor, conversation: person ? await customerConversationSummary(row) : summary(row, true), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.items.reverse(), messagesNextCursor: messages.nextCursor })
+  return boundedEnvelope({ ...(lastAgentReplyId === undefined ? {} : { lastAgentReplyId }), attachments: attachments.items.reverse(), attachmentsNextCursor: attachments.nextCursor, conversation: person ? await customerConversationSummary(row) : summary(row, true), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.items.reverse(), messagesNextCursor: messages.nextCursor })
 }
 export async function createConversation(projectRow: Row, identity: Row, input: Row, person?: Row, automation?: { workflowRunId: number, automationDepth: number }, options?: { mediaOnly?: boolean, continuedFrom?: Row }) {
   return await idempotent(projectRow, options?.continuedFrom ? `conversation-continuation:${options.continuedFrom.id}` : `conversation:${person?.id ?? identity.externalId}`, input.idempotencyKey, input, async () => {
@@ -223,6 +232,10 @@ export async function reply(projectRow: Row, id: unknown, input: Row, actor: { c
   if (actor.customer) await conversation(projectRow, id, actor.customer)
   return await idempotent(projectRow, `reply:${id}:${actor.customer?.id ?? actor.userId ?? 'server'}`, input.idempotencyKey, input, async () => {
     let row = await conversation(projectRow, id, actor.customer)
+    if (actor.userId && visibility === 'public' && input.afterAgentReplyId !== undefined) {
+      await member(actor.userId, Number(projectRow.workspace_id))
+      await assertAgentReplyCursor(projectRow, row.id, input.afterAgentReplyId)
+    }
     let previousConversationId: string | undefined
     if (actor.customer) {
       const admission = await (await import('./reopening')).admitCustomerReply(projectRow, row, actor.customer, input, actor.mediaOnly, actor.acceptedAt)

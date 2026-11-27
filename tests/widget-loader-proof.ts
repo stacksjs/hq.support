@@ -36,7 +36,7 @@ try {
   await messenger.updateComplete
   check(!!messenger.shadowRoot.querySelector('section') && !other.opened, 'open changes only the selected controller')
   check(getComputedStyle(fixedHost).position === 'fixed', 'host layout style works under the strict script CSP')
-  check(getComputedStyle(messenger.shadowRoot.querySelector('section')).backgroundColor === 'rgb(255, 255, 255)', 'native shadow styles work with the emitted CSP hashes')
+  check(getComputedStyle(messenger.shadowRoot.querySelector('section')).borderTopLeftRadius === '20px', 'native shadow styles work with the emitted CSP hashes')
   messenger.emit('unread', { count: 3 })
   check(launcher.unread === 3, 'unread event updates this instance launcher')
   first.close()

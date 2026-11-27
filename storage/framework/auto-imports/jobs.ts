@@ -2,6 +2,7 @@
 export { default as ApplyEnterpriseRetention } from '../../../app/Jobs/ApplyEnterpriseRetention'
 export { default as DrainInboxOverflow } from '../../../app/Jobs/DrainInboxOverflow'
 export { default as IndexSupportKnowledge } from '../../../app/Jobs/IndexSupportKnowledge'
+export { default as PruneInboxPresence } from '../../../app/Jobs/PruneInboxPresence'
 export { default as RunChannelDelivery } from '../../../app/Jobs/RunChannelDelivery'
 export { default as RunSupportEmail } from '../../../app/Jobs/RunSupportEmail'
 export { default as RunSupportImport } from '../../../app/Jobs/RunSupportImport'

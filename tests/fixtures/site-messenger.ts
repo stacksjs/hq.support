@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
 import { resolve, sep } from 'node:path'
+import { browserSessionCookie, startBrowserSession } from '@stacksjs/auth'
 import { overridesReady } from '@stacksjs/config'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { route } from '@stacksjs/router'
@@ -17,12 +18,14 @@ await route.importRoutes()
 const api = await route.serve({ port: 0, hostname: '127.0.0.1' })
 const dist = resolve(import.meta.dir, '../../dist')
 let sessions = 0
+let agentCookie = ''
 const traffic: string[] = []
 const host = Bun.serve({
   hostname: '127.0.0.1',
   port: 0,
   async fetch(request) {
     const url = new URL(request.url)
+    if (url.pathname === '/_fixture/agent') return new Response(null, { status: 303, headers: { location: '/app', 'set-cookie': agentCookie } })
     if (url.pathname.startsWith('/api/')) {
       if (request.method === 'POST' && url.pathname.endsWith('/session')) sessions++
       const headers = new Headers(request.headers)
@@ -39,13 +42,14 @@ const host = Bun.serve({
       return new Response(response.body, { status: response.status, headers: outgoing })
     }
     if (url.pathname === '/favicon.ico') return new Response(null, { status: 204 })
-    const path = url.pathname === '/' ? '/index.html' : url.pathname
+    const path = url.pathname === '/' ? '/index.html' : url.pathname === '/app' ? '/app.html' : url.pathname
     const file = resolve(dist, '.' + path)
     if (!file.startsWith(dist + sep) || !await Bun.file(file).exists()) return new Response('Not found', { status: 404 })
     return new Response(Bun.file(file))
   },
 })
 let browser: Awaited<ReturnType<typeof launch>> | undefined
+let agentBrowser: Awaited<ReturnType<typeof launch>> | undefined
 try {
   const origin = host.url.origin
   delete process.env.SUPPORT_SITE_MESSENGER_PROJECT_ID
@@ -75,6 +79,10 @@ try {
   await request('/register', 'POST', 200, { name: 'Site owner', email, password, password_confirmation: password })
   const login = await request('/login', 'POST', 200, { email, password })
   const owner = login.access_token ?? login.token
+  const browserLogin = await request('/login', 'POST', 200, { email, password })
+  const agentSession = await startBrowserSession(browserLogin.access_token ?? browserLogin.token)
+  assert.ok(agentSession)
+  agentCookie = browserSessionCookie(agentSession)
   const { workspace } = await request('/support/workspaces', 'POST', 201, { name: 'First-party support' }, owner)
   const { project } = await request(`/support/workspaces/${workspace.id}/projects`, 'POST', 201, { name: 'Marketing site' }, owner)
   const prefix = `/support/projects/${project.public_id}`
@@ -130,20 +138,74 @@ try {
   const inbox = await request(prefix + '/inbox', 'GET', 200, undefined, owner)
   assert.equal(inbox.conversations.length, 1)
   const id = inbox.conversations[0].id
-  await request(`${prefix}/conversations/${id}/messages`, 'POST', 201, {
-    body: 'Reply from the team inbox',
-    idempotencyKey: crypto.randomUUID(),
-  }, owner)
+  agentBrowser = await launch({ headless: true, shared: false, chromePath: process.env.CHROME_PATH })
+  const agent = agentBrowser.cdp
+  agent.on('Runtime.exceptionThrown', event => errors.push(event.exceptionDetails.text))
+  await agent.intercept([{ urlPattern: '*' }], async (event, session) => {
+    if (new URL(event.request.url).origin === origin)
+      await session.send('Fetch.continueRequest', { requestId: event.requestId })
+    else
+      await session.send('Fetch.fulfillRequest', { requestId: event.requestId, responseCode: 200, body: '' })
+  })
+  assert.ok(await navigate(agent, origin + '/_fixture/agent'))
+  await waitFor(() => agent.evaluate(`!!document.querySelector('.conversation-row')`), 15000, { label: 'Agent opens the real inbox' })
+  await agent.evaluate(`document.querySelector('.conversation-row').click()`)
+  await waitFor(() => agent.evaluate(`document.querySelector('#reply')?.disabled === false`), 15000, { label: 'Agent opens the visitor conversation' })
+  const typeReply = (value: string) => agent.evaluate(`(() => {
+    const draft = document.querySelector('#reply')
+    draft.value = ${JSON.stringify(value)}
+    draft.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  const typingStatus = `${shadow}?.querySelector('.typing-status')`
+  const typingShown = `${typingStatus}?.textContent.trim() === 'Support is typing…'`
+  const typingHidden = `${typingStatus}?.textContent.trim() === ''`
+  await wait(typingHidden, 'Agent viewing does not show typing')
+  const beganTyping = performance.now()
+  await typeReply('Private until it is sent')
+  await wait(typingShown, 'Public keystrokes show a typing indicator')
+  const typingMs = Math.round(performance.now() - beganTyping)
+  assert.equal(await cdp.evaluate(`${typingStatus}.getAttribute('role')`), 'status')
+  assert.equal(await cdp.evaluate(`${shadow}.textContent.includes('Private until it is sent')`), false)
+  await wait(typingHidden, 'Typing indicator expires while the agent keeps an idle draft')
+  assert.equal(await agent.evaluate(`document.querySelector('#reply').value`), 'Private until it is sent')
+  await agent.evaluate(`(() => {
+    const select = document.querySelector('#reply-mode')
+    select.value = 'internal'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })()`)
+  await typeReply('Internal note activity')
+  const typingPolls = () => traffic.filter(entry => entry === `GET /api/widget/projects/${project.public_id}/conversations/${id}/typing 200`).length
+  const beforeNote = typingPolls()
+  await waitFor(() => typingPolls() > beforeNote, 5000, { label: 'Visitor polls while the agent edits a private note' })
+  await wait(typingHidden, 'Private note editing leaves the customer indicator blank')
+  await agent.evaluate(`(() => {
+    const select = document.querySelector('#reply-mode')
+    select.value = 'public'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })()`)
+  const beforeModeSwitch = typingPolls()
+  await waitFor(() => typingPolls() > beforeModeSwitch, 5000, { label: 'Visitor polls after switching the reply mode' })
+  await wait(typingHidden, 'Switching modes alone does not show typing')
+  await typeReply('Reply from the team inbox')
+  await wait(typingShown, 'Public typing resumes')
+  await agent.evaluate(`document.querySelector('#reply').form.requestSubmit()`)
+  await wait(typingHidden, 'Sending clears the typing indicator')
   await wait(`${shadow}?.querySelector('.messages')?.textContent.includes('Reply from the team inbox')`, 'agent reply arrives in browser')
   await wait(`${shadow}?.activeElement?.id === 'support-close'`, 'incoming replies preserve keyboard focus')
   const artifacts = resolve(import.meta.dir, '../../storage/framework/runtime/site-messenger-browser')
   await mkdir(artifacts, { recursive: true })
   const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' })
   await Bun.write(resolve(artifacts, 'homepage-chat-375.png'), Buffer.from(screenshot.data, 'base64'))
+  await typeReply('Another unsent draft')
+  await wait(typingShown, 'Typing indicator is visible before closing Messenger')
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
   await wait("document.activeElement?.id === 'site-chat'", 'closing restores focus to the homepage')
   assert.equal(await cdp.evaluate("document.querySelector('#site-chat').getAttribute('aria-expanded')"), 'false')
+  await Bun.sleep(2250)
+  const closedPolls = typingPolls()
+  await Bun.sleep(2250)
+  assert.equal(typingPolls(), closedPolls, 'The closed Messenger no longer polls for typing')
 
   assert.ok(await navigate(cdp, origin))
   assert.equal(sessions, 1, 'Reload leaves chat idle until the visitor opens it')
@@ -160,7 +222,8 @@ try {
   const unauthenticated = await fetch(boundary, { headers: { referer, 'sec-fetch-site': 'same-origin' } })
   assert.equal(unauthenticated.status, 401, 'First-party reads still require a project-scoped customer credential')
   assert.deepEqual(errors, [])
-  console.info('PASS homepage Messenger')
+  await Bun.write(resolve(artifacts, 'typing.json'), JSON.stringify({ typingMs, runtimeErrors: errors.length }))
+  console.info(`PASS homepage Messenger (typing visible in ${typingMs} ms)`)
 }
 catch (error) {
   console.error(traffic.join('\n'))
@@ -168,6 +231,7 @@ catch (error) {
   throw error
 }
 finally {
+  await agentBrowser?.close()
   await browser?.close()
   await closeSharedBrowsers()
   await host.stop(true)

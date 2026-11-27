@@ -12,7 +12,7 @@ The automation API is the published `@stacksjs/testing/browser` subpath. `@stack
 
 ## What the runner checks
 
-The runner snapshots the emitted public manifest and its checksum-verified artifacts into a private temporary directory. It serves the existing plain HTML element host and hosted loader proof using dynamic loopback ports. Each desktop (1280x900) and mobile (390x844) journey gets a fresh native Chromium context/process and an independent deterministic customer API fixture. No native authentication/API boot, database, customer workspace, payment account or provider credentials are used.
+The runner snapshots the emitted public manifest and its checksum-verified artifacts into a private temporary directory. It serves the existing plain HTML element host and hosted loader proof using dynamic loopback ports. The desktop journeys (1280x900) use light mode and the mobile journeys (390x844) use dark mode. Each gets a fresh native Chromium context/process and an independent deterministic customer API fixture. No native authentication/API boot, database, customer workspace, payment account or provider credentials are used.
 
 Both pages receive `default-src 'none'` and `script-src 'self'`, with native manifest CSS hashes, no `unsafe-inline` or `unsafe-eval`. The existing element host's test script is served as an external module, not exempted by a permissive CSP. A pre-navigation observer collects actual CSP violations while the emitted modules execute normally. Browser requests to other origins are refused and reported as failures. CDP evaluation only observes fixture outcomes; the compiled bundle is never evaluated through a privileged protocol bypass.
 

@@ -68,6 +68,23 @@ supports Escape, backdrop and close-button dismissal. Closing returns focus to
 the trigger. The same native assignment and claim/release controls remain
 accessible at 375px; opening or dismissing the drawer preserves the reply draft.
 
+### Agent collaboration
+
+The selected conversation shows other signed-in viewers. A teammate composing
+a public reply appears in the composer. A new agent reply refreshes the
+transcript and preserves the local draft. The agent can review the updated
+conversation or explicitly send their reply.
+
+Each visible tab renews its lease about every five seconds. Leaving a
+conversation releases its lease. A disconnected tab expires after 24 seconds,
+and the next successful renewal refreshes the visible roster. The server
+combines tabs per agent, checks active workspace membership on every renewal,
+and stores only scope, tab identity, sequence, state and expiry. SQLite and
+PostgreSQL share the same lease rules. The public Messenger receives no
+presence data. The workspace transaction also compares the last public agent
+reply before creating a new reply or reserving provider cost. Retrying an
+already accepted send with its original key returns the existing message.
+
 Reply and private-note drafts stay in memory under their project/conversation
 identity through list refreshes, transport errors and thread selection. They
 are not persisted to browser storage or restored after a full page reload.
