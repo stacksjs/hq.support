@@ -65,7 +65,7 @@ jobs:
           version=$(bun --no-env-file -e 'import library from "./config/library"; console.log(library.packages.find(pkg => pkg.name === "@stacksjs/support-elements")?.version ?? "")')
           SUPPORT_ELEMENTS_VERSION="$version" bun --no-env-file scripts/verify-elements-registry-source.ts
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.2
         with:
           artifact-ids: ${{ steps.widget.outputs.artifact_id }}
           path: storage/framework/runtime/support-elements-release
