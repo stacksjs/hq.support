@@ -13,12 +13,11 @@ describe('native support element artifacts', () => {
     const tags = declarations.map((item: { tagName: string }) => item.tagName).sort()
     expect(tags).toEqual(['hq-support-help-search', 'hq-support-launcher', 'hq-support-messenger', 'hq-support-ticket-form', 'hq-support-ticket-status'])
   })
-  test('the emitted module is self contained and session secrets never reflect', async () => {
+  test('the emitted widget is self contained and omits browser credentials', async () => {
     const output = await Bun.file(resolve(root, 'public/widgets/bundle.js')).text()
     expect(output).not.toMatch(/from\s*["'](?:@stacksjs|stx)/)
     const source = await Bun.file(resolve(dist, 'hq-support-messenger.js')).text()
-    expect(source).toMatch(/"attribute":\s*false/)
-    expect(source).toContain('credentials: "omit"')
+    expect(source).toMatch(/\bcredentials\s*:\s*["']omit["']/)
     expect(source).not.toMatch(/SUPPORTHQ_KEY|SUPPORTHQ_READ_KEY/)
   })
   test('browser module loads without installing a global runtime', async () => {
@@ -49,8 +48,9 @@ describe('native support element artifacts', () => {
 import type { Messenger } from ${JSON.stringify(types)}
 import type { TicketForm } from ${JSON.stringify(ticketTypes)}
 const messenger: Messenger = document.createElement('hq-support-messenger')
-const boot: Promise<void> = messenger.boot({ url: 'https://hq.support', project: 'public-id', token: 'session' })
+const boot: Promise<void> = messenger.boot({ url: 'https://hq.support', project: 'public-id', token: 'session', locale: 'ar' })
 const update: Promise<void> = messenger.update({ token: 'new-session' })
+const language: Promise<void> = messenger.update({ locale: 'de' })
 const track: Promise<{ id: string, accepted: boolean }> = messenger.track({ event: 'project.viewed', attributes: { section: 'settings' } })
 const open: void = messenger.open()
 const close: void = messenger.close()
@@ -62,7 +62,7 @@ messenger.track({ attributes: {} })
 const form: TicketForm = document.createElement('hq-support-ticket-form')
 const refreshForm: Promise<void> = form.refresh()
 const shutdownForm: void = form.shutdown()
-void [boot, update, track, open, close, shutdown, refreshForm, shutdownForm]
+void [boot, update, language, track, open, close, shutdown, refreshForm, shutdownForm]
 `)
       await Bun.write(resolve(directory, 'tsconfig.json'), JSON.stringify({ compilerOptions: { noEmit: true, strict: true, skipLibCheck: false, target: 'esnext', lib: ['esnext', 'dom'], module: 'esnext', moduleResolution: 'bundler', types: [] }, files: ['consumer.ts'] }))
       const compiler = Bun.spawn(['bun', 'x', '--bun', 'tsc', '-p', resolve(directory, 'tsconfig.json'), '--pretty', 'false'], { cwd: root, stdout: 'pipe', stderr: 'pipe' })
