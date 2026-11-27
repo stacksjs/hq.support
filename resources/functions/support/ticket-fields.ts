@@ -1,7 +1,7 @@
 export interface TicketField { key: string, label: string, type: 'string' | 'email' | 'number' | 'integer' | 'boolean' | 'date' | 'enum', required: boolean, visibility: 'customer' | 'internal', options?: string[], default?: unknown }
 export interface TicketState { key: string, label: string, category: 'open' | 'pending' | 'resolved' }
 export interface TicketForm { fields: TicketField[], states: TicketState[] }
-export interface TicketType { id: string | number, name: string, kind: string, sla_policy_id: string | number, fields: TicketField[], states: TicketState[] }
+export interface TicketType { id: string | number, name: string, kind: string, opens_conversation?: boolean | number, sla_policy_id: string | number, fields: TicketField[], states: TicketState[] }
 export const ticketStates: TicketState[] = [{ key: 'open', label: 'Open', category: 'open' }, { key: 'pending', label: 'Pending', category: 'pending' }, { key: 'resolved', label: 'Resolved', category: 'resolved' }]
 export function stored<T>(value: unknown, fallback: T): T { try { return typeof value === 'string' ? JSON.parse(value) as T : value && typeof value === 'object' ? value as T : fallback } catch { return fallback } }
 export function normalizeType(row: TicketType): TicketType { return { ...row, fields: stored(row.fields, []), states: stored(row.states, ticketStates) } }

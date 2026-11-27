@@ -7586,6 +7586,15 @@
             "isUnique": false,
             "isNullable": true,
             "hasDefault": false
+          },
+          {
+            "name": "opens_conversation",
+            "type": "boolean",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": false
           }
         ],
         "indexes": []
@@ -9464,7 +9473,7 @@
       }
     ]
   },
-  "hash": "0414f835cbe31bc2b51da00040af404ad610e0de374f99469179761518b92125",
+  "hash": "1d1ba1eb0cb4c741255ac65a1690277d719fc705ff2cdcf1a95ac06bd1712af8",
   "dialect": "sqlite",
-  "updatedAt": "2026-11-14T17:55:35.866Z"
+  "updatedAt": "2026-11-26T23:59:50.161Z"
 }

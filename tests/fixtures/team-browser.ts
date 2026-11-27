@@ -56,6 +56,7 @@ try {
   host = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const url = new URL(request.url)
     if (url.pathname.startsWith('/_fixture/')) return new Response(null, { status: 303, headers: { location: '/app/team-settings', 'set-cookie': url.pathname.endsWith('/agent') ? agentCookie : ownerCookie } })
+    if (url.pathname === '/case-fixture') return new Response('<!doctype html><html lang="en"><head><title>Support case fixture</title></head><body></body></html>', { headers: { 'content-type': 'text/html' } })
     if (url.pathname.startsWith('/api/')) {
       if (failList && request.method === 'GET' && url.pathname.endsWith('/inbox')) { failList = false; return Response.json({ error: { message: 'Fixture inbox refresh failure. Reply draft kept.' } }, { status: 503 }) }
       if (failSend && request.method === 'POST' && url.pathname.endsWith('/messages')) { failSend = false; return Response.json({ error: { message: 'Fixture transport failure. Keep this reply draft.' } }, { status: 503 }) }
@@ -68,7 +69,7 @@ try {
       return new Response(response.body, { status: response.status, headers: outgoing })
     }
     if (url.pathname === '/favicon.ico') return new Response(null, { status: 204 })
-    const path = ['/app', '/app/team-settings', '/app/reports'].includes(url.pathname) ? `${url.pathname}.html` : url.pathname
+    const path = ['/app', '/app/team-settings', '/app/reports', '/app/ticket-settings'].includes(url.pathname) ? `${url.pathname}.html` : url.pathname
     const file = resolve(output, '.' + decodeURIComponent(path))
     if (!file.startsWith(output + sep)) return new Response('Forbidden', { status: 403 })
     return await Bun.file(file).exists() ? new Response(Bun.file(file), { headers: path.endsWith('.html') ? { 'content-type': 'text/html', 'cache-control': 'no-store' } : {} }) : new Response('Not found', { status: 404 })
@@ -245,6 +246,32 @@ try {
   await input('#report-project', String(sibling.public_id))
   await waitFor(() => evaluate(`${timingCards}.length === 3 && ${timingCards}.every(card => card.querySelector('strong').textContent === 'No data')`), 15000, { label: 'Project without measured replies' })
   check(await evaluate(`document.querySelector('#report-project').value === ${JSON.stringify(String(sibling.public_id))}`), 'Reports switches projects without retaining the previous project’s timing values')
+
+  await navigate(cdp, origin + '/app/ticket-settings', { quietMs: 100, timeoutMs: 20000 })
+  await waitFor(() => evaluate(`document.querySelector('#type-opens-conversation')?.checked === false`), 15000, { label: 'Inbox option defaults off for new customer types' })
+  await input('#type-name', 'Private account help')
+  await evaluate(`document.querySelector('#type-opens-conversation').click()`)
+  await click('Create ticket type'); await text('Ticket type created.')
+  check(Number((await one('SELECT opens_conversation FROM support_ticket_types WHERE project_id = ? AND name = ?', [project.id, 'Private account help']))?.opens_conversation) === 1, 'owner enables private inbox admission through compiled ticket settings')
+  await http(prefix, 'PATCH', { allowedOrigins: [origin], anonymousEnabled: true }, owner.token)
+
+  await navigate(cdp, origin + '/case-fixture', { quietMs: 100, timeoutMs: 20000 })
+  const widget = `/api/widget/projects/${project.public_id}`
+  await evaluate(`(async()=>{
+    await import('/widgets/bundle.js');
+    const response = await fetch(${JSON.stringify(widget + '/session')}, { method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!response.ok) throw new Error('Case fixture session ' + response.status);
+    const form = document.createElement('hq-support-ticket-form');
+    Object.assign(form, { apiUrl: location.origin, projectId: ${JSON.stringify(project.public_id)}, sessionToken: (await response.json()).token });
+    form.addEventListener('delivery', event => { form.dataset.conversation = event.detail.ticket.conversation_id });
+    document.body.append(form);
+  })()`)
+  const formRoot = `document.querySelector('hq-support-ticket-form').shadowRoot`
+  await waitFor(() => evaluate(`${formRoot}.querySelector('#ticket-type')?.selectedOptions[0]?.textContent === 'Private account help' && !${formRoot}.querySelector('fieldset').disabled`), 15000, { label: 'Compiled guest case form ready' })
+  await evaluate(`(()=>{const root=${formRoot}; for (const [selector,value] of [['#ticket-subject','Private browser request'],['#ticket-body','Please answer in this private case.']]) { const field=root.querySelector(selector); field.value=value; field.dispatchEvent(new Event('input',{bubbles:true})); } root.querySelector('form').requestSubmit();})()`)
+  await waitFor(() => evaluate(`Boolean(document.querySelector('hq-support-ticket-form').dataset.conversation)`), 15000, { label: 'Guest form returns a linked conversation' })
+  const caseConversation = await evaluate(`document.querySelector('hq-support-ticket-form').dataset.conversation`)
+  check(Number((await one('SELECT inbox_id FROM support_conversations WHERE id = ? AND project_id = ?', [caseConversation, project.id]))?.inbox_id) === Number(inbox.id), 'native form submission reaches the default project inbox')
   console.info(`PASS team UI functional (${assertions.length} checks)`)
   await Bun.write(resolve(artifacts, 'report.json'), JSON.stringify({ passed: runtimeErrors.length === 0, functionalPassed: true, assertions, runtimeErrors, browser: (await cdp.send('Browser.getVersion')).product }, null, 2))
   assert.deepEqual(runtimeErrors, [], 'No browser runtime errors: retain this gate until the native compiler fix is published')

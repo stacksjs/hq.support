@@ -124,8 +124,8 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
       body = { tickets: await Promise.all((await query('SELECT * FROM support_tickets WHERE project_id = ? ORDER BY id DESC LIMIT 100', [project.id])).map(row => ticketView(row))) }
     }
     else if (operation === 'tickets.create' || operation === 'widget.tickets.create') {
-      const { createTicket } = await import('./tickets')
-      body = await support.idempotent(project, `ticket:${person?.id ?? account?.id}`, data.idempotencyKey, data, async () => ({ ticket: await createTicket(project, data, person) })); status = 201
+      const { submitTicket } = await import('./tickets')
+      body = await submitTicket(project, data, person ? { customer: person } : { userId: account!.id }); status = 201
     }
     else if (operation === 'widget.tickets.detail' || operation === 'tickets.update') {
       const { ticket, ticketView, updateTicket } = await import('./tickets')

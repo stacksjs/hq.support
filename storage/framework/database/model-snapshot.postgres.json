@@ -7588,6 +7588,15 @@
             "isUnique": false,
             "isNullable": true,
             "hasDefault": false
+          },
+          {
+            "name": "opens_conversation",
+            "type": "boolean",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": false
           }
         ],
         "indexes": []
@@ -9467,7 +9476,7 @@
       }
     ]
   },
-  "hash": "c9fe87fc681fd08b7b517ad65dc363ef6acedddd914082addf6d79495bb32b11",
+  "hash": "a88c093a8316929c9ea9d327d80854ee93fe510d485f12ddd25deca14f0510ba",
   "dialect": "postgres",
-  "updatedAt": "2026-11-14T17:55:36.306Z"
+  "updatedAt": "2026-11-26T23:59:50.356Z"
 }

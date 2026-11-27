@@ -11,7 +11,7 @@ export function createTicketConfiguration() {
   const tab = state('types')
   const types = state<TicketType[]>([]), calendars = state<Calendar[]>([]), policies = state<Policy[]>([])
   const agents = state<{ id: string, name: string, role: string }[]>([])
-  const name = state(''), kind = state('customer'), policyId = state('')
+  const name = state(''), kind = state('customer'), policyId = state(''), opensConversation = state(false)
   const fields = state<TicketField[]>([]), states = state<TicketState[]>([])
   const editingField = state(false), fieldIndex = state(-1), fieldKey = state(''), fieldLabel = state(''), fieldType = state('string'), fieldVisibility = state('customer'), fieldRequired = state(false), fieldOptions = state(''), defaultEnabled = state(false), defaultValue = state('')
   const editingState = state(false), stateIndex = state(-1), stateKey = state(''), stateLabel = state(''), stateCategory = state('open')
@@ -23,7 +23,7 @@ export function createTicketConfiguration() {
   let selectedProject = ''
   async function load() {
     if (!workspace.project()) return
-    if (selectedProject && selectedProject !== workspace.project()) { fields.set([]); states.set([]); name.set(''); kind.set('customer'); policyId.set(''); editingField.set(false); editingState.set(false); editingWindow.set(false); calendarId.set(''); escalationAssignee.set('') }
+    if (selectedProject && selectedProject !== workspace.project()) { fields.set([]); states.set([]); name.set(''); kind.set('customer'); policyId.set(''); opensConversation.set(false); editingField.set(false); editingState.set(false); editingWindow.set(false); calendarId.set(''); escalationAssignee.set('') }
     selectedProject = workspace.project()
     const current = selectedProject
     const result = await workspace.run(async () => {
@@ -78,9 +78,9 @@ export function createTicketConfiguration() {
   function removeState(index: number) { states.set(states().filter((value, position) => position !== index)); editingState.set(false) }
   async function createType() {
     if (editingField() || editingState()) { fail('Apply or cancel the field and state editors before creating this type.'); return }
-    if (await create('/ticket-types', { name: name(), kind: kind(), slaPolicyId: policyId() || undefined, fields: fields(), states: states() }, 'Ticket type created. New tickets use this definition; existing snapshots are preserved.')) name.set('')
+    if (await create('/ticket-types', { name: name(), kind: kind(), opensConversation: kind() === 'customer' && opensConversation(), slaPolicyId: policyId() || undefined, fields: fields(), states: states() }, 'Ticket type created. New tickets use this definition; existing snapshots are preserved.')) name.set('')
   }
-  function copyType(type: TicketType) { name.set(`${type.name} copy`); kind.set(type.kind); policyId.set(Number(type.sla_policy_id) ? String(type.sla_policy_id) : ''); fields.set(structuredClone(type.fields)); states.set(structuredClone(type.states.filter(value => !ticketStates.some(builtin => builtin.key === value.key)))); editingField.set(false); editingState.set(false); tab.set('types') }
+  function copyType(type: TicketType) { name.set(`${type.name} copy`); kind.set(type.kind); policyId.set(Number(type.sla_policy_id) ? String(type.sla_policy_id) : ''); opensConversation.set(Number(type.opens_conversation) === 1); fields.set(structuredClone(type.fields)); states.set(structuredClone(type.states.filter(value => !ticketStates.some(builtin => builtin.key === value.key)))); editingField.set(false); editingState.set(false); tab.set('types') }
   function toggleDay(day: number) { weekdays.set(weekdays().includes(day) ? weekdays().filter(value => value !== day) : [...weekdays(), day].sort()) }
   function applyWindow() { if (!weekdays().length || !/^([01]\d|2[0-3]):[0-5]\d$/.test(start()) || !/^(([01]\d|2[0-3]):[0-5]\d|24:00)$/.test(end()) || start() >= end()) { fail('Choose weekdays and an end time after the start. Split overnight hours into separate windows.'); return }; windows.set([...windows(), { weekdays: [...weekdays()], start: start(), end: end() }]); editingWindow.set(false); workspace.error.set('') }
   function removeWindow(index: number) { windows.set(windows().filter((value, position) => position !== index)) }
@@ -92,5 +92,5 @@ export function createTicketConfiguration() {
   function policyLabel(id: string | number) { return policies().find(value => String(value.id) === String(id))?.name || 'No SLA policy' }
   function stateLabels(type: TicketType) { return type.states.map(item => item.label).join(', ') }
   function windowLabel(window: Window) { return `${window.weekdays.map(day => days.find(value => value.key === day)?.name).join(', ')} ${window.start}–${window.end}` }
-  return { workspace, tab, types, calendars, policies, agents, name, kind, policyId, fields, states, editingField, fieldKey, fieldLabel, fieldType, fieldVisibility, fieldRequired, fieldOptions, defaultEnabled, defaultValue, editField, applyField, removeField, editingState, stateKey, stateLabel, stateCategory, editState, applyState, removeState, createType, copyType, calendarName, timeZone, holidays, windows, editingWindow, weekdays, start, end, days, toggleDay, applyWindow, removeWindow, createCalendar, copyCalendar, policyName, calendarId, firstMinutes, resolutionMinutes, pauseStates, escalationAssignee, createPolicy, copyPolicy, calendarLabel, policyLabel, stateLabels, windowLabel, boot, load }
+  return { workspace, tab, types, calendars, policies, agents, name, kind, policyId, opensConversation, fields, states, editingField, fieldKey, fieldLabel, fieldType, fieldVisibility, fieldRequired, fieldOptions, defaultEnabled, defaultValue, editField, applyField, removeField, editingState, stateKey, stateLabel, stateCategory, editState, applyState, removeState, createType, copyType, calendarName, timeZone, holidays, windows, editingWindow, weekdays, start, end, days, toggleDay, applyWindow, removeWindow, createCalendar, copyCalendar, policyName, calendarId, firstMinutes, resolutionMinutes, pauseStates, escalationAssignee, createPolicy, copyPolicy, calendarLabel, policyLabel, stateLabels, windowLabel, boot, load }
 }

@@ -139,7 +139,7 @@ function canonical(value: unknown): string {
   if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Row)[key])}`).join(',')}}`
   return JSON.stringify(value) ?? 'null'
 }
-export async function idempotent<T>(projectRow: Row, operation: string, keyValue: unknown, payload: unknown, action: () => Promise<T>): Promise<T> {
+export async function idempotent<T>(projectRow: Row, operation: string, keyValue: unknown, payload: unknown, action: () => Promise<T>, legacy?: { operation: string, authorizeReplay: (response: unknown) => Promise<T | undefined> }): Promise<T> {
   const key = text(keyValue, 'idempotencyKey', 200), fingerprint = digest(canonical(payload))
   return await workspaceTransaction(number(projectRow, 'workspace_id'), async () => {
     const existing = await one('SELECT * FROM support_idempotency WHERE project_id = ? AND operation = ? AND key = ?', [projectRow.id, operation, key])
@@ -147,7 +147,9 @@ export async function idempotent<T>(projectRow: Row, operation: string, keyValue
       if (existing.fingerprint !== fingerprint) fail(409, 'idempotency_conflict', 'This idempotency key was used with different input.')
       return JSON.parse(String(existing.response)) as T
     }
-    const result = await action()
+    const previous = legacy && await one('SELECT response FROM support_idempotency WHERE project_id = ? AND operation = ? AND key = ? AND fingerprint = ?', [projectRow.id, legacy.operation, key, fingerprint])
+    const authorized = previous && legacy ? await legacy.authorizeReplay(JSON.parse(String(previous.response))) : undefined
+    const result = authorized === undefined ? await action() : authorized
     await insert('support_idempotency', { workspace_id: projectRow.workspace_id, project_id: projectRow.id, operation, key, fingerprint, response: JSON.stringify(result) })
     return result
   })
@@ -218,6 +220,7 @@ export async function reply(projectRow: Row, id: unknown, input: Row, actor: { c
   const visibility = actor.customer ? 'public' : input.visibility ?? 'public'
   if (actor.customer && input.visibility && input.visibility !== 'public') fail(403, 'forbidden', 'Customer messages must be public.')
   if (!['public', 'internal'].includes(String(visibility))) fail(422, 'invalid_input', 'Visibility must be public or internal.')
+  if (actor.customer) await conversation(projectRow, id, actor.customer)
   return await idempotent(projectRow, `reply:${id}:${actor.customer?.id ?? actor.userId ?? 'server'}`, input.idempotencyKey, input, async () => {
     let row = await conversation(projectRow, id, actor.customer)
     let previousConversationId: string | undefined
