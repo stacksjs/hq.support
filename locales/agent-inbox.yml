@@ -1,4 +1,9 @@
 en:
+  loadOlderMessages: "Load older messages"
+  olderMessagesLoading: "Loading older messages…"
+  olderMessagesFailed: "Could not load older messages. Try again."
+  showLatestMessages: "Show latest messages"
+  reviewReplyInEarlierMessages: "Load older messages to review your teammate's reply before sending."
   attachmentMessage: "Attachment"
   attachReplyImage: "Attach image"
   removeReplyImage: "Remove image"
@@ -10,6 +15,11 @@ en:
   attachmentsFailed: "Could not load older attachments."
 
 de:
+  loadOlderMessages: "Ältere Nachrichten laden"
+  olderMessagesLoading: "Ältere Nachrichten werden geladen…"
+  olderMessagesFailed: "Ältere Nachrichten konnten nicht geladen werden. Erneut versuchen."
+  showLatestMessages: "Neueste Nachrichten anzeigen"
+  reviewReplyInEarlierMessages: "Lade ältere Nachrichten, um die Antwort des Teams vor dem Senden zu prüfen."
   attachmentMessage: "Anhang"
   attachReplyImage: "Bild anhängen"
   removeReplyImage: "Bild entfernen"
@@ -21,6 +31,11 @@ de:
   attachmentsFailed: "Ältere Anhänge konnten nicht geladen werden."
 
 ar:
+  loadOlderMessages: "تحميل الرسائل الأقدم"
+  olderMessagesLoading: "جارٍ تحميل الرسائل الأقدم…"
+  olderMessagesFailed: "تعذّر تحميل الرسائل الأقدم. حاول مرة أخرى."
+  showLatestMessages: "عرض أحدث الرسائل"
+  reviewReplyInEarlierMessages: "حمّل الرسائل الأقدم لمراجعة رد زميلك قبل الإرسال."
   attachmentMessage: "مرفق"
   attachReplyImage: "إرفاق صورة"
   removeReplyImage: "إزالة الصورة"

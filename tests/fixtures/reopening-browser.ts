@@ -24,12 +24,12 @@ const api = await route.serve({ port: 0, hostname: '127.0.0.1' }), apiOrigin = `
 const root = resolve(import.meta.dir, '../..'), temporary = await mkdtemp(resolve(tmpdir(), 'hq-support-reopening-browser-')), artifacts = resolve(root, 'storage/framework/runtime/reopening-browser')
 const output = resolve(temporary, 'site')
 await mkdir(artifacts, { recursive: true })
-for (const file of ['report.json', 'failure.json', 'failure.png', 'messenger-375.png', 'inbox-1440.png']) await rm(resolve(artifacts, file), { force: true })
+for (const file of ['report.json', 'failure.json', 'failure.png', 'messenger-375.png', 'inbox-1440.png', 'older-messages-375-ar.png', 'agent-latest-messages-1440.png']) await rm(resolve(artifacts, file), { force: true })
 Storage.init({ default: 'local', disks: { local: { driver: 'local', root: resolve(temporary, 'private') } } })
 let host: ReturnType<typeof Bun.serve> | undefined, boundary: ReturnType<typeof Bun.serve> | undefined, browser: Awaited<ReturnType<typeof launch>> | undefined
-let cookie = '', csrf = '', lostAck = false, failHistory = false, attachNext = false, lostImageAck = false
+let cookie = '', csrf = '', lostAck = false, failHistory = false, failOlderMessages = false, attachNext = false, lostImageAck = false
 const submissions: { path: string, payload: any, status: number, destination?: string }[] = [], assertions: string[] = [], runtimeErrors: string[] = [], requests: string[] = []
-let held: { id: string, release: ReturnType<typeof Promise.withResolvers<void>>, used: boolean } | undefined
+let held: { id: string, release: ReturnType<typeof Promise.withResolvers<void>>, used: boolean, older?: boolean } | undefined
 const check = (condition: unknown, message: string) => { assert.ok(condition, message); assertions.push(message) }
 async function http(path: string, method = 'GET', body?: unknown, token?: string) {
   const response = await fetch(apiOrigin + '/api' + path, { method, headers: { accept: 'application/json', ...(cookie ? { cookie, 'x-csrf-token': csrf } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
@@ -82,11 +82,17 @@ try {
     if (url.pathname.startsWith('/api/')) {
       const headers = new Headers(request.headers); headers.delete('host')
       const body = ['GET', 'HEAD'].includes(request.method) ? undefined : await request.arrayBuffer()
-      requests.push(`${request.method} ${url.pathname}`)
+      requests.push(`${request.method} ${url.pathname}${url.search}`)
       const response = await fetch(new URL(url.pathname + url.search, apiOrigin), { method: request.method, headers, ...(body === undefined ? {} : { body }) })
       const outgoing = new Headers(response.headers); outgoing.delete('content-encoding'); outgoing.delete('content-length')
       const pending = held
-      if (request.method === 'GET' && pending && !pending.used && url.pathname.endsWith(`/conversations/${pending.id}`)) { pending.used = true; const saved = await response.arrayBuffer(); await pending.release.promise; return new Response(saved, { status: response.status, headers: outgoing }) }
+      const isOlderPage = url.searchParams.has('beforeMessage')
+      if (request.method === 'GET' && pending && !pending.used && url.pathname.endsWith(`/conversations/${pending.id}`) && isOlderPage === Boolean(pending.older)) { pending.used = true; const saved = await response.arrayBuffer(); await pending.release.promise; return new Response(saved, { status: response.status, headers: outgoing }) }
+      if (request.method === 'GET' && failOlderMessages && isOlderPage) {
+        failOlderMessages = false
+        await response.arrayBuffer()
+        return Response.json({ message: 'Older messages temporarily unavailable.' }, { status: 503, headers: outgoing })
+      }
       if (request.method === 'POST' && response.ok && lostImageAck && url.pathname.endsWith(`/conversations/${discordThread.id}/attachments`)) {
         lostImageAck = false
         await response.arrayBuffer()
@@ -173,10 +179,51 @@ try {
   await send('Exact allowance-refused draft'); const conflictKey = await evaluate(`${widget}._sendKey`); await send('Exact allowance-refused draft')
   check(submissions.at(-1)!.status === 409 && JSON.stringify(submissions.at(-1)!.payload) === JSON.stringify(submissions.at(-2)!.payload) && await evaluate(`${widget}._sendKey === ${JSON.stringify(conflictKey)} && ${shadow}.querySelector('#support-body').value === 'Exact allowance-refused draft'`), 'real 409 invalid lineage preserves the exact refused draft and key')
   await query('UPDATE support_conversations SET continuation_id = NULL, resolved_at = ? WHERE id = ?', [Date.now() - 8 * 86400000, refused.id])
+
+  const screenshot = async (name: string) => {
+    const image = await cdp.send('Page.captureScreenshot', { format: 'png' })
+    await Bun.write(resolve(artifacts, name + '.png'), Buffer.from(image.data, 'base64'))
+  }
+  await query(`WITH RECURSIVE part(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM part WHERE n < 550)
+    INSERT INTO support_messages (workspace_id, project_id, conversation_id, contact_id, body, visibility, author_type, delivery_status)
+    SELECT ?, ?, ?, ?, 'Imported history part ' || n, 'public', 'customer', 'imported' FROM part`,
+  [workspace.id, project.id, late.id, contact.id])
+  const agentHistory = await http(prefix + `/conversations/${late.id}`, 'GET', undefined, owner)
+  check(agentHistory.status === 200 && agentHistory.data.messages.length === 500 && agentHistory.data.messagesNextCursor, 'native detail bounds a long imported transcript and returns an older cursor')
+
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false })
   await navigate(cdp, origin + '/_fixture/owner', { quietMs: 100, timeoutMs: 20000 }); await wait(`document.querySelector('#project')?.value === ${JSON.stringify(project.public_id)}`, 'Native inbox ready')
   await click('All'); await wait(`Array.from(document.querySelectorAll('.conversation-row')).some(el=>el.textContent.includes('Late original request') && el.textContent.includes('Resolved'))`, 'Original request listed')
   await evaluate(`Array.from(document.querySelectorAll('.conversation-row')).find(el=>el.textContent.includes('Late original request') && el.textContent.includes('Resolved')).click()`); await wait(`document.querySelector('#reply') && !document.querySelector('#reply').disabled`, 'Original request selected')
+  await wait(`document.querySelector('#load-older-messages')`, 'Agent can request older transcript messages')
+  const messageCount = `document.querySelectorAll('.thread-scroll article').length`
+  check(await evaluate(`${messageCount} === 500`), 'the agent first sees only the newest bounded transcript page')
+  await input('#inbox-language', 'de')
+  await wait(`document.querySelector('#load-older-messages')?.textContent.trim() === 'Ältere Nachrichten laden'`, 'German history control is translated')
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: false })
+  await input('#inbox-language', 'ar')
+  await wait(`document.querySelector('#load-older-messages')?.textContent.trim() === 'تحميل الرسائل الأقدم'`, 'Arabic history control is translated')
+  check(await evaluate(`document.querySelector('#main').dir === 'rtl' && document.documentElement.scrollWidth <= innerWidth`), 'the earlier-message control fits the Arabic phone layout')
+  const olderImage = await cdp.send('Page.captureScreenshot', { format: 'png' })
+  await Bun.write(resolve(artifacts, 'older-messages-375-ar.png'), Buffer.from(olderImage.data, 'base64'))
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false })
+  await input('#inbox-language', 'en')
+  await wait(`document.querySelector('#load-older-messages')?.textContent.trim() === 'Load older messages'`, 'English history control is restored')
+  failOlderMessages = true
+  await click('Load older messages')
+  await wait(`document.querySelector('#older-messages-error')`, 'Older transcript failure appears with its retry control')
+  check(await evaluate(`${messageCount} === 500 && !!document.querySelector('#load-older-messages')`), 'a failed page preserves the loaded messages and cursor')
+  await click('Load older messages')
+  await wait(`${messageCount} === 550`, 'Retry prepends the first fifty earlier messages')
+  await evaluate(`document.querySelector('#load-older-messages').focus()`)
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' })
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+  await wait(`${messageCount} === 551 && !document.querySelector('#load-older-messages')`, 'Final cursor restores the original message')
+  await wait(`document.activeElement?.matches('.thread-message') && document.activeElement.textContent.includes('Original history for Late original request')`, 'Keyboard focus moves to the first newly loaded message')
+  check(await evaluate(`(() => {
+    const rows = Array.from(document.querySelectorAll('.thread-scroll article'))
+    return rows[0].textContent.includes('Original history for Late original request') && rows.at(-1).textContent.includes('Imported history part 550') && new Set(rows.map(row => row.id)).size === 551
+  })()`), 'all 551 messages render once in native transcript order')
   await wait(`document.querySelector('#conversation-attachments')?.querySelectorAll('a').length === 20`, 'First attachment page is visible to the agent')
   check(await evaluate(`!document.querySelector('#conversation-attachments').textContent.includes('operator-only.txt')`), 'older team-only files stay outside the first page')
   await evaluate(`document.querySelector('#load-older-attachments').focus()`)
@@ -185,10 +232,53 @@ try {
   await wait(`document.activeElement?.textContent.trim() === 'operator-only.txt'`, 'The last page moves focus from the removed control to its first new file')
   const downloaded = await evaluate(`(async()=>{const link=[...document.querySelectorAll('#conversation-attachments a')].find(a=>a.textContent.includes('operator-only.txt'));const response=await fetch(link.href);return { hasDownload:link.hasAttribute('download'), path:new URL(link.href).pathname, status:response.status, disposition:response.headers.get('content-disposition'), body:await response.text() }})()`)
   check(downloaded.hasDownload && downloaded.path.endsWith('/attachments/' + agentFile.id) && downloaded.status === 200 && downloaded.disposition?.startsWith('attachment;') && downloaded.body === 'team-only attachment', `the native agent link retrieves the exact private file through the scoped route ${JSON.stringify(downloaded)}`)
+  await input('#reply-mode', 'internal')
+  await input('#reply', 'New internal note while reading older history')
+  await evaluate(`document.querySelector('.reply-composer button[type=submit]').click()`)
+  await wait(`${messageCount} === 552 && !document.querySelector('#reply').disabled`, 'Sending a note refreshes the bounded head without dropping loaded history')
+  check(await evaluate(`document.querySelector('.thread-scroll article').textContent.includes('Original history for Late original request') && !document.querySelector('#load-older-messages')`), 'the refreshed transcript keeps the restored original and exhausted cursor')
+  await input('#reply-mode', 'public')
+  await input('#reply', 'Agent draft survives the burst')
+  await query(`WITH RECURSIVE part(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM part WHERE n < 521)
+    INSERT INTO support_messages (workspace_id, project_id, conversation_id, contact_id, body, visibility, author_type, delivery_status)
+    SELECT ?, ?, ?, ?, 'Transcript burst ' || n, 'public', CASE WHEN n = 1 THEN 'agent' ELSE 'customer' END, 'imported' FROM part`,
+  [workspace.id, project.id, late.id, contact.id])
+  await wait(`document.querySelector('#load-latest-messages')?.textContent.trim() === 'Show latest messages'`, 'Agent is notified when a recent page no longer overlaps the archive')
+  check(await evaluate(`${messageCount} === 552 && document.querySelector('.thread-scroll article').textContent.includes('Original history for Late original request') && document.querySelector('#reply').value === 'Agent draft survives the burst'`), 'a disjoint presence refresh keeps the archive and public draft intact')
+  await wait(`Array.from(document.querySelectorAll('.reply-composer button')).some(button=>button.textContent.includes('Send my reply anyway') && button.disabled)`, 'Blind send remains disabled when the newest reply is outside the archive')
+  await click('Send my reply anyway')
+  check(Number((await one('SELECT COUNT(*) AS count FROM support_messages WHERE conversation_id = ? AND body = ?', [late.id, 'Agent draft survives the burst']))!.count) === 0, 'the agent draft cannot send until the unread page is opened')
+  await screenshot('agent-latest-messages-1440')
+  held = { id: late.id, release: Promise.withResolvers<void>(), used: false }
+  await evaluate(`document.querySelector('#load-latest-messages').focus()`)
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' })
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+  await waitFor(() => held?.used, 10000, { label: 'Keyboard latest-message request is in flight' })
+  await evaluate(`document.querySelector('#reply').focus()`)
+  held.release.resolve()
+  held = undefined
+  await wait(`!document.querySelector('#load-latest-messages') && ${messageCount} === 500 && document.querySelector('.thread-scroll article:last-child').textContent.includes('Transcript burst 521')`, 'Keyboard opens the newest page')
+  check(await evaluate(`document.activeElement?.id === 'reply'`), 'the asynchronous latest page respects focus moved to the draft')
+  check(await evaluate(`document.querySelector('#reply').value === 'Agent draft survives the burst'`), 'the draft survives explicit navigation to the latest page')
+  check(await evaluate(`document.querySelector('#agent-reply-outside-page') && Array.from(document.querySelectorAll('.reply-composer button')).some(button=>button.textContent.includes('Send my reply anyway') && button.disabled)`), 'a teammate reply beyond the latest page still blocks public sending')
+  await click('Load older messages')
+  await wait(`${messageCount} === 550 && document.querySelector('.thread-scroll').textContent.includes('New internal note while reading older history') && document.querySelector('#agent-reply-outside-page') === null`, 'Earlier pages cross the gap and reveal the previously hidden teammate reply')
+  await wait(`Array.from(document.querySelectorAll('.reply-composer button')).some(button=>button.textContent.includes('Send my reply anyway') && !button.disabled)`, 'The existing review confirmation becomes available after opening the newest page')
+  await click('Send my reply anyway')
+  await wait(`document.querySelector('.thread-scroll article:last-child').textContent.includes('Agent draft survives the burst') && document.querySelector('#reply').value === ''`, 'The reviewed draft is posted over native HTTP')
+  check(Number((await one("SELECT COUNT(*) AS count FROM support_messages WHERE conversation_id = ? AND body = ? AND visibility = 'public'", [late.id, 'Agent draft survives the burst']))!.count) === 1, 'the reviewed public draft is stored exactly once')
   await input('#reply', 'Staff draft on predecessor'); await input('#reply-mode', 'internal')
   await evaluate(`document.querySelector('[aria-label="Refresh inbox"]').click()`); await wait(`!document.querySelector('[aria-label="Refresh inbox"]').disabled`, 'Inbox refreshed')
   check(await evaluate(`document.querySelector('#reply').value === 'Staff draft on predecessor' && document.querySelector('.thread-breadcrumb').textContent.includes('Resolved')`), 'refresh never silently moves the selected historical request or its staff draft')
+  await evaluate(`document.querySelector('.conversation-row.is-current').click()`)
+  await wait(`${messageCount} === 500 && document.querySelector('#load-older-messages') && !document.querySelector('#reply').disabled`, 'Reselection restores the newest bounded page')
+  held = { id: late.id, release: Promise.withResolvers<void>(), used: false, older: true }
+  await click('Load older messages')
+  await waitFor(() => held?.used, 10000, { label: 'Older transcript response held before navigation' })
   await evaluate(`Array.from(document.querySelectorAll('[aria-label="Linked requests"] button')).find(el=>el.textContent.includes('Next')).click()`); await wait(`document.querySelector('.thread-scroll').textContent.includes('Late continuation from browser')`, 'Explicit next request navigation')
+  held.release.resolve()
+  held = undefined
+  check(await evaluate(`!document.querySelector('.thread-scroll').textContent.includes('Imported history part') && !document.querySelector('#load-older-messages')`), 'a delayed earlier page cannot populate the linked successor')
   check(await evaluate(`document.querySelector('#reply').value === '' && document.querySelector('#reply-mode').value === 'public'`), 'explicit next navigation starts with that request own empty public draft')
   check(await evaluate(`document.querySelector('#conversation-attachments')?.textContent.includes('successor-only.txt') && !document.querySelector('#conversation-attachments')?.textContent.includes('operator-only.txt')`), 'linked navigation shows only the destination attachments')
   await input('#reply', 'Staff draft on successor')
@@ -201,6 +291,7 @@ try {
   await wait(`document.querySelector('#main').lang === 'ar' && document.querySelector('h1').textContent === 'صندوق الوارد'`, 'Localized RTL inbox ready')
   check(await evaluate(`document.querySelector('#main').dir === 'rtl' && document.documentElement.scrollWidth <= innerWidth && document.querySelector('#reply').value === 'Staff draft on successor'`), 'narrow Arabic inbox fits and preserves the selected request and reply draft')
   check(await evaluate(`document.querySelector('#reply-mode option').textContent === 'رد علني' && document.querySelector('.thread-scroll').getAttribute('aria-label') === 'رسائل المحادثة' && document.querySelector('.thread-scroll time').textContent === new Intl.DateTimeFormat('ar', { month: 'short', day: 'numeric' }).format(new Date(document.querySelector('.thread-scroll time').dateTime))`), 'the agent sees localized composer, history and dates')
+  await wait(`document.querySelector('#customer-details[role=dialog]') && document.querySelector('#customer-details-toggle[aria-expanded=false]')`, 'Mobile details mode settles before opening the dialog')
   await evaluate(`document.querySelector('#customer-details-toggle').click()`)
   await wait(`document.querySelector('#customer-details[role=dialog][aria-modal=true]') && document.querySelector('#conversation-attachments-title')?.textContent.trim() === 'المرفقات'`, 'The mobile RTL details dialog exposes the translated attachments heading')
   check(await evaluate(`document.querySelector('#conversation-attachments a').textContent.trim() === 'successor-only.txt'`), 'the mobile details dialog keeps the selected file available')
@@ -259,8 +350,24 @@ try {
   const payload = JSON.parse(String(deliveries[0]?.payload))
   check(imageRows.length === 1 && imageRows[0]?.visibility === 'private' && imageRows[0]?.status === 'stored' && deliveries.length === 1 && deliveries[0]?.status === 'pending' && payload.attachmentIds[0] === String(imageRows[0]!.id) && payload.body === '', 'native upload replay keeps one private file and one exact file-only delivery')
 
+  await evaluate(`Array.from(document.querySelectorAll('.conversation-row')).find(el=>el.textContent.includes('Late original request') && el.textContent.includes('Resolved')).click()`)
+  await wait(`${messageCount} === 500 && document.querySelector('#load-older-messages') && !document.querySelector('#reply').disabled`, 'Predecessor is ready for a workspace switch')
+  await click('Load older messages')
+  await wait(`${messageCount} === 550 && document.querySelector('.thread-scroll').textContent.includes('New internal note while reading older history')`, 'The archive is visible before retention')
+  const retentionMarker = '[Removed by retention policy]'
+  await query('UPDATE support_messages SET body = ? WHERE id > 0 AND project_id = ? AND conversation_id = ?', [retentionMarker, project.id, late.id])
+  await query('UPDATE support_conversations SET subject = ? WHERE id = ? AND project_id = ?', [retentionMarker, late.id, project.id])
+  await query('INSERT INTO support_messages (workspace_id, project_id, conversation_id, contact_id, body, visibility, author_type, delivery_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [workspace.id, project.id, late.id, contact.id, 'New response after retention', 'public', 'agent', 'imported'])
+  await wait(`${messageCount} === 500 && document.querySelector('.thread-heading').textContent.includes('Removed by retention policy') && document.querySelector('.thread-scroll').textContent.includes('New response after retention')`, 'The fresh head replaces the archive after retention')
+  check(await evaluate(`!document.querySelector('.thread-scroll').textContent.includes('New internal note while reading older history') && !document.querySelector('.thread-scroll').textContent.includes('Transcript burst')`), 'new native detail clears cached transcript bodies rewritten by retention')
+  held = { id: late.id, release: Promise.withResolvers<void>(), used: false, older: true }
+  await click('Load older messages')
+  await waitFor(() => held?.used, 10000, { label: 'Earlier transcript page is in flight before workspace switch' })
   await input('#project', other.public_id); await wait(`document.querySelector('.welcome-pane') && !document.querySelector('#reply')`, 'Other workspace selected')
+  held.release.resolve()
+  held = undefined
   check(await evaluate(`!document.querySelector('.thread-scroll') && !document.body.textContent.includes('Late continuation from browser') && !document.body.textContent.includes('Staff draft on successor')`), 'changing workspace clears displayed private thread, linked controls and draft')
+  check(await evaluate(`!document.body.textContent.includes('Imported history part') && !document.querySelector('#load-older-messages')`), 'an in-flight older page cannot populate another workspace')
   check(runtimeErrors.length === 0, 'compiled native widget and inbox finish without browser runtime exceptions')
   await mkdir(artifacts, { recursive: true }); await Bun.write(resolve(artifacts, 'report.json'), JSON.stringify({ passed: true, assertions, compiler: (await Bun.file(resolve(root, 'node_modules/@stacksjs/stx/package.json')).json()).version, requests, submissions }, null, 2))
   console.info(`PASS reopening browser functional (${assertions.length} checks)`)
