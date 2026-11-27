@@ -310,18 +310,38 @@ try {
     }
     const beforeWorker = await request(widget + '/realtime/snapshot', 'POST', {}, session.token, 'https://customer.example')
     const independent = await openStream(beforeWorker.data.checkpoint)
-    await read(independent.reader)
+    const decoder = new TextDecoder()
+    let buffered = ''
+    // Keepalive comments can arrive while the producer's process is starting.
+    const readIndependentFrame = async (includeComments = false) => {
+      const deadline = performance.now() + 20_000
+      for (;;) {
+        const end = buffered.indexOf('\n\n')
+        if (end >= 0) {
+          const frame = buffered.slice(0, end)
+          buffered = buffered.slice(end + 2)
+          if (includeComments || frame.split('\n').some(line => line.length > 0 && !line.startsWith(':'))) return frame
+          continue
+        }
+        const remaining = Math.ceil(deadline - performance.now())
+        if (remaining <= 0) throw new Error('SSE read deadline')
+        const chunk = await read(independent.reader, remaining)
+        if (chunk.done) return ''
+        buffered += decoder.decode(chunk.value, { stream: true })
+      }
+    }
+    check((await readIndependentFrame(true)) === ': connected', 'independent Redis subscriber is established before producer changes')
     let observed = false
-    const nextHint = read(independent.reader, 20000).then(value => { observed = true; return value })
+    const nextHint = readIndependentFrame().then(value => { observed = true; return value })
     await producer('Private independent note', 'rt-process-private', 'internal')
     await Bun.sleep(50)
     check(!observed, 'independent private producer produces no customer invalidation')
     await producer('Independent public reply', 'rt-process-public')
-    check(new TextDecoder().decode((await nextHint).value).includes('"event":"invalidated","data":null'), 'independent process publication wakes native authorized HTTP SSE subscriber through real Redis')
+    check((await nextHint).includes('"event":"invalidated","data":null'), 'independent process publication wakes native authorized HTTP SSE subscriber through real Redis')
     const workerPage = await request(widget + '/realtime/replay', 'POST', { checkpoint: beforeWorker.data.checkpoint }, session.token, 'https://customer.example')
     check(workerPage.status === 200 && workerPage.data.messages.length === 1, 'independent public producer advances durable customer replay exactly once')
     observed = false
-    const lostHint = read(independent.reader, 20000).then(value => { observed = true; return value })
+    const lostHint = readIndependentFrame().then(value => { observed = true; return value })
     await producer('Lost publication public reply', 'rt-process-offline', 'public', true)
     await Bun.sleep(50)
     check(!observed, 'producer-only Redis outage leaves healthy subscriber without the lost hint')
