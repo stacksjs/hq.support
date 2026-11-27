@@ -227,6 +227,91 @@ try {
   check(Number((await one('SELECT resolved_at FROM support_conversations WHERE project_id = ? AND subject = ?', [project.id, missingDate.title]))!.resolved_at) === 0, 'missing historical resolution remains unknown for one quota-free grandfathered reopen')
   const dateStatus = await http(`${prefix}/imports/${historyDates.data.run.id}`, 'GET', undefined, token)
   check(dateStatus.data.records.some((record: any) => record.error_code === 'invalid_source_timestamp') && !await one('SELECT id FROM support_conversations WHERE project_id = ? AND subject = ?', [project.id, invalidDate.title]), 'contradictory source resolution time is retained for review without inventing a closure date')
+
+  const nullOriginalTime = conversation('null-root-date', 'date-review-contact')
+  const malformedTimes = [
+    { ...conversation('null-created', 'date-review-contact'), created_at: null },
+    { ...conversation('null-updated', 'date-review-contact'), updated_at: null },
+    { ...conversation('reversed-activity-time', 'date-review-contact'), updated_at: 1499999999 },
+    { ...conversation('coerced-resolution-time', 'date-review-contact'), closed_at: 1500000050, statistics: { last_close_at: [1500000050] } },
+    { ...nullOriginalTime, source: { ...nullOriginalTime.source, created_at: null } },
+    conversation('blank-comment-date', 'date-review-contact', [{ ...part('blank-date'), created_at: ' ' }]),
+    conversation('null-note-date', 'date-review-contact', [{ ...part('null-date', 'note'), created_at: null }]),
+    conversation('boolean-note-date', 'date-review-contact', [{ ...part('boolean-date', 'note'), created_at: false }]),
+    conversation('array-comment-date', 'date-review-contact', [{ ...part('array-date'), created_at: [1500000001] }]),
+  ]
+  const validTimes = {
+    ...conversation('valid-source-times', 'c1', [{ ...part('valid-string-date'), created_at: '1500000001' }]),
+    updated_at: '1500000100',
+  }
+  const legacyTimes = { ...conversation('omitted-update-time', 'c1'), created_at: '1500000000', updated_at: undefined, statistics: { last_close_at: null } }
+  const malformedLaterPage = inconsistentPages('page-invalid-date', 'updated')
+  const lastPageWithBadDate = malformedLaterPage.pages[1]!
+  const invalidPages = { pages: [malformedLaterPage.pages[0]!, { ...lastPageWithBadDate, response: { ...lastPageWithBadDate.response, updated_at: [1500000100] } }] }
+  const invalidCreationHistory = inconsistentPages('page-invalid-created', 'updated')
+  const [firstCreationPage, secondCreationPage] = invalidCreationHistory.pages
+  const invalidCreationPages = { pages: [firstCreationPage!, { ...secondCreationPage!, response: { ...secondCreationPage!.response, created_at: false, updated_at: firstCreationPage!.response.updated_at } }] }
+  function legacyPageSequence(id: string, updates: (number | string | undefined)[]) {
+    return { pages: updates.map((updatedAt, index) => {
+      const page = index + 1
+      const source = conversation(id, 'c1', [part(`${id}-${page}`)])
+      const paging = { page, per_page: 1, total_pages: updates.length, next: page < updates.length ? { page: page + 1 } : null }
+      return { page, response: { ...source, updated_at: updatedAt, conversation_parts: { ...source.conversation_parts, pages: paging } } }
+    }) }
+  }
+  const disputedPagesId = 'legacy-pages-disagree-on-update'
+  const disputedPages = legacyPageSequence(disputedPagesId, [undefined, 1500000100, 1500000101])
+  const trustedPagesId = 'legacy-pages-supply-update'
+  const trustedPages = legacyPageSequence(trustedPagesId, [undefined, '1500000100', 1500000100])
+  const malformedTimeIds = [...malformedTimes.map(entry => entry.id), 'page-invalid-date', 'page-invalid-created']
+  const timeBundle = { version: 1, provider: 'intercom', format: 'plaintext', contacts: [], conversations: [...malformedTimes, invalidPages, invalidCreationPages, disputedPages, validTimes, legacyTimes, trustedPages] }
+  const timePreview = await upload(timeBundle, { integration: true, key: keys.ingestKey, dryRun: true })
+  check(timePreview.status === 200 && timePreview.data.compatibleRecords === 3 && timePreview.data.reviewRecords === malformedTimeIds.length + 1
+    && timePreview.data.reasons.some((reason: any) => reason.code === 'invalid_source_timestamp' && reason.count === malformedTimeIds.length)
+    && timePreview.data.reasons.some((reason: any) => reason.code === 'incomplete_source_history' && reason.count === 1),
+    `malformed timestamps require review in the native preview: ${JSON.stringify(timePreview.data)}`)
+  const timeRun = await upload(timeBundle)
+  check(timeRun.status === 202, 'native upload queues the date review fixture')
+  await resumeInNewProcess(timeRun.data.run.id, 'worker')
+  const timeReport = (await http(`${prefix}/imports/${timeRun.data.run.id}`, 'GET', undefined, token)).data
+  check(timeReport.run.status === 'needs_review' && timeReport.run.failed === malformedTimeIds.length + 1 && timeReport.run.imported === 3
+    && timeReport.records.slice(0, malformedTimeIds.length).every((record: any, index: number) => record.external_id === malformedTimeIds[index] && record.error_code === 'invalid_source_timestamp')
+    && timeReport.records[malformedTimeIds.length].external_id === disputedPagesId
+    && timeReport.records[malformedTimeIds.length].error_code === 'incomplete_source_history',
+    'the restarted native worker retains every invalid source ID for review')
+  check(!await one('SELECT id FROM support_contacts WHERE project_id = ? AND external_id = ?', [project.id, 'intercom:date-review-contact'])
+    && !await one("SELECT id FROM support_import_mappings WHERE project_id = ? AND entity_type = 'message' AND external_id LIKE 'blank-comment-date:%'", [project.id]),
+    'time validation rolls back the provisional contact and root message')
+  const validRecord = timeReport.records.find((record: any) => record.external_id === validTimes.id)
+  const validDetail = await http(`${prefix}/conversations/${validRecord.target_id}`, 'GET', undefined, token)
+  check(validDetail.status === 200 && validDetail.data.messages.length === 2
+    && validDetail.data.messages.every((row: any, index: number) => new Date(row.created_at).getTime() === (1500000000 + index) * 1000),
+    'the original message inherits the conversation date and decimal-string reply dates retain exact UTC seconds')
+  const legacyRecord = timeReport.records.find((record: any) => record.external_id === legacyTimes.id)
+  const legacyDetail = await http(`${prefix}/conversations/${legacyRecord.target_id}`, 'GET', undefined, token)
+  check(legacyDetail.status === 200 && new Date(legacyDetail.data.conversation.updated_at).getTime() === 1500000000000
+    && Number(legacyDetail.data.conversation.resolved_at) === 0,
+    'an absent legacy update inherits creation time and an unknown resolution stays unknown')
+  const trustedRecord = timeReport.records.find((record: any) => record.external_id === trustedPagesId)
+  const trustedDetail = await http(`${prefix}/conversations/${trustedRecord.target_id}`, 'GET', undefined, token)
+  check(trustedDetail.status === 200 && new Date(trustedDetail.data.conversation.updated_at).getTime() === 1500000100000,
+    'the import preserves an agreed update time supplied after the first page')
+
+  const correctedBundle = { ...timeBundle, conversations: [{ ...validTimes, created_at: 1500000001 }] }
+  const correctedRun = await upload(correctedBundle)
+  await resumeInNewProcess(correctedRun.data.run.id, 'worker')
+  const correctedReport = (await http(`${prefix}/imports/${correctedRun.data.run.id}`, 'GET', undefined, token)).data
+  const unchangedDetail = await http(`${prefix}/conversations/${validRecord.target_id}`, 'GET', undefined, token)
+  check(correctedReport.run.status === 'needs_review' && correctedReport.records.some((record: any) => record.external_id === validTimes.id && record.error_code === 'source_message_timestamp_changed')
+    && new Date(unchangedDetail.data.messages[0].created_at).getTime() === 1500000000000,
+    'replaying an altered inherited timestamp retains the imported message and sends the source ID to review')
+  await query('UPDATE support_messages SET created_at = ? WHERE id = ? AND project_id = ?', ['2017-07-14 02:40:00', unchangedDetail.data.messages[0].id, project.id])
+  const sameTimeRun = await upload({ ...timeBundle, conversations: [{ ...validTimes, title: 'Same historical timestamp in a new archive' }] })
+  await resumeInNewProcess(sameTimeRun.data.run.id, 'worker')
+  const sameTimeReport = (await http(`${prefix}/imports/${sameTimeRun.data.run.id}`, 'GET', undefined, token)).data
+  check(sameTimeReport.run.status === 'completed' && sameTimeReport.run.skipped === 1,
+    'an identical source timestamp matches the stored UTC date even when SQL omits its zone')
+
   console.log(`PASS Intercom migration HTTP ${checks} checks`)
 }
 finally { await server.stop(true) }

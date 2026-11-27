@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { parseSqlDateTime } from '@stacksjs/database/runtime'
 import { Storage } from '@stacksjs/storage'
 import { storeJob } from '@stacksjs/queue/utils'
 import type { Row } from './database'
@@ -31,9 +32,15 @@ function external(value: unknown, label = 'source id') {
   return id
 }
 function timestamp(value: unknown, label: string) {
-  const seconds = Number(value)
-  if (!Number.isSafeInteger(seconds) || seconds < 0 || seconds > 4102444800) fail(422, 'invalid_source_timestamp', `${label} must be a UTC Unix timestamp in seconds.`)
+  const seconds = typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value) : value
+  if (typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds < 0 || seconds > 4102444800) fail(422, 'invalid_source_timestamp', `${label} must be a UTC Unix timestamp in seconds.`)
   return new Date(seconds * 1000).toISOString()
+}
+function conversationDates(source: Row) {
+  const createdAt = timestamp(source.created_at, 'conversation.created_at')
+  const updatedAt = source.updated_at === undefined ? undefined : timestamp(source.updated_at, 'conversation.updated_at')
+  if (updatedAt !== undefined && updatedAt < createdAt) fail(422, 'invalid_source_timestamp', 'Conversation update time precedes its creation time.')
+  return { createdAt, updatedAt }
 }
 export function parseIntercomBundle(bytes: Uint8Array): IntercomBundle {
   if (!bytes.byteLength || bytes.byteLength > importLimits.bytes) fail(413, 'import_size', 'Migration bundles must be 1 to 10000000 bytes.')
@@ -175,17 +182,20 @@ function authorType(author: Row) {
 }
 async function importMessage(project: Row, conversation: Row, sourceId: string, source: Row, bundle: IntercomBundle, created: unknown, visibility: 'public' | 'internal', staged: ImportAttachment[]) {
   if (source.redacted === true) fail(422, 'source_body_missing', 'Source message was redacted and requires review.')
+  const at = timestamp(created, 'message.created_at')
   const files = sourceAttachments(source, sourceId, bundle.attachmentFiles, visibility)
   const hashInput = files.length ? { source, attachmentHashes: files.map(file => file.sha256) } : source
   const previous = await mapping(project, 'message', sourceId)
   if (previous) {
     if (previous.source_hash !== fingerprint(hashInput)) fail(409, 'source_message_changed', 'Previously imported message content changed in the source. Native history was preserved for review.')
-    if (!await one('SELECT id FROM support_messages WHERE id = ? AND conversation_id = ? AND project_id = ?', [previous.target_id, conversation.id, project.id])) fail(409, 'import_target_missing', 'A previously mapped message was removed. Review erasure/retention before importing again.')
+    const message = await one('SELECT created_at FROM support_messages WHERE id = ? AND conversation_id = ? AND project_id = ?', [previous.target_id, conversation.id, project.id])
+    if (!message) fail(409, 'import_target_missing', 'A previously mapped message was removed. Review erasure/retention before importing again.')
+    if (parseSqlDateTime(message.created_at)?.getTime() !== Date.parse(at)) fail(409, 'source_message_timestamp_changed', 'The source message timestamp differs from the imported message. Native history was preserved for review.')
     await checkImportedAttachments(project, conversation, files)
     return false
   }
   const body = files.length && source.body === '' ? '' : await messageBody(source.body, bundle.format)
-  const author = authorType(object(source.author)), at = timestamp(source.created_at ?? created, 'message.created_at')
+  const author = authorType(object(source.author))
   const message = await insert('support_messages', { workspace_id: project.workspace_id, project_id: project.id, conversation_id: conversation.id, contact_id: conversation.contact_id, body, visibility, author_type: author, author_id: 0, delivery_status: 'imported' })
   await query('UPDATE support_messages SET created_at = ?, updated_at = ? WHERE id = ?', [at, at, message.id])
   await remember(project, 'message', sourceId, message.id, source, hashInput)
@@ -210,13 +220,17 @@ function nextPage(value: unknown): number | null {
 function completeConversation(source: Row): Row {
   if (!Array.isArray(source.pages)) return source
   if (!source.pages.length || source.pages.length > 100) fail(422, 'incomplete_source_history', 'Supply an ordered page sequence beginning at page one.')
-  let first: Row | undefined, id = '', expected = 1, pageSize: number | undefined
+  let first: { response: Row, id: string, createdAt: string } | undefined
+  let recordedUpdate: { normalized: string, original: unknown } | undefined
+  let expected = 1, pageSize: number | undefined
   const parts: Row[] = [], seen = new Set<string>(), provenance: Row[] = []
   for (const wrapper of source.pages) {
     const page = object(wrapper), response = object(page.response), container = object(response.conversation_parts), paging = object(container.pages)
     if (page.page !== expected || !Array.isArray(container.conversation_parts) || !Object.hasOwn(paging, 'next')) fail(422, 'incomplete_source_history', 'Every supplied response page must have its sequential page number and next cursor.')
-    if (!first) { first = response; id = external(response.id) }
-    if (external(response.id) !== id || container.conversation_parts.length > importLimits.maximumConversationParts) fail(422, 'incomplete_source_history', 'All pages must belong to the same conversation within the source page bound.')
+    const { createdAt, updatedAt } = conversationDates(response)
+    const id = external(response.id)
+    first ??= { response, id, createdAt }
+    if (id !== first.id || container.conversation_parts.length > importLimits.maximumConversationParts) fail(422, 'incomplete_source_history', 'All pages must belong to the same conversation within the source page bound.')
     if (paging.page !== undefined && Number(paging.page) !== expected) fail(422, 'incomplete_source_history', 'Source page metadata does not match the requested sequence.')
     const partCount = container.conversation_parts.length, last = expected === source.pages.length
     if (container.total_count != null && Number(container.total_count) !== partCount)
@@ -232,15 +246,16 @@ function completeConversation(source: Row): Row {
         fail(422, 'incomplete_source_history', 'Conversation pages must use a consistent size and include all reported parts.')
       pageSize = declaredSize
     }
-    if (first.updated_at != null && response.updated_at != null && Number(first.updated_at) !== Number(response.updated_at))
+    if (first.createdAt !== createdAt || (recordedUpdate && updatedAt !== undefined && recordedUpdate.normalized !== updatedAt))
       fail(422, 'incomplete_source_history', 'The source conversation changed between page requests. Retrieve its pages again.')
+    if (updatedAt !== undefined) recordedUpdate ??= { normalized: updatedAt, original: response.updated_at }
     const next = nextPage(paging.next)
     if ((last && next !== null) || (!last && next !== expected + 1)) fail(422, 'incomplete_source_history', 'The page chain must be contiguous and terminate with next:null.')
     for (const candidate of container.conversation_parts) { const part = object(candidate), key = external(part.id); if (seen.has(key)) fail(422, 'duplicate_source_part', 'A part occurs on more than one page. Review the export before migrating.'); seen.add(key); parts.push(part) }
     provenance.push({ page: expected, next, responseHash: fingerprint(response) }); expected++
   }
   if (parts.length > importLimits.maximumPaginatedParts) fail(422, 'source_parts_limit', 'A paginated conversation exceeds the 5000-part operational batch bound.')
-  return { ...first!, conversation_parts: { conversation_parts: parts, total_count: parts.length, pages: { page: 1, next: null }, complete_page_sequence: true }, import_page_provenance: provenance }
+  return { ...first!.response, ...(recordedUpdate ? { updated_at: recordedUpdate.original } : {}), conversation_parts: { conversation_parts: parts, total_count: parts.length, pages: { page: 1, next: null }, complete_page_sequence: true }, import_page_provenance: provenance }
 }
 async function importConversation(project: Row, source: Row, bundle: IntercomBundle, archive?: ImportArchive) {
   const paginated = Array.isArray(source.pages)
@@ -251,11 +266,12 @@ async function importConversation(project: Row, source: Row, bundle: IntercomBun
   if ((!completePages && parts.length >= importLimits.maximumConversationParts) || (!paginated && parts.length > importLimits.maximumConversationParts) || Number(partsContainer.total_count ?? parts.length) > parts.length || (paging.next !== undefined && paging.next !== null)) fail(422, 'incomplete_source_history', 'Unpaged 500-part or unfinished response histories are retained for review. Supply every numbered source page through next:null.')
   const contacts = object(source.contacts).contacts ?? object(source.contacts).data
   if (!Array.isArray(contacts) || contacts.length !== 1) fail(422, 'group_conversation_review', 'This importer requires exactly one source contact. Group conversations are retained for review.')
+  const { createdAt, updatedAt = createdAt } = conversationDates(source)
+  const initial = object(source.source)
   const contactReference = object(contacts[0]), contactId = external(contactReference.id), existingContact = await mapping(project, 'contact', contactId)
   const who = existingContact ? (await one('SELECT * FROM support_contacts WHERE id = ? AND project_id = ?', [existingContact.target_id, project.id])) : undefined
   if (existingContact && !who) fail(409, 'import_target_missing', 'Mapped source contact was removed. Review before recreating it.')
   const targetContact = who || (await one('SELECT * FROM support_contacts WHERE id = ?', [(await importContact(project, contactReference)).id]))!
-  const initial = object(source.source), createdAt = timestamp(source.created_at, 'conversation.created_at'), updatedAt = timestamp(source.updated_at ?? source.created_at, 'conversation.updated_at')
   const state = String(source.state)
   if (!['open', 'closed', 'snoozed'].includes(state)) fail(422, 'unsupported_source_state', 'Unknown source conversation state requires review.')
   const previous = await mapping(project, 'conversation', id)
@@ -264,20 +280,22 @@ async function importConversation(project: Row, source: Row, bundle: IntercomBun
   if (row && Number(row.contact_id) !== Number(targetContact.id)) fail(409, 'source_contact_changed', 'Source contact ownership changed. Existing native ownership was preserved.')
   const newConversation = !row
   const statisticsClosed = object(source.statistics).last_close_at
-  if (source.closed_at != null && statisticsClosed != null && Number(source.closed_at) !== Number(statisticsClosed)) fail(422, 'invalid_source_timestamp', 'Export resolution timestamps disagree; original source requires review.')
-  const closed = source.closed_at ?? statisticsClosed
+  const closedAt = source.closed_at == null ? undefined : timestamp(source.closed_at, 'closed_at')
+  const lastClosedAt = statisticsClosed == null ? undefined : timestamp(statisticsClosed, 'statistics.last_close_at')
+  if (closedAt !== undefined && lastClosedAt !== undefined && closedAt !== lastClosedAt) fail(422, 'invalid_source_timestamp', 'Export resolution timestamps disagree. Review the original source.')
+  const closed = closedAt ?? lastClosedAt
   let resolvedAt = 0
-  if (state === 'closed' && closed != null) {
-    if (typeof closed !== 'number' && !(typeof closed === 'string' && /^\d+$/.test(closed))) fail(422, 'invalid_source_timestamp', 'closed_at must be a UTC Unix timestamp in seconds.')
-    resolvedAt = new Date(timestamp(closed, 'closed_at')).getTime()
-    if (resolvedAt < new Date(createdAt).getTime() || resolvedAt > new Date(updatedAt).getTime()) fail(422, 'invalid_source_timestamp', 'Resolution time must belong to the exported conversation history.')
+  if (state === 'closed' && closed !== undefined) {
+    if (closed < createdAt || closed > updatedAt) fail(422, 'invalid_source_timestamp', 'Resolution time must belong to the exported conversation history.')
+    resolvedAt = Date.parse(closed)
   }
   if (!row) {
     row = await insert('support_conversations', { workspace_id: project.workspace_id, project_id: project.id, contact_id: targetContact.id, subject: text(source.title || initial.subject || `Imported conversation ${id}`, 'subject', 200), status: state, resolved_at: resolvedAt, unread_count: 0, channel: 'intercom-import' })
     await query('UPDATE support_conversations SET created_at = ?, updated_at = ? WHERE id = ?', [createdAt, updatedAt, row.id])
   }
   const staged: ImportAttachment[] = []
-  let appended = await importMessage(project, row, `${id}:source:${initial.id == null ? 'root' : external(initial.id)}`, initial, bundle, source.created_at, 'public', staged) ? 1 : 0
+  const initialTime = initial.created_at === undefined ? source.created_at : initial.created_at
+  let appended = await importMessage(project, row, `${id}:source:${initial.id == null ? 'root' : external(initial.id)}`, initial, bundle, initialTime, 'public', staged) ? 1 : 0
   for (const candidate of parts) {
     const part = object(candidate), partId = external(part.id), kind = String(part.part_type)
     if (kind === 'comment' || kind === 'note') appended += await importMessage(project, row, `${id}:part:${partId}`, part, bundle, part.created_at, kind === 'note' ? 'internal' : 'public', staged) ? 1 : 0
