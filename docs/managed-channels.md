@@ -118,7 +118,9 @@ customer identities.
 Run the native database worker for queue `support-channels` and the native
 scheduler. RunChannelDelivery dispatches queued operations and periodically
 recovers pending ingress, uncertain expired leases, quoted costs and Discord
-polls. Unknown sends without a signed receipt stay held for operator review.
+polls. Discord polls the oldest eligible cursor first in batches of up to 100.
+Failed attempts retain their cursor and become eligible after the lease expires.
+Unknown sends without a signed receipt stay held for operator review.
 
 A verified Discord connection keeps its room. Rotate the bot token on that
 connection and verify it again to retain the inbox cursor. Create a separate

@@ -8,7 +8,8 @@ import { upload } from '../../app/Support/attachments'
 import { injectGlobalAutoImports } from '@stacksjs/server'
 import { runIsolated, assertIsolatedOk } from '@stacksjs/testing/isolated'
 import { channelAction } from '../../app/Actions/Support/ChannelAction'
-import { one, query } from '../../app/Support/database'
+import { insert, one, query } from '../../app/Support/database'
+import RunChannelDelivery from '../../app/Jobs/RunChannelDelivery'
 import { createChannelReply, dispatchChannelDelivery, applyChannelInbound, retainChannelInbound, pollDiscordChannel, recoverChannelWork, deliveryView } from '../../app/Support/managed-channels'
 import { configureBillingGateway, configureWalletLimits, createWalletCheckout, receivePayment } from '../../app/Support/billing'
 import { channelOptedOut, recordChannelConsent } from '../../app/Support/channel-consent'
@@ -26,6 +27,7 @@ Storage.init({ default: 'local', disks: { local: { driver: 'local', root: proces
 const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVgAAAABJRU5ErkJggg==', 'base64')
 let applicationOrigin = '', providerMediaGets = 0, lastMediaUrl = '', inboundMediaUrlOverride = '', providerMediaDownloads = 0
 let rotateSlack: (() => Promise<void>) | undefined
+let discordPollReads = 0, failNextDiscordPoll = false
 let providerPosts = 0, failure: 'unknown' | 'rejected' | undefined, smsCallback = '', whatsappCallback = ''
 const accountSid = `AC${'a'.repeat(32)}`, numberSid = `PN${'b'.repeat(32)}`, senderSid = `XE${'c'.repeat(32)}`, contentSid = `HX${'d'.repeat(32)}`, authToken = 'channel-fixture-secret'
 process.env.SUPPORT_MESSAGING_PRICING = JSON.stringify({ [accountSid]: { smsMaxMicrosPerSegment: 20000, mmsMaxMicros: 100000, whatsappMaxMicros: 100000 } })
@@ -80,7 +82,11 @@ const provider = Bun.serve({ port: 0, hostname: '127.0.0.1', async fetch(request
     if (original.pathname.endsWith('/messages') && request.method === 'POST') { providerPosts++; return Response.json({ id: '103' }) }
     if (original.pathname.endsWith('/users/@me')) return Response.json({ id: '123', bot: true })
     if (original.pathname === '/api/v10/channels/456') return Response.json({ id: '456', type: 0, last_message_id: '100' })
-    if (original.pathname.endsWith('/messages') && request.method === 'GET') return Response.json(original.searchParams.get('after') === '100' ? [{ id: '101', channel_id: '456', type: 0, content: 'Discord customer', timestamp: new Date().toISOString(), edited_timestamp: null, author: { id: '789', username: 'Customer' }, attachments: [] }, { id: '102', channel_id: '456', type: 0, content: 'Own bot echo', timestamp: new Date().toISOString(), edited_timestamp: null, author: { id: '123', username: 'Bot', bot: true }, attachments: [] }] : [])
+    if (original.pathname.endsWith('/messages') && request.method === 'GET') {
+      discordPollReads++
+      if (failNextDiscordPoll) { failNextDiscordPoll = false; return Response.json({ message: 'Fixture room unavailable' }, { status: 403 }) }
+      return Response.json(original.searchParams.get('after') === '100' ? [{ id: '101', channel_id: '456', type: 0, content: 'Discord customer', timestamp: new Date().toISOString(), edited_timestamp: null, author: { id: '789', username: 'Customer' }, attachments: [] }, { id: '102', channel_id: '456', type: 0, content: 'Own bot echo', timestamp: new Date().toISOString(), edited_timestamp: null, author: { id: '123', username: 'Bot', bot: true }, attachments: [] }] : [])
+    }
   }
   return Response.json({}, { status: 404 })
 } })
@@ -397,6 +403,33 @@ try {
   await saveChannel(project, { id: sms.id, provider: 'sms', configuration: { accountSid, authToken: 'rotated-new-token', fromNumber: '+14155550100', phoneNumberSid: numberSid, country: 'US' } }, Number(owner.id))
   check((await http(`${scope}/channel-deliveries/${delivery.public_id}/reconcile`, 'POST', {}, token)).status === 200, 'encrypted original credential snapshot reconciles old operations after connection rotation')
   check(!JSON.stringify(deliveryView(current)).includes(authToken), 'delivery views never expose encrypted credential snapshots')
+  const originalDiscord = await loadChannel(project, discord.id)
+  const oldestPoll = new Date(0).toISOString()
+  const readyDiscordBacklog = []
+  for (let index = 0; index < 100; index++) {
+    const connection = await insert('support_channels', { workspace_id: project.workspace_id, project_id: project.id, public_id: crypto.randomUUID(), provider: 'discord', configuration: originalDiscord.configuration, external_id: originalDiscord.external_id, status: 'ready', verified_at: originalDiscord.verified_at })
+    readyDiscordBacklog.push(await insert('support_channel_cursors', { workspace_id: project.workspace_id, project_id: project.id, channel_id: connection.id, cursor: '102' }))
+  }
+  await query('UPDATE support_channel_cursors SET updated_at = ? WHERE project_id = ? AND workspace_id = ?', [oldestPoll, project.id, project.workspace_id])
+  const newestCursor = readyDiscordBacklog.at(-1)!
+  const directFetch = globalThis.fetch
+  globalThis.fetch = Object.assign((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input)
+    return new URL(url).hostname === 'discord.com' ? transport(url, init) : directFetch(input, init)
+  }, { preconnect: directFetch.preconnect })
+  try {
+    failNextDiscordPoll = true
+    const readsBeforeDiscordSweep = discordPollReads
+    await RunChannelDelivery.dispatchNow({})
+    const remaining = await one('SELECT updated_at FROM support_channel_cursors WHERE id = ?', [newestCursor.id])
+    check(discordPollReads === readsBeforeDiscordSweep + 100 && new Date(String(remaining?.updated_at)).getTime() === 0, 'one scheduled Discord sweep keeps its bounded 100-connection batch')
+    await RunChannelDelivery.dispatchNow({})
+    const advanced = await one('SELECT updated_at FROM support_channel_cursors WHERE id = ?', [newestCursor.id])
+    check(new Date(String(advanced?.updated_at)).getTime() > 0 && discordPollReads === readsBeforeDiscordSweep + 200, 'the next scheduled Discord sweep polls the previously queued room even when another room failed')
+    const failed = await one('SELECT cursor, lease_until, updated_at FROM support_channel_cursors WHERE channel_id = ?', [originalDiscord.id])
+    check(failed?.cursor === '102' && Number(failed.lease_until) > Date.now() && new Date(String(failed.updated_at)).getTime() > 0, 'the failed poll records its attempt and retains the old provider cursor')
+  }
+  finally { globalThis.fetch = directFetch }
   console.log(`PASS managed channel HTTP (${checks} checks)`)
 }
 finally { configureBillingGateway(undefined); server.stop(true); provider.stop(true) }

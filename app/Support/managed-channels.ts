@@ -309,10 +309,12 @@ export async function recoverChannelWork(dependencies: ChannelDependencies = {})
 export async function pollDiscordChannel(project: Row, channelId: unknown, dependencies: ChannelDependencies = {}) {
   const channel = await requireReadyChannel(project, channelId, 'discord'), config = await channelConfig(channel)
   const claimed: Row | null = await workspaceTransaction(Number(project.workspace_id), async () => {
-    const cursor = await one('SELECT * FROM support_channel_cursors WHERE channel_id = ? AND project_id = ?', [channel.id, project.id])
-    if (!cursor || Number(cursor.lease_until) > Date.now()) return null
+    const now = Date.now()
+    const cursor = await one('SELECT * FROM support_channel_cursors WHERE channel_id = ? AND project_id = ? AND workspace_id = ?', [channel.id, project.id, project.workspace_id])
+    if (!cursor || Number(cursor.lease_until) > now) return null
     const token = secret()
-    await query('UPDATE support_channel_cursors SET lease_token = ?, lease_until = ? WHERE id = ?', [token, Date.now() + 60000, cursor.id])
+    // Failed attempts must rotate too, without advancing their Discord cursor.
+    await query('UPDATE support_channel_cursors SET lease_token = ?, lease_until = ?, updated_at = ? WHERE id = ?', [token, now + 60000, new Date(now).toISOString(), cursor.id])
     return { ...cursor, lease_token: token }
   })
   if (!claimed) return { polled: false }
