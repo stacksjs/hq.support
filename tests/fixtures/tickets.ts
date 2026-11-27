@@ -10,6 +10,7 @@ import { insert, one, query } from '../../app/Support/database'
 import { recordTicketFirstResponse, ticketView } from '../../app/Support/tickets'
 import { createSession, reply } from '../../app/Support/service'
 import { ticketSlaTick } from '../../app/Support/ticket-sla'
+import { projectReports } from '../../app/Support/reports'
 
 await overridesReady
 config.database.queryLogging.enabled = false
@@ -97,6 +98,12 @@ try {
   now += 1000
   const reopened = await http(path + `/tickets/${ticket.id}`, 'PATCH', { status: 'open' }, owner)
   check(Number(reopened.data.ticket.sla_cycle) === 2 && reopened.data.ticket.sla.firstResponseAt === 0 && (await query('SELECT * FROM support_ticket_sla_clocks WHERE ticket_id = ?', [ticket.id])).length === 2, 'reopen starts a new cycle and preserves previous history')
+  const slaReport = (await projectReports(project, now)).slaTimings
+  assert.deepEqual(slaReport.firstResponse, { samples: 1, averageMs: 60 * 60_000 })
+  assert.deepEqual(slaReport.resolution, { samples: 1, averageMs: 120 * 60_000 })
+  await recordTicketFirstResponse(project, conversation.id, firstDue)
+  assert.equal(Number((await one('SELECT first_response_at FROM support_ticket_sla_clocks WHERE ticket_id = ? AND cycle = 2', [ticket.id]))?.first_response_at), 0, 'an acknowledgement from before a reopened SLA cycle cannot satisfy it')
+  assert.deepEqual((await projectReports(project, now)).slaTimings, slaReport, 'a replay preserves the completed cycle and its measured samples')
   const internalType = (await http(path + '/types', 'POST', { name: 'Internal', kind: 'internal' }, owner)).data.type
   const incidentType = (await http(path + '/types', 'POST', { name: 'Incident', kind: 'incident' }, owner)).data.type
   const internal = (await http(path + '/tickets', 'POST', { contactId: person.id, title: 'Internal investigation', typeId: internalType.id }, owner)).data.ticket

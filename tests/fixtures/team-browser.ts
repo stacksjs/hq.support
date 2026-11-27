@@ -256,6 +256,8 @@ try {
   const reportChannel = await insert('support_channels', { ...reportScope, public_id: crypto.randomUUID(), provider: 'discord' })
   const reportBinding = await insert('support_channel_threads', { ...reportScope, conversation_id: reportThread.id, contact_id: reportContact.id, channel_id: reportChannel.id, remote_key: 'browser-report', recipient: 'discord-fixture' })
   await insert('support_channel_deliveries', { ...reportScope, channel_id: reportChannel.id, thread_id: reportBinding.id, message_id: reportReply.id, operation_key: 'browser-report', request_hash: '', public_id: crypto.randomUUID(), provider_message_id: 'discord-fixture-response', status: 'accepted', accepted_at: Date.now() })
+  const reportTicket = await insert('support_tickets', { ...reportScope, contact_id: reportContact.id, title: 'SLA report fixture' })
+  await insert('support_ticket_sla_clocks', { ...reportScope, ticket_id: reportTicket.id, cycle: 1, phase: 'resolved', first_response_at: Date.now(), resolved_at: Date.now(), first_working_ms: 60_000, resolution_working_ms: 120_000 })
   await navigate(cdp, origin + '/app/reports', { quietMs: 100, timeoutMs: 20000 })
   const timingCards = `Array.from(document.querySelectorAll('[aria-labelledby="report-messenger-heading"] .metric-cell'))`
   await waitFor(() => evaluate(`${timingCards}.length === 3`), 15000, { label: 'Compiled Messenger timing cards' })
@@ -263,10 +265,14 @@ try {
   const channelRow = 'document.querySelector(\'[aria-labelledby="report-channels-heading"] tbody tr\')'
   await waitFor(() => evaluate(`${channelRow}?.cells.length === 4`), 15000, { label: 'Provider timing table cells' })
   check(await evaluate(`${channelRow}.cells[0].textContent === 'Discord' && ${channelRow}.cells[1].textContent.includes('1 sample') && ${channelRow}.cells[2].textContent.includes('No data')`), 'Reports renders the native provider acknowledgement with a sample count and explicit missing measures')
+  const slaCards = `Array.from(document.querySelectorAll('[aria-labelledby="report-sla-heading"] .metric-cell'))`
+  await waitFor(() => evaluate(`${slaCards}.length === 2`), 15000, { label: 'Ticket SLA timing cards' })
+  check(await evaluate(`${slaCards}.every(card => card.textContent.includes('1 sample') && card.querySelector('strong').textContent !== 'No data')`), 'Reports renders both business-time SLA averages')
   await input('#report-project', String(sibling.public_id))
   await waitFor(() => evaluate(`${timingCards}.length === 3 && ${timingCards}.every(card => card.querySelector('strong').textContent === 'No data')`), 15000, { label: 'Project without measured replies' })
   check(await evaluate(`document.querySelector('#report-project').value === ${JSON.stringify(String(sibling.public_id))}`), 'Reports switches projects without retaining the previous project’s timing values')
   check(await evaluate(`!${channelRow}`), 'Project switching clears the previous project’s provider timing table')
+  check(await evaluate(`${slaCards}.length === 2 && ${slaCards}.every(card => card.querySelector('strong').textContent === 'No data')`), 'Project switching clears the previous project’s completed SLA samples')
 
   await navigate(cdp, origin + '/app/ticket-settings', { quietMs: 100, timeoutMs: 20000 })
   await waitFor(() => evaluate(`document.querySelector('#type-opens-conversation')?.checked === false`), 15000, { label: 'Inbox option defaults off for new customer types' })

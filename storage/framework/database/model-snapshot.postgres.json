@@ -7270,6 +7270,51 @@
             "isUnique": false,
             "isNullable": true,
             "hasDefault": false
+          },
+          {
+            "name": "started_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
+          },
+          {
+            "name": "phase_started_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
+          },
+          {
+            "name": "worked_ms",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": -1
+          },
+          {
+            "name": "first_working_ms",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": -1
+          },
+          {
+            "name": "resolution_working_ms",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": -1
           }
         ],
         "indexes": [
@@ -9622,7 +9667,7 @@
       }
     ]
   },
-  "hash": "21913b1d22487a39154e8738514705e7ebe67095ecae6a521738a3cbebd2a596",
+  "hash": "7651da3b6dacd517e7e980870214694422452bfb6d9ec2c1b5aaaaa0a51cd028",
   "dialect": "postgres",
-  "updatedAt": "2026-11-27T02:55:11.880Z"
+  "updatedAt": "2026-11-27T03:02:25.742Z"
 }

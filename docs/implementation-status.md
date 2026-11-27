@@ -52,8 +52,11 @@ from the first acknowledged submission or the matching provider receipt.
 A conversation with an older acknowledged reply and no recorded acceptance time
 is omitted from reply timing to keep later replies from becoming false first
 replies. Resolution still uses its stored close and customer message timestamps.
-All-time activity totals include every channel. Business-hour SLA cohorts and
-the remaining report reconciliation are tracked in #5.
+All-time activity totals include every channel. The ticket SLA report shows
+average working time for responses and resolutions recorded in the past 30 days.
+It uses each cycle's saved policy, counting open hours without paused intervals.
+Older cycles and out-of-order events with incomplete working-time records do not
+contribute samples. Reopening keeps completed cycles and starts a new clock.
 
 `./buddy test tests/feature/support-http.test.ts` starts an isolated real HTTP server and real disposable SQLite or PostgreSQL database, applies the committed native model migrations and native auth tables, then verifies registration/login, cross-workspace refusals, write/read key scope, customer session hashing, allowed-origin CORS, customer isolation, internal note confidentiality, exact wire summaries, idempotency replay/conflict, atomic outbox creation, pending invitations within two seats, concurrent 120th/121st free conversation admission, existing-thread replies after the cap, exact tenth/eleventh AI admission, HQ usage and confirmed one-use connect grants. Tests mutate verification flags only inside their owned test database; there is no endpoint that accepts those flags from a customer.
 

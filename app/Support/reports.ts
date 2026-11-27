@@ -1,12 +1,13 @@
 import type { Row } from './database'
 import { ensureDatabaseConfigLoaded, resolvedDatabaseConfig } from '@stacksjs/database/runtime'
 import { channelProviders } from './channels'
-import { query } from './database'
+import { one, query } from './database'
 
 export interface ReportDuration { samples: number, averageMs: number | null }
 type TimingMetric = 'firstReply' | 'followUpReply' | 'resolution'
 export interface ReportTimings { firstReply: ReportDuration, followUpReply: ReportDuration, resolution: ReportDuration }
 export interface ChannelReportTimings extends ReportTimings { channel: string }
+export interface SlaReportTimings { firstResponse: ReportDuration, resolution: ReportDuration }
 
 async function responseTimings(scope: unknown[], through: number) {
   const since = through - 30 * 86_400_000
@@ -75,6 +76,24 @@ async function responseTimings(scope: unknown[], through: number) {
   return { messengerTimings: { since, through, ...timings('widget') }, channelTimings }
 }
 
+async function ticketSlaTimings(scope: unknown[], through: number): Promise<SlaReportTimings> {
+  const since = through - 30 * 86_400_000
+  const row = await one(`
+    WITH samples AS (
+      SELECT CASE WHEN first_response_at BETWEEN ? AND ? AND first_working_ms >= 0 THEN first_working_ms END AS response,
+        CASE WHEN resolved_at BETWEEN ? AND ? AND resolution_working_ms >= 0 THEN resolution_working_ms END AS resolution
+      FROM support_ticket_sla_clocks WHERE workspace_id = ? AND project_id = ?
+    )
+    SELECT COUNT(response) AS response_samples, AVG(response) AS response_average,
+      COUNT(resolution) AS resolution_samples, AVG(resolution) AS resolution_average FROM samples
+  `, [since, through, since, through, ...scope])
+  const response = Number(row?.response_samples || 0), resolution = Number(row?.resolution_samples || 0)
+  return {
+    firstResponse: { samples: response, averageMs: response ? Math.round(Number(row?.response_average)) : null },
+    resolution: { samples: resolution, averageMs: resolution ? Math.round(Number(row?.resolution_average)) : null },
+  }
+}
+
 export async function projectReports(project: Row, through: number) {
   await ensureDatabaseConfigLoaded()
   const scope = [project.workspace_id, project.id]
@@ -83,5 +102,6 @@ export async function projectReports(project: Row, through: number) {
     messages: await query('SELECT author_type, COUNT(*) AS total FROM support_messages WHERE workspace_id = ? AND project_id = ? GROUP BY author_type', scope),
     tickets: await query('SELECT status, COUNT(*) AS total FROM support_tickets WHERE workspace_id = ? AND project_id = ? GROUP BY status', scope),
     ...await responseTimings(scope, through),
+    slaTimings: await ticketSlaTimings(scope, through),
   }
 }

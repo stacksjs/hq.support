@@ -47,6 +47,17 @@ onDestroy(() => workspace.destroy())
       </table>
     </div>
   </section>
+  <section :if="reports.slaTimings().length > 0" class="mt-6" aria-labelledby="report-sla-heading">
+    <h2 id="report-sla-heading">Ticket SLA time</h2>
+    <p class="field-help">Working time for SLA responses and resolutions in the past 30 days. The ticket policy sets working hours and pauses.</p>
+    <div class="metric-grid">
+      <article :for="metric in reports.slaTimings()" class="metric-cell">
+        <h3>{{ metric.label }}</h3>
+        <strong>{{ reports.duration(metric.averageMs) }}</strong>
+        <p>{{ metric.samples.toLocaleString() }} {{ metric.samples === 1 ? 'sample' : 'samples' }}</p>
+      </article>
+    </div>
+  </section>
   <section class="mt-6" aria-labelledby="report-totals-heading">
     <h2 id="report-totals-heading">All-time project totals</h2>
     <div class="metric-grid">

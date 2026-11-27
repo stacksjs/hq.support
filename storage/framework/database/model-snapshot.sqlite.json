@@ -7268,6 +7268,51 @@
             "isUnique": false,
             "isNullable": true,
             "hasDefault": false
+          },
+          {
+            "name": "started_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
+          },
+          {
+            "name": "phase_started_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
+          },
+          {
+            "name": "worked_ms",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": -1
+          },
+          {
+            "name": "first_working_ms",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": -1
+          },
+          {
+            "name": "resolution_working_ms",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": -1
           }
         ],
         "indexes": [
@@ -9618,7 +9663,7 @@
       }
     ]
   },
-  "hash": "65cc6125518dea3330bbdfdd453400fd2a45b300348db2e040bdfa91d1b7d134",
+  "hash": "272f192e8060a8aa7339234a78b3b62972534a430da3656f3688aae5dca2c15b",
   "dialect": "sqlite",
-  "updatedAt": "2026-11-27T02:55:11.691Z"
+  "updatedAt": "2026-11-27T03:02:25.571Z"
 }
