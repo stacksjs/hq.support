@@ -27,6 +27,13 @@ const base = `http://127.0.0.1:${server.port}/api`
 let checks = 0
 let csrfToken = '', csrfCookie = ''
 const check = (condition: unknown, message: string) => { assert.ok(condition, message); checks++ }
+
+function streamFailureStage(message: unknown): 'stream-open' | 'request' | null {
+  if (message === 'Realtime stream could not be opened.') return 'stream-open'
+  if (message === 'Realtime request could not be completed.') return 'request'
+  return null
+}
+
 async function request(path: string, method = 'GET', body?: unknown, token?: string, origin?: string) {
   const result = await fetch(base + path, { method, headers: { 'accept': 'application/json', ...(csrfCookie ? { cookie: csrfCookie, 'x-csrf-token': csrfToken } : {}), ...(body ? { 'content-type': 'application/json' } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}), ...(origin ? { origin } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
   const raw = await result.text()
@@ -159,6 +166,7 @@ try {
         check(recovery ? refused.data.cursor === null && refused.data.snapshotRequired === true : !('cursor' in refused.data) && !('snapshotRequired' in refused.data), 'only enrollment recovery adds the readiness recovery discriminator for ' + scenario)
         if (scenario === 'renewal') check(Number((await one('SELECT lease_until FROM support_replay_channels WHERE name = ?', [channelName]))!.lease_until) === leaseStarted + 1, 'readiness renewal refusal rolls back its expiry trigger and never extends the lease')
         if (scenario === 'authority') check(refused.data.error.code === 'invalid_session', 'current authority refusal is not serialized as stream unavailability or recovery')
+        if (scenario === 'storage') check(streamFailureStage(refused.data.error?.message) === 'request', 'readiness storage failure is reported through the request error response')
       }
       finally {
         await remove(); await query('DROP TABLE realtime_readiness_steps')
@@ -255,7 +263,26 @@ try {
   const openStream = async (cursor: any, credential = session.token) => {
     const abort = new AbortController()
     const response = await fetch(base + widget + '/realtime/stream', { method: 'POST', signal: abort.signal, headers: { 'content-type': 'application/json', origin: 'https://customer.example', authorization: 'Bearer ' + credential }, body: JSON.stringify({ checkpoint: cursor }) })
-    check(response.status === 200 && response.headers.get('content-type') === 'text/event-stream' && response.headers.get('access-control-allow-origin') === 'https://customer.example', 'native authenticated SSE response and current exact CORS')
+    try {
+      const contentType = response.headers.get('content-type')
+      const json = contentType?.startsWith('application/json') === true
+      const failure = response.status !== 200 && json ? await response.json().catch(() => null) as { error?: { code?: unknown, message?: unknown } } | null : null
+      const code = failure?.error?.code
+      assert.deepEqual({
+        status: response.status,
+        eventStream: contentType === 'text/event-stream',
+        json,
+        exactOrigin: response.headers.get('access-control-allow-origin') === 'https://customer.example',
+        retryAfter: response.status !== 200 && response.headers.has('retry-after'),
+        errorCode: typeof code === 'string' && /^[a-z0-9_]{1,64}$/.test(code) ? code : null,
+        failureStage: response.status === 503 ? streamFailureStage(failure?.error?.message) : null,
+      }, { status: 200, eventStream: true, json: false, exactOrigin: true, retryAfter: false, errorCode: null, failureStage: null }, 'native authenticated SSE response and current exact CORS')
+      checks++
+    }
+    catch (error) {
+      abort.abort()
+      throw error
+    }
     return { abort, reader: response.body!.getReader() }
   }
   const read = async (reader: ReadableStreamDefaultReader<Uint8Array>, timeout = 3000) => {
@@ -451,18 +478,27 @@ try {
   // Bounded workers keep enrollment and socket setup load finite while retaining 1000 live subscribers.
   const streams: Awaited<ReturnType<typeof openStream>>[] = []
   let nextSubscriber = 0
+  let stopOpening = false
   try {
-    await Promise.all(Array.from({ length: 16 }, async () => {
-      while (nextSubscriber < 1000) {
-        const index = nextSubscriber++
-        const subscriber = await createSession(fullProject, { externalId: 'realtime-load-' + index })
-        const enrolled = await request(widget + '/realtime/snapshot', 'POST', {}, subscriber.token, 'https://customer.example')
-        check(enrolled.status === 200 && enrolled.data.mode === 'realtime', 'messenger enrolls within project/workspace/operator and native bounds')
-        const liveStream = await openStream(enrolled.data.checkpoint, subscriber.token)
-        streams.push(liveStream)
-        await read(liveStream.reader)
+    const openings = await Promise.allSettled(Array.from({ length: 16 }, async () => {
+      try {
+        while (!stopOpening && nextSubscriber < 1000) {
+          const index = nextSubscriber++
+          const subscriber = await createSession(fullProject, { externalId: 'realtime-load-' + index })
+          const enrolled = await request(widget + '/realtime/snapshot', 'POST', {}, subscriber.token, 'https://customer.example')
+          check(enrolled.status === 200 && enrolled.data.mode === 'realtime', 'messenger enrolls within project/workspace/operator and native bounds')
+          const liveStream = await openStream(enrolled.data.checkpoint, subscriber.token)
+          streams.push(liveStream)
+          await read(liveStream.reader)
+        }
+      }
+      catch (error) {
+        stopOpening = true
+        throw error
       }
     }))
+    const failure = openings.find(result => result.status === 'rejected')
+    if (failure) throw failure.reason
     check(streams.length === 1000, '1000 distinct enrolled messenger channels retain simultaneous native HTTP subscriptions')
     const agentSnapshot = await browserRequest(agent + '/realtime/snapshot', {})
     const abort = new AbortController()
@@ -484,6 +520,7 @@ try {
       check(atCapacity.status === 503, 'native 4096 physical subscription cap refuses a routed stream after prior abort/backpressure cleanup')
       const refused = await atCapacity.json() as any
       check(refused.error?.code === 'realtime_unavailable' && Buffer.byteLength(JSON.stringify(refused)) < 1024, 'capacity failure is a bounded public error without state or enrollment counts')
+      check(streamFailureStage(refused.error?.message) === 'stream-open', 'subscription capacity failure is reported through the stream open error response')
     }
     finally { await atCapacity.body?.cancel().catch(() => {}) }
     releases.pop()!()
