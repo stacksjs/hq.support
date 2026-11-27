@@ -61,7 +61,7 @@ route.options('/widget/projects/{project}/*', async (request) => {
   const origin = request.headers.get('origin')
   const selected = await project(request.getParam('project') || '')
   const allowed: unknown = JSON.parse(String(selected.allowed_origins))
-  if (!origin || !Array.isArray(allowed) || !allowed.includes(origin)) return new Response(null, { status: 403 })
+  if (!origin || !Array.isArray(allowed) || !allowed.includes(origin)) return new Response(null, { status: 403, headers: { Vary: 'Origin' } })
   return new Response(null, { status: 204, headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Max-Age': '600', 'Vary': 'Origin' } })
 }).skipCsrf()
 
