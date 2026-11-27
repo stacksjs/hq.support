@@ -23,9 +23,11 @@ route.post('/api/_native/support/session', NativeSessionAction).middleware('auth
 const api = await route.serve({ port: 0, hostname: '127.0.0.1' }), apiOrigin = `http://127.0.0.1:${api.port}`
 const root = resolve(import.meta.dir, '../..'), output = await mkdtemp(resolve(tmpdir(), 'hq-support-team-browser-')), artifacts = resolve(root, 'storage/framework/runtime/team-browser')
 let host: ReturnType<typeof Bun.serve> | undefined, browser: Awaited<ReturnType<typeof launch>> | undefined, peer: Awaited<ReturnType<typeof launch>> | undefined
-let cookie = '', csrf = '', peerCookie = '', failSend = false, failList = false, simulatePeerDisconnect = false
+let cookie = '', csrf = '', peerCookie = '', migrationCookie = '', failSend = false, failList = false, simulatePeerDisconnect = false
 let retentionGate: { path: string, entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>> } | undefined
 let incompleteRetentionPath: string | undefined
+let inconsistentMigrationTotals = false
+let migrationGate: { entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>> } | undefined
 const presenceTiming: Record<string, number> = {}
 const assertions: string[] = [], runtimeErrors: string[] = []
 const searchTraffic: Array<{ q: string | null, inboxId: string | null, status: string | null, cursor: string | null, path: string }> = []
@@ -66,7 +68,7 @@ try {
   assert.equal(compiled.failedCount, 0)
   host = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const url = new URL(request.url)
-    if (url.pathname.startsWith('/_fixture/')) return new Response(null, { status: 303, headers: { location: '/app/team-settings', 'set-cookie': url.pathname.endsWith('/peer') ? peerCookie : url.pathname.endsWith('/agent') ? agentCookie : url.pathname.endsWith('/admin') ? adminCookie : ownerCookie } })
+    if (url.pathname.startsWith('/_fixture/')) return new Response(null, { status: 303, headers: { location: '/app/team-settings', 'set-cookie': url.pathname.endsWith('/migration') ? migrationCookie : url.pathname.endsWith('/peer') ? peerCookie : url.pathname.endsWith('/agent') ? agentCookie : url.pathname.endsWith('/admin') ? adminCookie : ownerCookie } })
     if (url.pathname === '/case-fixture') return new Response('<!doctype html><html lang="en"><head><title>Support case fixture</title></head><body></body></html>', { headers: { 'content-type': 'text/html' } })
     if (url.pathname.startsWith('/api/')) {
       if (simulatePeerDisconnect && request.method === 'POST' && url.pathname.endsWith('/presence')) {
@@ -84,6 +86,18 @@ try {
         delete evidence.content.messageBodies
         return Response.json(evidence)
       }
+      if (inconsistentMigrationTotals && response.ok && request.method === 'POST' && url.pathname.endsWith('/imports/intercom')) {
+        inconsistentMigrationTotals = false
+        const report = await response.json() as { compatibleRecords: number, reviewRecords: number }
+        report.compatibleRecords++
+        report.reviewRecords--
+        return Response.json(report)
+      }
+      const heldMigration = migrationGate
+      if (heldMigration && request.method === 'POST' && url.pathname.endsWith('/imports/intercom')) {
+        heldMigration.entered.resolve()
+        await heldMigration.release.promise
+      }
       const heldRetention = retentionGate
       if (heldRetention && request.method === 'GET' && url.pathname === heldRetention.path) {
         heldRetention.entered.resolve()
@@ -95,7 +109,7 @@ try {
       return new Response(response.body, { status: response.status, headers: outgoing })
     }
     if (url.pathname === '/favicon.ico') return new Response(null, { status: 204 })
-    const path = ['/app', '/app/team-settings', '/app/reports', '/app/ticket-settings', '/app/usage'].includes(url.pathname) ? `${url.pathname}.html` : url.pathname
+    const path = ['/app', '/app/settings', '/app/team-settings', '/app/reports', '/app/ticket-settings', '/app/usage', '/login'].includes(url.pathname) ? `${url.pathname}.html` : url.pathname
     const file = resolve(output, '.' + decodeURIComponent(path))
     if (!file.startsWith(output + sep)) return new Response('Forbidden', { status: 403 })
     return await Bun.file(file).exists() ? new Response(Bun.file(file), { headers: path.endsWith('.html') ? { 'content-type': 'text/html', 'cache-control': 'no-store' } : {} }) : new Response('Not found', { status: 404 })
@@ -425,6 +439,82 @@ try {
   simulatePeerDisconnect = false
   presenceTiming.disconnectMs = Math.round(performance.now() - disconnected)
   check(presenceTiming.disconnectMs <= 32_000, 'a disappeared browser stops appearing after its lease expires')
+  const secondWorkspace = (await http('/support/workspaces', 'POST', { name: 'Other migration workspace' }, owner.token)).data.workspace
+  const secondProject = (await http(`/support/workspaces/${secondWorkspace.id}/projects`, 'POST', { name: 'Other brand' }, owner.token)).data.project
+  const bundleFile = resolve(output, 'intercom-preview-fixture.json')
+  await Bun.write(bundleFile, JSON.stringify({
+    version: 1, provider: 'intercom', format: 'plaintext',
+    contacts: [{ id: 'compatible-preview' }, ...Array.from({ length: 26 }, (_, index) => ({ id: `invalid@${index}` }))],
+    conversations: [],
+  }))
+  async function openMigrationSettings(role: string) {
+    migrationCookie = await browserCookie(role)
+    await navigate(cdp, origin + '/_fixture/migration', { quietMs: 100, timeoutMs: 20000 })
+    await navigate(cdp, origin + '/app/settings', { quietMs: 100, timeoutMs: 20000 })
+    await waitFor(() => evaluate(`document.querySelector('#settings-project')?.options.length > 1`), 15000, { label: 'Project settings loaded' })
+  }
+  await openMigrationSettings('agent')
+  check(await evaluate(`!document.querySelector('#migration-file')`), 'ordinary agent settings hide the migration preview')
+  await openMigrationSettings('admin')
+  await waitFor(() => evaluate(`!!document.querySelector('#migration-file')`), 15000, { label: 'Admin migration control' })
+  check(true, 'workspace admin can access the migration upload control')
+  const beforePreview = await one('SELECT COUNT(*) AS total FROM support_import_runs')
+  await openMigrationSettings('owner')
+  await input('#settings-project', String(project.public_id))
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: true })
+  async function chooseBundle() {
+    const { root: documentRoot } = await cdp.send('DOM.getDocument')
+    const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: documentRoot.nodeId, selector: '#migration-file' })
+    assert.ok(nodeId)
+    await cdp.send('DOM.setFileInputFiles', { nodeId, files: [bundleFile] })
+    await waitFor(() => evaluate(`!document.querySelector('#migration-heading + p + form button').disabled`), 5000, { label: 'Preview form is ready' })
+  }
+  await chooseBundle()
+  await evaluate(`document.querySelector('#migration-heading + p + form button').focus()`)
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' })
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+  await text('Preview complete.')
+  check(await evaluate(`document.querySelector('#migration-result').getBoundingClientRect().width <= 375
+    && document.querySelectorAll('#migration-result li').length === 25 && document.querySelector('#migration-review-only').checked`),
+  'keyboard submits a real dry run and the phone shows a bounded review inventory')
+  await click('Next')
+  await waitFor(() => evaluate(`document.querySelector('#migration-result li')?.textContent.includes('Position 26')`), 5000, { label: 'Second review page' })
+  await input('#migration-page-number', '1')
+  await waitFor(() => evaluate(`document.querySelector('#migration-result li')?.textContent.includes('Position 1 ·')`), 5000, { label: 'Jump directly to a page' })
+  await evaluate(`document.querySelector('#migration-review-only').click()`)
+  await waitFor(() => evaluate(`document.querySelector('#migration-result li')?.textContent.includes('compatible-preview')`), 5000, { label: 'All source outcomes' })
+  check(await evaluate(`document.querySelector('#migration-result').textContent.includes('27 supplied records') && !document.querySelector('#migration-result').textContent.includes('invalid@')`), 'inventory pages and filters outcomes without displaying malformed IDs')
+  await evaluate(`document.querySelector('#migration-result').scrollIntoView({ block: 'start' })`)
+  const migrationImage = await cdp.send('Page.captureScreenshot', { format: 'png' })
+  await Bun.write(resolve(artifacts, 'phone-migration-preview.png'), Buffer.from(migrationImage.data, 'base64'))
+
+  inconsistentMigrationTotals = true
+  await click('Preview bundle')
+  await text('The migration preview response was incomplete. Try again.')
+  check(await evaluate(`!document.querySelector('#migration-result')`), 'a preview with contradictory counts does not render an inventory')
+  await click('Preview bundle')
+  await text('Preview complete.')
+
+  const delayedMigration = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() }
+  migrationGate = delayedMigration
+  try {
+    await click('Preview bundle')
+    await Promise.race([delayedMigration.entered.promise, Bun.sleep(10_000).then(() => { throw new Error('Delayed migration did not reach the native endpoint') })])
+    await input('#settings-project', String(secondProject.public_id))
+    await waitFor(() => evaluate(`document.querySelector('#migration-file')?.files.length === 0`), 5000, { label: 'Workspace switch clears the file' })
+  }
+  finally { migrationGate = undefined; delayedMigration.release.resolve() }
+  await waitFor(() => evaluate(`!document.querySelector('#migration-result') && document.querySelector('#migration-heading + p + form button').disabled`), 5000, { label: 'Workspace switch clears preview' })
+  check(Number((await one('SELECT COUNT(*) AS total FROM support_import_runs'))?.total) === Number(beforePreview?.total),
+    'preview and project changes create no import run')
+  await input('#settings-project', String(project.public_id))
+  await chooseBundle()
+  await click('Preview bundle')
+  await text('Preview complete.')
+  await click('Sign out of your account')
+  await waitFor(() => evaluate(`location.pathname === '/login' && !document.querySelector('#migration-result')`), 15000, { label: 'Signed-out settings clear the preview' })
+  check(true, 'sign-out clears the migration file and visible preview')
+
   console.info(`PASS team UI functional (${assertions.length} checks)`)
   await Bun.write(resolve(artifacts, 'report.json'), JSON.stringify({ passed: runtimeErrors.length === 0, functionalPassed: true, assertions, runtimeErrors, presenceTiming, cacheDriver: config.cache.driver, browser: (await cdp.send('Browser.getVersion')).product }, null, 2))
   assert.deepEqual(runtimeErrors, [], 'No browser runtime errors: retain this gate until the native compiler fix is published')
@@ -437,6 +527,6 @@ finally {
     await Bun.write(resolve(artifacts, 'diagnostic.json'), JSON.stringify({ assertions, runtimeErrors, body: captured[0].status === 'fulfilled' ? captured[0].value : 'Browser closed' }, null, 2))
     if (captured[1].status === 'fulfilled') await Bun.write(resolve(artifacts, 'latest.png'), Buffer.from(captured[1].value.data, 'base64'))
   }
-  searchGate?.release.resolve(); host?.stop(true); api.stop(true); await peer?.close(); await browser?.close(); await closeSharedBrowsers(); await rm(output, { recursive: true, force: true })
+  migrationGate?.release.resolve(); searchGate?.release.resolve(); host?.stop(true); api.stop(true); await peer?.close(); await browser?.close(); await closeSharedBrowsers(); await rm(output, { recursive: true, force: true })
 }
 process.exit(0)

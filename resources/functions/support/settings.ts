@@ -1,9 +1,41 @@
-import { state } from '@stacksjs/stx'
+import { derived, state } from '@stacksjs/stx'
 
 interface Project { workspace_id: number, public_id: string, name: string, allowed_origins: string, anonymous_enabled: boolean }
 interface KeyMetadata { id: string, scope: string, status: 'active' | 'revoked', createdAt: string, revokedAt: number }
 interface KeyOperation { project: string, kind: 'create' | 'rotate', id?: string, operationId: string }
 interface Workspace { id: number, name: string, plan: string, role: string }
+type PreviewStatus = 'compatible' | 'skipped' | 'needs_review'
+interface PreviewRecord { position: number, entityType: string, sourceId: string | null, status: PreviewStatus, errorCode: string | null }
+interface MigrationPreview {
+  totalRecords: number
+  compatibleRecords: number
+  skippedRecords: number
+  reviewRecords: number
+  records: PreviewRecord[]
+}
+const previewStatusLabels: Record<PreviewStatus, string> = {
+  compatible: 'Compatible',
+  skipped: 'Skipped',
+  needs_review: 'Needs review',
+}
+const previewPageSize = 25
+function isMigrationPreview(value: unknown): value is MigrationPreview {
+  if (!value || typeof value !== 'object') return false
+  const result = value as Partial<MigrationPreview> & { dryRun?: unknown }
+  if (result.dryRun !== true || !Array.isArray(result.records) || result.totalRecords !== result.records.length) return false
+
+  const counts = { compatible: 0, skipped: 0, needs_review: 0 }
+  for (const [position, row] of result.records.entries()) {
+    if (!row || row.position !== position || typeof row.entityType !== 'string'
+      || typeof row.status !== 'string' || !Object.hasOwn(previewStatusLabels, row.status)
+      || (row.sourceId !== null && typeof row.sourceId !== 'string')
+      || (row.errorCode !== null && typeof row.errorCode !== 'string')) return false
+    counts[row.status]++
+  }
+  return counts.compatible === result.compatibleRecords
+    && counts.skipped === result.skippedRecords && counts.needs_review === result.reviewRecords
+}
+
 export function createSupportSettings() {
   const projects = state<Project[]>([])
   const workspaces = state<Workspace[]>([])
@@ -18,6 +50,21 @@ export function createSupportSettings() {
   const keyList = state<KeyMetadata[]>([])
   const keyCursor = state<string | null>(null)
   const keyRetry = state(false)
+  const migrationPreview = state<MigrationPreview | null>(null)
+  const migrationFile = state<File | null>(null)
+  const migrationError = state('')
+  const migrationBusy = state(false)
+  const migrationReviewOnly = state(false)
+  const migrationPage = state(0)
+  const migrationMatches = derived(() => (migrationPreview()?.records ?? [])
+    .filter(row => !migrationReviewOnly() || row.status === 'needs_review'))
+  const migrationPageCount = derived(() => Math.ceil(migrationMatches().length / previewPageSize))
+  const migrationRecords = derived(() => {
+    const start = migrationPage() * previewPageSize
+    return migrationMatches().slice(start, start + previewPageSize)
+  })
+  let migrationInput: HTMLInputElement | undefined
+  let migrationRequest: AbortController | undefined
   let operation: KeyOperation | undefined
   let generation = 0, keyRequest = 0, destroyed = false
   let logoutRequest: Promise<void> | undefined
@@ -26,6 +73,10 @@ export function createSupportSettings() {
     generation++
     keyRequest++
     operation = undefined
+    resetMigrationResult()
+    if (migrationInput) migrationInput.value = ''
+    migrationInput = undefined
+    migrationFile.set(null)
     keys.set({})
     keyList.set([])
     keyCursor.set(null)
@@ -47,10 +98,69 @@ export function createSupportSettings() {
       csrf = token
     }
     checkContext()
-    const result = await fetch(path, { ...options, credentials: 'same-origin', cache: 'no-store', headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) } })
+    const result = await fetch(path, { ...options, credentials: 'same-origin', cache: 'no-store', headers: { ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), Accept: 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) } })
     const data = await result.json().catch(() => ({}))
     if (!result.ok) throw new Error(data.message || data.error?.message || (typeof data.error === 'string' ? data.error : '') || `Request failed (${result.status}).`)
     return data
+  }
+  function resetMigrationResult() {
+    migrationRequest?.abort()
+    migrationRequest = undefined
+    migrationPreview.set(null)
+    migrationError.set('')
+    migrationBusy.set(false)
+    migrationReviewOnly.set(false)
+    migrationPage.set(0)
+  }
+  function chooseMigrationFile(event: Event) {
+    if (!canAdmin()) return
+    resetMigrationResult()
+    migrationInput = event.currentTarget as HTMLInputElement
+    migrationFile.set(migrationInput.files?.[0] ?? null)
+  }
+  async function previewMigration() {
+    const selected = project(), current = generation, file = migrationFile()
+    if (!file || !canAdmin() || migrationBusy()) return
+    resetMigrationResult()
+    const controller = new AbortController()
+    migrationRequest = controller
+    migrationBusy.set(true)
+    const form = new FormData()
+    form.set('file', file)
+    form.set('dryRun', 'true')
+    try {
+      const response = await request(`/api/support/projects/${encodeURIComponent(selected)}/imports/intercom`, { method: 'POST', body: form, signal: controller.signal }, current)
+      if (migrationRequest !== controller || !available(current) || selected !== project()) return
+      if (!isMigrationPreview(response)) throw new Error('The migration preview response was incomplete. Try again.')
+      migrationReviewOnly.set(response.reviewRecords > 0)
+      migrationPreview.set(response)
+    }
+    catch (failure) {
+      if (migrationRequest === controller && available(current))
+        migrationError.set(failure instanceof Error ? failure.message : 'The migration preview failed.')
+    }
+    finally {
+      if (migrationRequest === controller) {
+        migrationRequest = undefined
+        migrationBusy.set(false)
+      }
+    }
+  }
+  function setMigrationPage(index: number) {
+    if (Number.isSafeInteger(index))
+      migrationPage.set(Math.max(0, Math.min(migrationPageCount() - 1, index)))
+  }
+  function moveMigrationPage(delta: number) {
+    setMigrationPage(migrationPage() + delta)
+  }
+  function jumpToMigrationPage(event: Event) {
+    const input = event.currentTarget as HTMLInputElement
+    setMigrationPage(input.valueAsNumber - 1)
+    input.value = String(migrationPage() + 1)
+  }
+  function filterMigrationRecords(reviewOnly: boolean) {
+    migrationPage.set(0)
+    migrationReviewOnly.set(reviewOnly)
   }
   function select() {
     if (!available()) return
@@ -180,5 +290,7 @@ export function createSupportSettings() {
     finally { logoutRequest = undefined }
   }
   function destroy() { destroyed = true; clearCredentials(); pending.set(false) }
-  return { projects, workspaces, project, origins, anonymous, pending, signingOut, error, notice, keys, keyList, keyCursor, keyRetry, canAdmin, loadKeys, rotateKey, revokeKey, retryKeys, discardRetry, load, select, save, issueKeys, signOut, destroy }
+  return { migrationPreview, migrationFile, migrationError, migrationBusy, migrationReviewOnly, migrationPage, migrationPageCount, migrationRecords,
+    migrationStatusLabel: (status: PreviewStatus) => previewStatusLabels[status], chooseMigrationFile, previewMigration, moveMigrationPage, jumpToMigrationPage, filterMigrationRecords,
+    projects, workspaces, project, origins, anonymous, pending, signingOut, error, notice, keys, keyList, keyCursor, keyRetry, canAdmin, loadKeys, rotateKey, revokeKey, retryKeys, discardRetry, load, select, save, issueKeys, signOut, destroy }
 }
