@@ -45,15 +45,32 @@ The response includes the provider public UUID. An operator then configures:
   Tenant administrators cannot approve an issuer for outbound requests.
 - `SUPPORT_ENTERPRISE_OIDC_CLIENTS` as a JSON object mapping provider public UUID
   to the client secret. Never place these secrets in browser configuration.
+- `SUPPORT_ENTERPRISE_OIDC_ENDPOINTS` as an optional JSON object mapping provider
+  public UUID to exact HTTPS URLs. For Cognito, keep the regional issuer URL in
+  the issuer allowlist. Approve the user pool's hosted endpoints for authorization
+  and token exchange.
 - Canonical HTTPS `APP_URL`. Register the exact redirect URI
   `{APP_URL}/api/enterprise/providers/{provider}/callback` at the provider.
 
-Issuer approval is an operator trust decision. Use public provider addresses and
+Example operator endpoint configuration for one Cognito provider:
+
+```json
+{
+  "provider-public-uuid": {
+    "authorizationEndpoint": "https://my-pool.auth.us-east-1.amazoncognito.com/oauth2/authorize",
+    "tokenEndpoint": "https://my-pool.auth.us-east-1.amazoncognito.com/oauth2/token"
+  }
+}
+```
+
+Issuer and endpoint approval are operator trust decisions. Use public provider addresses and
 an egress policy that blocks private, loopback, link-local and metadata networks,
 including DNS rebinding. The allowlist is checked before discovery, token or JWKS
 requests. Runtime requests disable redirects, require HTTPS, time out after ten
-seconds and require discovery endpoints to share the issuer origin. This strict
-same-origin rule excludes providers such as Google's multi-origin OIDC metadata.
+seconds and require discovery to match each endpoint's exact approved URL. An
+endpoint without a configured approval must share the issuer origin. This covers
+Cognito's regional signing keys. Providers that use a separate signing-key
+origin require their exact `jwksUri` in the same provider entry.
 Only RS256-signed OIDC ID tokens are supported in this release. SAML has the
 separate strict adapter described below. Missing provider configuration answers
 503; malformed or unsigned assertions answer 401.

@@ -4,7 +4,7 @@ import type { EnterpriseOidcConfig } from '@stacksjs/auth/enterprise-oidc'
 import type { EnterpriseSamlConfig } from '@stacksjs/auth/enterprise-saml'
 import { insert, one, query, workspaceTransaction } from '../app/Support/database'
 import { fail, identifier, text } from '../app/Support/errors'
-import { digest, secret, workspace } from '../app/Support/service'
+import { digest, object, secret, workspace } from '../app/Support/service'
 import { requireEnterprise } from './license'
 import { limitsFor } from '../app/Support/limits'
 import type { Plan } from '../app/Support/limits'
@@ -17,16 +17,40 @@ export async function provider(reference: string) {
   if (!row || !row.enabled) fail(503, 'identity_provider_unavailable', 'The identity provider is not configured or enabled.')
   return row
 }
+
+function oidcEndpointApproval(settings: unknown, providerId: string): EnterpriseOidcConfig['approvedEndpoints'] {
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings))
+    fail(503, 'identity_provider_unavailable', 'Identity provider operator configuration is invalid.')
+  if (!Object.hasOwn(settings, providerId)) return undefined
+  const approval = (settings as Record<string, unknown>)[providerId]
+  const keys = ['authorizationEndpoint', 'tokenEndpoint', 'jwksUri']
+  if (!approval || typeof approval !== 'object' || Array.isArray(approval)
+    || Object.entries(approval).some(([key, value]) => !keys.includes(key) || typeof value !== 'string' || !value))
+    fail(503, 'identity_provider_unavailable', 'Identity provider operator configuration is invalid.')
+  return approval
+}
+
 export function oidcConfig(row: Row, transport?: typeof fetch): EnterpriseOidcConfig {
   if (row.protocol !== 'oidc') fail(503, 'identity_provider_unavailable', 'An OIDC provider is required.')
-  let secrets: Record<string, string> = {}, allowed: unknown = []
-  try { secrets = JSON.parse(process.env.SUPPORT_ENTERPRISE_OIDC_CLIENTS || '{}'); allowed = JSON.parse(process.env.SUPPORT_ENTERPRISE_OIDC_ISSUERS || '[]') }
+  let secrets: Record<string, unknown>, allowed: unknown, endpoints: unknown
+  try {
+    secrets = object(JSON.parse(process.env.SUPPORT_ENTERPRISE_OIDC_CLIENTS || '{}'))
+    allowed = JSON.parse(process.env.SUPPORT_ENTERPRISE_OIDC_ISSUERS || '[]')
+    endpoints = JSON.parse(process.env.SUPPORT_ENTERPRISE_OIDC_ENDPOINTS || '{}')
+  }
   catch { fail(503, 'identity_provider_unavailable', 'Identity provider operator configuration is invalid.') }
-  const clientSecret = secrets[String(row.public_id)]
+  const providerId = String(row.public_id)
+  const clientSecret = secrets[providerId]
   if (!Array.isArray(allowed) || !allowed.includes(row.issuer) || typeof clientSecret !== 'string' || !clientSecret) fail(503, 'identity_provider_unavailable', 'Identity provider credentials are not configured.')
+  const approvedEndpoints = oidcEndpointApproval(endpoints, providerId)
   const appUrl = new URL(process.env.APP_URL || 'https://hq.support')
   if (appUrl.protocol !== 'https:') fail(503, 'identity_provider_unavailable', 'SSO requires the canonical HTTPS application URL.')
-  return { issuer: String(row.issuer), clientId: String(row.client_id), clientSecret, redirectUri: new URL(`/api/enterprise/providers/${row.public_id}/callback`, appUrl).href, ...(transport ? { fetch: transport } : {}) }
+  return {
+    issuer: String(row.issuer), clientId: String(row.client_id), clientSecret,
+    redirectUri: new URL(`/api/enterprise/providers/${providerId}/callback`, appUrl).href,
+    ...(approvedEndpoints ? { approvedEndpoints } : {}),
+    ...(transport ? { fetch: transport } : {}),
+  }
 }
 export function samlConfig(row: Row): EnterpriseSamlConfig {
   if (row.protocol !== 'saml') fail(503, 'identity_provider_unavailable', 'A SAML provider is required.')

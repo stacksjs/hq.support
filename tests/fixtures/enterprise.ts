@@ -21,15 +21,20 @@ assert.equal((await migrateAuthTables()).success, true)
 await injectGlobalAutoImports()
 await route.importRoutes()
 const issuer = 'https://identity.example.test'
+const defaultOidcEndpoints = { authorizationEndpoint: issuer + '/authorize', tokenEndpoint: issuer + '/token' }
+const splitOidcEndpoints = { authorizationEndpoint: 'https://login.example.test/oauth2/authorize', tokenEndpoint: 'https://login.example.test/oauth2/token' }
+let oidcEndpoints = defaultOidcEndpoints
+let tokenRequests = 0
 const signing = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify'])
 const jwk = { ...await crypto.subtle.exportKey('jwk', signing.publicKey), kid: 'fixture', alg: 'RS256', use: 'sig' }
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url')
 let providerNonce = '', assertionSubject = 'agent-subject', assertionAudience = 'hq-support', assertionEmail = 'agent@example.test', assertionUnsigned = false
 const providerFetch = (async (input: string | URL | Request) => {
   const url = String(input)
-  if (url.endsWith('/.well-known/openid-configuration')) return Response.json({ issuer, authorization_endpoint: issuer + '/authorize', token_endpoint: issuer + '/token', jwks_uri: issuer + '/jwks', response_types_supported: ['code'], subject_types_supported: ['public'], id_token_signing_alg_values_supported: ['RS256'] })
+  if (url.endsWith('/.well-known/openid-configuration')) return Response.json({ issuer, authorization_endpoint: oidcEndpoints.authorizationEndpoint, token_endpoint: oidcEndpoints.tokenEndpoint, jwks_uri: issuer + '/jwks', response_types_supported: ['code'], subject_types_supported: ['public'], id_token_signing_alg_values_supported: ['RS256'] })
   if (url.endsWith('/jwks')) return Response.json({ keys: [jwk] })
-  assert.equal(url, issuer + '/token')
+  tokenRequests++
+  assert.equal(url, oidcEndpoints.tokenEndpoint)
   const body = `${encode({ alg: assertionUnsigned ? 'none' : 'RS256', kid: 'fixture' })}.${encode({ iss: issuer, sub: assertionSubject, aud: assertionAudience, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 300, nonce: providerNonce, email: assertionEmail, email_verified: true, roles: ['owner'] })}`
   const signature = assertionUnsigned ? '' : Buffer.from(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', signing.privateKey, new TextEncoder().encode(body))).toString('base64url')
   return Response.json({ access_token: 'provider-token', token_type: 'Bearer', id_token: `${body}.${signature}` })
@@ -69,6 +74,7 @@ async function start(provider: string, linkingToken?: string) {
   const flow = await request(`/_enterprise/providers/${provider}/${linkingToken ? 'link' : 'login'}`, linkingToken ? 'POST' : 'GET', linkingToken ? {} : undefined, linkingToken)
   check(flow.status === 302, `SSO starts ${flow.status} ${JSON.stringify(flow.data)}`)
   const url = new URL(flow.headers.get('location')!)
+  check(url.origin + url.pathname === oidcEndpoints.authorizationEndpoint, 'SSO uses the expected provider login endpoint')
   providerNonce = url.searchParams.get('nonce')!
   check(url.searchParams.get('code_challenge_method') === 'S256', 'SSO uses PKCE')
   return { state: url.searchParams.get('state')!, cookie: flow.headers.get('set-cookie')!.split(';')[0]! }
@@ -127,6 +133,34 @@ try {
   const linked = await request(`/_enterprise/providers/${idp.public_id}/callback?code=test&state=${link.state}`, 'GET', undefined, undefined, link.cookie)
   check(linked.status === 200 && linked.data.linked, `authenticated native user links verified provider subject ${JSON.stringify(linked.data)}`)
   check((await request(`/_enterprise/providers/${idp.public_id}/callback?code=test&state=${link.state}`, 'GET', undefined, undefined, link.cookie)).status === 401, 'SSO state cannot replay')
+  const managedLoginPath = `/_enterprise/providers/${idp.public_id}/login`
+  const configuredClients = process.env.SUPPORT_ENTERPRISE_OIDC_CLIENTS!
+  try {
+    process.env.SUPPORT_ENTERPRISE_OIDC_CLIENTS = 'null'
+    const invalidClients = await request(managedLoginPath)
+    check(invalidClients.status === 503 && invalidClients.data.error?.code === 'identity_provider_unavailable', `invalid client mapping refuses login with HTTP 503, received ${invalidClients.status}`)
+  }
+  finally {
+    process.env.SUPPORT_ENTERPRISE_OIDC_CLIENTS = configuredClients
+  }
+  oidcEndpoints = splitOidcEndpoints
+  const initialTokenRequests = tokenRequests
+  process.env.SUPPORT_ENTERPRISE_OIDC_ENDPOINTS = JSON.stringify({ [crypto.randomUUID()]: splitOidcEndpoints })
+  check((await request(managedLoginPath)).status === 503, 'another provider approval cannot authorize this login')
+  process.env.SUPPORT_ENTERPRISE_OIDC_ENDPOINTS = JSON.stringify({ [idp.public_id]: { authorizationEndpoint: splitOidcEndpoints.authorizationEndpoint, tokenEndpoint: 23 } })
+  check((await request(managedLoginPath)).data.error.code === 'identity_provider_unavailable', 'invalid operator endpoint configuration is refused')
+  process.env.SUPPORT_ENTERPRISE_OIDC_ENDPOINTS = JSON.stringify({ [idp.public_id]: splitOidcEndpoints })
+  const pinnedLogin = await start(idp.public_id)
+  process.env.SUPPORT_ENTERPRISE_OIDC_ENDPOINTS = JSON.stringify({ [idp.public_id]: { ...splitOidcEndpoints, tokenEndpoint: splitOidcEndpoints.tokenEndpoint + '/other' } })
+  check((await request(`/_enterprise/providers/${idp.public_id}/callback?code=test&state=${pinnedLogin.state}`, 'GET', undefined, undefined, pinnedLogin.cookie)).status === 401, 'callback rejects a mismatched approved URL')
+  check(tokenRequests === initialTokenRequests, 'unapproved endpoint receives no token requests')
+  process.env.SUPPORT_ENTERPRISE_OIDC_ENDPOINTS = JSON.stringify({ [idp.public_id]: splitOidcEndpoints })
+  const managedLogin = await start(idp.public_id)
+  const managedCallback = await request(`/_enterprise/providers/${idp.public_id}/callback?code=test&state=${managedLogin.state}`, 'GET', undefined, undefined, managedLogin.cookie)
+  check(managedCallback.status === 302 && managedCallback.headers.get('set-cookie')?.includes('session_id='), 'the managed provider creates a native browser session')
+  check(tokenRequests === initialTokenRequests + 1, 'success uses the approved token endpoint once')
+  delete process.env.SUPPORT_ENTERPRISE_OIDC_ENDPOINTS
+  oidcEndpoints = defaultOidcEndpoints
   const bad = await start(idp.public_id); assertionAudience = 'wrong-client'
   check((await request(`/_enterprise/providers/${idp.public_id}/callback?code=test&state=${bad.state}`, 'GET', undefined, undefined, bad.cookie)).status === 401, 'OIDC wrong audience refused over actual HTTP')
   assertionAudience = 'hq-support'

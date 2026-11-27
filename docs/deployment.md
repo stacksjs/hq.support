@@ -95,7 +95,7 @@ Hetzner server. Buddy reconciles the full-address mailboxes, the domain's DKIM
 signer, the mail certificate and the mail DNS records during production deploy.
 Staging and development skip mail reconciliation.
 
-The Bun lockfile pins the published Stacks 0.75.699 archives from Pantry.
+The Bun lockfile pins the published Stacks 0.75.701 archives from Pantry.
 Install with `bun install --frozen-lockfile` before running Buddy.
 
 Use the same native reconcile to set up the mail tenant before launching the
