@@ -9,6 +9,7 @@ export default defineModel({
   indexes: [
     { name: 'support_channel_delivery_operation', columns: ['project_id', 'operation_key'], unique: true },
     { name: 'support_channel_delivery_pending', columns: ['status', 'available_at', 'lease_until'] },
+    { name: 'support_channel_delivery_message', columns: ['project_id', 'workspace_id', 'message_id'] },
   ],
   attributes: {
     publicId: { unique: true, fillable: true, required: true, validation: { rule: schema.string() } },
@@ -23,6 +24,7 @@ export default defineModel({
     status: { fillable: true, required: true, default: 'pending', validation: { rule: schema.string() } },
     configurationHash: { fillable: true, required: true, default: '', validation: { rule: schema.string() } },
     providerMessageId: { foreignKey: false, fillable: true, required: true, default: '', validation: { rule: schema.string() } },
+    acceptedAt: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
     walletReservationId: { foreignKey: false, fillable: true, required: true, default: '', validation: { rule: schema.string() } },
     reservedCents: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
     providerCostMicros: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },

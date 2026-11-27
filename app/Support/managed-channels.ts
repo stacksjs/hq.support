@@ -81,25 +81,30 @@ export async function channelDelivery(project: Row, id: unknown): Promise<Row> {
   if (!row) fail(404, 'delivery_not_found', 'Channel delivery not found.')
   return row
 }
-async function writeOutcome(row: Row, outcome: ChannelSendOutcome) {
+async function writeOutcome(row: Row, outcome: ChannelSendOutcome, observedAt = Date.now()) {
   return await workspaceTransaction(Number(row.workspace_id), async () => {
     const current = await one('SELECT * FROM support_channel_deliveries WHERE id = ?', [row.id])
     if (!current || current.lease_token !== row.lease_token || current.status !== 'dispatching') return
     const knownAcceptance = outcome.outcome === 'accepted' && outcome.messageId
     if (knownAcceptance) {
       const project = (await one('SELECT * FROM support_projects WHERE id = ? AND workspace_id = ?', [row.project_id, row.workspace_id]))!
-      await recordChannelAcceptance(project, current)
+      await recordChannelAcceptance(project, current, { at: observedAt })
     }
     const status = knownAcceptance ? (current.wallet_reservation_id ? 'cost_pending' : 'accepted') : outcome.outcome === 'rejected' ? 'rejected' : 'unknown'
     if (status === 'rejected' && current.wallet_reservation_id) await settleWallet(Number(row.workspace_id), String(current.wallet_reservation_id), 0, `rejected:${row.public_id}`)
     await writeDeliveryStatus(current, status, knownAcceptance ? outcome.messageId! : '', { outcome: outcome.outcome, httpStatus: outcome.httpStatus }, outcome.error)
   })
 }
-export async function recordChannelAcceptance(project: Row, delivery: Row, at?: number) {
+export async function recordChannelAcceptance(project: Row, delivery: Row, evidence?: { at: number, slaAt?: number }) {
+  if (evidence && !Number(delivery.accepted_at)) {
+    const queuedAt = new Date(delivery.created_at as string | Date).getTime()
+    const acceptedAt = Number.isFinite(queuedAt) ? Math.max(queuedAt, evidence.at) : evidence.at
+    await query('UPDATE support_channel_deliveries SET accepted_at = ? WHERE id = ? AND workspace_id = ? AND project_id = ? AND accepted_at = 0', [acceptedAt, delivery.id, project.workspace_id, project.id])
+  }
   const thread = await deliveryChannelThread(project, delivery)
   const payload = object(JSON.parse(String(delivery.payload)))
   await shareAttachments(project, thread.conversation_id, payload.attachmentIds)
-  await (await import('./ticket-sla')).recordTicketFirstResponse(project, thread.conversation_id, at)
+  await (await import('./ticket-sla')).recordTicketFirstResponse(project, thread.conversation_id, evidence?.slaAt)
 }
 export async function writeDeliveryStatus(delivery: Row, status: string, providerMessageId: string, receipt: Row, error = '') {
   await query('UPDATE support_channel_deliveries SET status = ?, provider_message_id = ?, lease_until = 0, last_error = ?, receipt = ?, updated_at = ? WHERE id = ?', [status, providerMessageId, error.slice(0, 1000), JSON.stringify(receipt), new Date().toISOString(), delivery.id])
@@ -164,10 +169,9 @@ export async function reconcileChannelDelivery(project: Row, id: unknown, depend
   return await workspaceTransaction(Number(project.workspace_id), async () => {
     const current = await channelDelivery(project, id)
     if (['queued', 'sending', 'sent', 'delivered', 'read'].includes(receipt.status)) {
-      const thread = await deliveryChannelThread(project, current)
-      const payload = object(JSON.parse(String(current.payload)))
-      await shareAttachments(project, thread.conversation_id, payload.attachmentIds)
-      await (await import('./ticket-sla')).recordTicketFirstResponse(project, thread.conversation_id)
+      const createdAt = Date.parse(receipt.createdAt || '')
+      const evidence = createdAt > 0 && createdAt <= Date.now() ? { at: createdAt } : undefined
+      await recordChannelAcceptance(project, current, evidence)
     }
     let status = String(current.status)
     if (current.wallet_reservation_id && receipt.priceMicros !== undefined) {

@@ -39,15 +39,21 @@ remaining qualification and deployment issues.
 
 ## Retained backend evidence
 
-The project Reports page adds a rolling 30-day cohort for Messenger conversations.
+The project Reports page uses a rolling 30-day cohort for Messenger and managed text
+conversations.
 It shows elapsed-time averages and sample counts for the first human reply,
 follow-up replies, and resolution. The first reply is measured from the first
 customer message. A follow-up is measured from the latest customer message to
 the next human reply, once per customer turn. Resolution uses the current close
 timestamp, so reopening removes the sample until the conversation closes again.
-Only public, stored messages from customers and signed-in agents enter the
-timing calculation. All-time project totals continue to include every channel.
-Business-hour SLA cohorts and provider-receipt timing are tracked in #5.
+Only public messages from customers and signed-in agents enter the timing
+calculation. Managed replies use the recorded provider acceptance time. It comes
+from the first acknowledged submission or the matching provider receipt.
+A conversation with an older acknowledged reply and no recorded acceptance time
+is omitted from reply timing to keep later replies from becoming false first
+replies. Resolution still uses its stored close and customer message timestamps.
+All-time activity totals include every channel. Business-hour SLA cohorts and
+the remaining report reconciliation are tracked in #5.
 
 `./buddy test tests/feature/support-http.test.ts` starts an isolated real HTTP server and real disposable SQLite or PostgreSQL database, applies the committed native model migrations and native auth tables, then verifies registration/login, cross-workspace refusals, write/read key scope, customer session hashing, allowed-origin CORS, customer isolation, internal note confidentiality, exact wire summaries, idempotency replay/conflict, atomic outbox creation, pending invitations within two seats, concurrent 120th/121st free conversation admission, existing-thread replies after the cap, exact tenth/eleventh AI admission, HQ usage and confirmed one-use connect grants. Tests mutate verification flags only inside their owned test database; there is no endpoint that accepts those flags from a customer.
 

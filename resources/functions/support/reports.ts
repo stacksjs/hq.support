@@ -1,4 +1,4 @@
-import type { ReportDuration } from '../../../app/Support/reports'
+import type { ChannelReportTimings, ReportTimings } from '../../../app/Support/reports'
 import { state } from '@stacksjs/stx'
 import { createSupportConsole } from './console'
 
@@ -7,8 +7,11 @@ interface ProjectReport {
   conversations: Aggregate[]
   messages: Aggregate[]
   tickets: Aggregate[]
-  messengerTimings: { firstReply: ReportDuration, followUpReply: ReportDuration, resolution: ReportDuration }
+  messengerTimings: ReportTimings
+  channelTimings?: ChannelReportTimings[]
 }
+
+const channelLabels: Record<string, string> = { email: 'Email', sms: 'SMS', whatsapp: 'WhatsApp', messenger: 'Facebook Messenger', instagram: 'Instagram', slack: 'Slack', discord: 'Discord' }
 
 export function createReports() {
   const workspace = createSupportConsole()
@@ -36,5 +39,8 @@ export function createReports() {
       { label: 'Time to resolution', detail: 'From the first customer message to the latest close of a closed conversation.', ...value.resolution },
     ]
   }
-  return { workspace, report, load, boot, total, duration, timings }
+  function channels() {
+    return (report()?.channelTimings || []).map(row => ({ ...row, label: channelLabels[row.channel] ?? row.channel }))
+  }
+  return { workspace, report, load, boot, total, duration, timings, channels }
 }

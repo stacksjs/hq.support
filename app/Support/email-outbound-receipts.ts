@@ -32,7 +32,7 @@ export async function acceptEmailSendNotification(channel: Row, envelope: Row, d
     if (emailAddress(thread.recipient) !== recipient || emailAddress(credentials.fromAddress) !== emailAddress(mail.source)) fail(403, 'email_dispatch_mismatch', 'SES sender or recipient differs from this exact delivery.')
     if (delivery.provider_message_id === providerId) return { duplicate: true }
     if (delivery.provider_message_id || !['dispatching', 'unknown'].includes(String(delivery.status)) || Number(delivery.attempts) < 1) fail(409, 'email_send_receipt_conflict', 'SES send evidence conflicts with the recorded delivery.')
-    await recordChannelAcceptance(project, delivery, sentAt)
+    await recordChannelAcceptance(project, delivery, { at: sentAt, slaAt: sentAt })
     const status = delivery.wallet_reservation_id ? 'cost_pending' : 'accepted'
     await writeDeliveryStatus(delivery, status, providerId, { outcome: 'accepted', source: 'ses-sns-send', notificationId: envelope.MessageId, sentAt })
     return { duplicate: false }

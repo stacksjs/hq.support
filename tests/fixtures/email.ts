@@ -179,6 +179,7 @@ try {
   await Promise.all([dispatchChannelDelivery(Number(delivery.id)), dispatchChannelDelivery(Number(delivery.id))])
   const accepted = (await one('SELECT * FROM support_channel_deliveries WHERE id = ?', [delivery.id]))!
   check(sends === 1 && accepted.status === 'cost_pending' && accepted.provider_message_id === 'ses-out-1', 'concurrent workers send once and accepted SES cost stays honestly pending')
+  check(Number(accepted.accepted_at) > 0, 'direct acknowledgement records the first provider acceptance time for reports')
   const mime = await parseInboundEmail(outgoing[0]!)
   check(mime.from === config.fromAddress && mime.text === replyInput.body && outgoing[0]!.includes('Reply-To: r+'), 'native MIME wire uses exact operator sender and signed reply route')
   const hold = await one('SELECT * FROM support_wallet_reservations WHERE public_id = ?', [accepted.wallet_reservation_id])
@@ -221,8 +222,9 @@ try {
   const conflictingSend = signed({ ...sendEvent, mail: { ...sendEvent.mail, messageId: 'ses-out-conflict' } }, { TopicArn: outboundTopicArn })
   check((await http(outbound, 'POST', conflictingSend)).status === 409, 'a second provider identity cannot replace an accepted send')
   await dispatchChannelDelivery(Number(uncertainRow.id))
-  const acceptedFromEvents = await one('SELECT status, provider_message_id FROM support_channel_deliveries WHERE id = ?', [uncertainRow.id])
+  const acceptedFromEvents = await one('SELECT status, provider_message_id, accepted_at FROM support_channel_deliveries WHERE id = ?', [uncertainRow.id])
   check(sends === 3 && acceptedFromEvents?.status === 'cost_pending' && acceptedFromEvents.provider_message_id === 'ses-out-3', 'signed send persists provider acceptance without submitting again')
+  check(Number(acceptedFromEvents?.accepted_at) === Date.parse(sendEvent.mail.timestamp), 'recovered reply uses the signed SES send time through repeated callbacks')
   check((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [uncertainRow.wallet_reservation_id]))?.status === 'reserved', 'signed transport acceptance keeps the unsettled wallet hold')
   failure = 'rejected'
   const rejected = await http(path + `/conversations/${firstThread.conversation_id}/reply`, 'POST', { body: 'Rejected reply', idempotencyKey: 'email-rejected' }, owner)

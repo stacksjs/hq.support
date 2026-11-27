@@ -1,6 +1,6 @@
 <script server>
 const pageTitle = 'Reports'
-const pageDescription = 'Conversation, message, and ticket totals and Messenger response times for your HQ.support project.'
+const pageDescription = 'Conversation, message, and ticket totals and response times for your HQ.support project.'
 </script>
 <script client>
 import { createReports } from '../../functions/support/reports'
@@ -27,6 +27,24 @@ onDestroy(() => workspace.destroy())
         <p>{{ metric.samples.toLocaleString() }} {{ metric.samples === 1 ? 'sample' : 'samples' }}</p>
         <p>{{ metric.detail }}</p>
       </article>
+    </div>
+  </section>
+  <section :if="reports.channels().length > 0" class="mt-6" aria-labelledby="report-channels-heading">
+    <h2 id="report-channels-heading">Channel response and resolution</h2>
+    <p class="field-help">For conversations opened in the past 30 days. Reply timings use provider acceptance.</p>
+    <div class="overflow-x-auto">
+      <table class="w-full text-start">
+        <thead><tr><th scope="col">Channel</th><th scope="col">First human reply</th><th scope="col">Follow-up reply</th><th scope="col">Time to resolution</th></tr></thead>
+        <tbody>
+          <tr :for="item in reports.channels()">
+            <th scope="row">{{ item.label }}</th>
+            <td :for="metric in [item.firstReply, item.followUpReply, item.resolution]">
+              {{ reports.duration(metric.averageMs) }}
+              <span :if="metric.samples > 0" class="field-help block">{{ metric.samples.toLocaleString() }} {{ metric.samples === 1 ? 'sample' : 'samples' }}</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </section>
   <section class="mt-6" aria-labelledby="report-totals-heading">

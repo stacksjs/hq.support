@@ -3788,7 +3788,7 @@
           },
           {
             "name": "failed_at",
-            "type": "date",
+            "type": "datetime",
             "isPrimaryKey": false,
             "isUnique": false,
             "isNullable": true,
@@ -6456,6 +6456,15 @@
             "isNullable": false,
             "hasDefault": true,
             "defaultValue": "{}"
+          },
+          {
+            "name": "accepted_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
           }
         ],
         "indexes": [
@@ -6482,6 +6491,15 @@
               "public_id"
             ],
             "type": "unique"
+          },
+          {
+            "name": "support_channel_delivery_message",
+            "columns": [
+              "project_id",
+              "workspace_id",
+              "message_id"
+            ],
+            "type": "index"
           }
         ]
       },
@@ -9604,7 +9622,7 @@
       }
     ]
   },
-  "hash": "049915fb4e6a2489ae54af0c768a2b3b140e1c206164bc698fcb0800abd3e18b",
+  "hash": "21913b1d22487a39154e8738514705e7ebe67095ecae6a521738a3cbebd2a596",
   "dialect": "postgres",
-  "updatedAt": "2026-11-27T01:09:25.885Z"
+  "updatedAt": "2026-11-27T02:55:11.880Z"
 }
