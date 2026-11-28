@@ -118,11 +118,13 @@ once into integer cents. Repeated settlement verifies the same cost basis and
 receipt instead of charging twice.
 
 Realtime usage stores the actual provider response ID/counts and the explicit
-pricing snapshot. Fractional usage costs are aggregated before microdollar and
-cents rounding. A missing final usage event, unmatched token categories or an
-unclean audio close retains the AI reservation for reconciliation; it is never
-silently treated as free. AI pricing here follows the explicitly configured
-account/model tariff, not an automatically fetched invoice. An operator invoice
+pricing snapshot. The native transport associates each receipt with the audio
+boundary at response creation. Later input keeps its hold until a matching
+receipt covers it. Fractional usage costs are aggregated before microdollar
+and cents rounding. A missing receipt, unmatched token categories or an unclean
+audio close retains the AI reservation for reconciliation. On a clean carrier
+stop with incomplete usage, the call reports `realtime_usage_pending`. AI pricing
+follows the configured account/model tariff. An operator invoice
 reconciliation workflow for unresolved AI usage is still required before broad
 managed voice rollout.
 

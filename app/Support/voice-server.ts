@@ -11,6 +11,8 @@ import { phonePricing } from './phone-config'
 import { appendVoiceTranscript, recordVoiceUsage } from './voice-usage'
 import { executeSupportTool, supportVoiceTools } from './tools'
 
+const pcmuBytesPerMillisecond = 8
+
 interface VoiceState {
   call: Row
   accountSid: string
@@ -28,7 +30,7 @@ interface VoiceState {
   played: Map<string, number>
   canceled: Set<string>
   currentItem?: string
-  audioSinceUsage: number
+  pricedInputBytes: number
   totalInput: number
   knownCost: number
   usageResponses: number
@@ -50,6 +52,14 @@ export async function startVoiceServer(options: VoiceServerOptions = {}) {
     if (state.ended) return
     state.ended = true
     clearTimeout(state.timer)
+    const pendingUsage = state.session ? state.session.pendingUsageResponses : 0
+    const unused = state.totalInput === 0 && state.usageResponses === 0 && pendingUsage === 0
+    const stopped = reason === 'provider-stop'
+    const verified = stopped && pendingUsage === 0 && state.usageResponses > 0
+      && state.allPriced && state.pricedInputBytes === state.totalInput
+    const priced = unused ? 0 : verified ? state.knownCost : null
+    let lastError = stopped || reason === 'closed' ? '' : reason
+    if (stopped && priced === null) lastError = 'realtime_usage_pending'
     try { state.session?.close() } catch {}
     try { socket.close(1000, 'Call media ended') } catch {}
     try {
@@ -57,8 +67,7 @@ export async function startVoiceServer(options: VoiceServerOptions = {}) {
       await workspaceTransaction(Number(state.call.workspace_id), async () => {
         const current = await publicPhoneCall(String(state.call.public_id))
         preserveProvider = ['agent', 'handoff-requested'].includes(String(current.mode))
-        const priced = state.totalInput === 0 ? 0 : state.usageResponses > 0 && state.allPriced && state.audioSinceUsage === 0 && reason === 'provider-stop' ? state.knownCost : null
-        await query('UPDATE support_phone_calls SET stream_state = ?, ai_cost_micros = ?, last_error = ?, updated_at = ? WHERE id = ? AND workspace_id = ?', [reason === 'provider-stop' ? 'finished' : 'failed', priced, ['provider-stop', 'closed'].includes(reason) ? '' : reason, new Date().toISOString(), current.id, current.workspace_id])
+        await query('UPDATE support_phone_calls SET stream_state = ?, ai_cost_micros = ?, last_error = ?, updated_at = ? WHERE id = ? AND workspace_id = ?', [stopped ? 'finished' : 'failed', priced, lastError, new Date().toISOString(), current.id, current.workspace_id])
       })
       const { project } = await phoneContext(state.call)
       if (!preserveProvider) await endPhoneCall(project, String(state.call.public_id), options)
@@ -103,7 +112,7 @@ export async function startVoiceServer(options: VoiceServerOptions = {}) {
     else if (value.type === 'speech_started' && state.streamSid) {
       if (state.currentItem) {
         state.canceled.add(state.currentItem)
-        state.session?.interrupt(state.currentItem, Math.floor((state.played.get(state.currentItem) ?? 0) / 8))
+        state.session?.interrupt(state.currentItem, Math.floor((state.played.get(state.currentItem) ?? 0) / pcmuBytesPerMillisecond))
       }
       else state.session?.interrupt()
       send(socket, telephony.clearMediaMessage(state.streamSid))
@@ -126,7 +135,14 @@ export async function startVoiceServer(options: VoiceServerOptions = {}) {
     }
     else if (value.type === 'usage') {
       const total = await recordVoiceUsage(state.call, value.responseId, value.usage, state.pricing.rates)
-      state.knownCost = total.knownMicros; state.usageResponses = total.responses; state.allPriced = total.allPriced; state.audioSinceUsage = 0
+      state.knownCost = total.knownMicros
+      state.usageResponses = total.responses
+      state.allPriced = total.allPriced
+      if (value.inputAudioEndMs !== undefined) {
+        const covered = value.inputAudioEndMs * pcmuBytesPerMillisecond
+        if (Number.isSafeInteger(covered) && covered <= state.totalInput)
+          state.pricedInputBytes = Math.max(state.pricedInputBytes, covered)
+      }
       if (!total.allPriced || voiceChargeCents(total.knownMicros) >= Number(state.call.ai_reserved_cents)) throw new Error('voice_budget_exhausted')
     }
     else if (value.type === 'error') throw new Error(`realtime_${value.code}`)
@@ -154,7 +170,7 @@ export async function startVoiceServer(options: VoiceServerOptions = {}) {
     }
     else if (value.event === 'media') {
       if (value.track !== 'inbound' || !state.session) throw new Error('unexpected_audio_track')
-      state.totalInput += value.audio.length; state.audioSinceUsage += value.audio.length
+      state.totalInput += value.audio.length
       state.session.appendAudio(Buffer.from(value.audio).toString('base64'))
     }
     else if (value.event === 'mark') {
@@ -178,7 +194,7 @@ export async function startVoiceServer(options: VoiceServerOptions = {}) {
         const callId = String(call.public_id)
         if (admittedCalls.has(callId)) return new Response('Call already connected', { status: 409 })
         if (admittedCalls.size >= maxStreams) return new Response('Voice capacity reached', { status: 503, headers: { 'Retry-After': '1' } })
-        const data: VoiceState = { call, accountSid: String(context.credentials.accountSid), parser: new telephony.MediaStreamSession({ accountSid: String(context.credentials.accountSid), callSid: String(call.provider_sid), maxTotalAudioBytes: Number(call.max_duration_seconds) * 8000 }), chain: Promise.resolve(), queuedBytes: 0, queuedMessages: 0, ended: false, marks: new Map(), sequence: 0, unacknowledged: 0, played: new Map(), canceled: new Set(), audioSinceUsage: 0, totalInput: 0, knownCost: 0, usageResponses: 0, allPriced: true, pricing: phonePricing(context.credentials) }
+        const data: VoiceState = { call, accountSid: String(context.credentials.accountSid), parser: new telephony.MediaStreamSession({ accountSid: String(context.credentials.accountSid), callSid: String(call.provider_sid), maxTotalAudioBytes: Number(call.max_duration_seconds) * 8000 }), chain: Promise.resolve(), queuedBytes: 0, queuedMessages: 0, ended: false, marks: new Map(), sequence: 0, unacknowledged: 0, played: new Map(), canceled: new Set(), pricedInputBytes: 0, totalInput: 0, knownCost: 0, usageResponses: 0, allPriced: true, pricing: phonePricing(context.credentials) }
         admittedCalls.add(callId)
         let upgraded = false
         try {

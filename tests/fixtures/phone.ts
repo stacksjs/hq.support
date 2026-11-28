@@ -212,6 +212,8 @@ try {
   await until(() => Boolean(realtime?.sent.some(value => value.type === 'session.update')), 'native realtime session initializes')
   client.send(JSON.stringify({ event: 'media', sequenceNumber: '2', streamSid, media: { track: 'inbound', chunk: '1', timestamp: '0', payload: Buffer.alloc(160, 255).toString('base64') } }))
   await until(() => Boolean(realtime?.sent.some(value => value.type === 'input_audio_buffer.append')), 'caller mulaw reaches native realtime transport')
+  realtime!.emit({ type: 'input_audio_buffer.speech_stopped', item_id: 'initial-turn', audio_end_ms: 20 })
+  realtime!.emit({ type: 'input_audio_buffer.committed', item_id: 'initial-turn' })
   realtime!.emit({ type: 'response.created', response: { id: 'response-1' } })
   realtime!.emit({ type: 'response.output_audio.delta', item_id: 'assistant-item', delta: Buffer.alloc(320, 255).toString('base64') })
   await until(() => messages.some(value => value.event === 'mark'), 'assistant audio and playback marks reach actual provider socket')
@@ -230,7 +232,8 @@ try {
   check(JSON.stringify(ticket) === JSON.stringify(ticketAgain) && Number((await one("SELECT COUNT(*) AS total FROM support_tickets WHERE title = 'Voice ticket'", []))?.total) === 1, 'voice tool canonical idempotency creates exactly one customer-bound ticket')
   check(Number((await one('SELECT COUNT(*) AS total FROM support_phone_tool_results WHERE call_id = ?', [stored!.id]))?.total) === 3, 'allowed and refused tool calls have durable audit records')
   realtime!.emit({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'Caller requested support.' })
-  realtime!.emit({ type: 'response.done', response: { id: 'response-1', usage: { input_tokens: 10, output_tokens: 6, input_token_details: { text_tokens: 5, audio_tokens: 5, cached_tokens: 0 }, output_token_details: { text_tokens: 2, audio_tokens: 4 } } } })
+  const providerUsage = { input_tokens: 10, output_tokens: 6, input_token_details: { text_tokens: 5, audio_tokens: 5, cached_tokens: 0 }, output_token_details: { text_tokens: 2, audio_tokens: 4 } }
+  realtime!.emit({ type: 'response.done', response: { id: 'response-1', usage: providerUsage } })
   await until(async () => Number((await one('SELECT COUNT(*) AS total FROM support_phone_usage WHERE call_id = ?', [stored!.id]))?.total) === 1, 'provider usage persists before close')
   client.send(JSON.stringify({ event: 'stop', sequenceNumber: '4', streamSid, stop: { accountSid, callSid: providerCall.sid } }))
   await until(async () => (await one('SELECT stream_state FROM support_phone_calls WHERE id = ?', [stored!.id]))?.stream_state === 'finished', 'provider stop closes native realtime session')
@@ -468,6 +471,39 @@ try {
   for (let event = 0; event < 101; event++) nextPeer.emit({ type: 'input_audio_buffer.speech_started', item_id: 'fixture-burst' })
   await until(() => next.readyState === WebSocket.CLOSED && nextPeer.readyState === 3, 'a stalled realtime consumer closes both sockets when its queue is full')
   await until(async () => (await one('SELECT last_error FROM support_phone_calls WHERE public_id = ?', [overflow.id]))?.last_error === 'realtime_backpressure', 'provider backlog is recorded as a failed media stream')
+
+  const tailCall = await request(path + '/calls', 'POST', { ...input, idempotencyKey: 'unpriced-audio-tail', to: '+16135550187' }, owner)
+  assert.equal(tailCall.status, 201)
+  const tailId = String(tailCall.data.call.id)
+  const tailRow = (await one('SELECT * FROM support_phone_calls WHERE public_id = ?', [tailId]))!
+  const tailProvider = calls.get(String(tailRow.provider_sid))!
+  const tailStream = `MZ${'e'.repeat(32)}`
+  assert.equal((await callback(tailId, 'consent', tailProvider, { Digits: '1' })).status, 200)
+  const tailSocket = await openMedia(tailId)
+  const tailPeerIndex = realtimePeers.length
+  tailSocket.send(JSON.stringify({ event: 'connected', protocol: 'Call', version: '1.0.0' }))
+  tailSocket.send(JSON.stringify({ event: 'start', sequenceNumber: '1', streamSid: tailStream, start: { streamSid: tailStream, accountSid, callSid: tailProvider.sid, tracks: ['inbound'], mediaFormat: { encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1 }, customParameters: { call: tailId, proof: createHmac('sha256', authToken).update(`hq-support-stream:${tailId}`).digest('hex') } } }))
+  await until(() => realtimePeers[tailPeerIndex]?.sent.some(event => event.type === 'session.update'), 'the delayed-receipt fixture opens the native provider connection')
+  const tailPeer = realtimePeers[tailPeerIndex]!
+  const sendTailAudio = (frame: number) => tailSocket.send(JSON.stringify({ event: 'media', sequenceNumber: String(frame + 1), streamSid: tailStream, media: { track: 'inbound', chunk: String(frame), timestamp: String((frame - 1) * 20), payload } }))
+  const tailFrames = () => tailPeer.sent.filter(event => event.type === 'input_audio_buffer.append').length
+  sendTailAudio(1)
+  await until(() => tailFrames() === 1, 'the provider accepts the first audio frame')
+  tailPeer.emit({ type: 'input_audio_buffer.speech_stopped', item_id: 'tail-first-turn', audio_end_ms: 20 })
+  tailPeer.emit({ type: 'input_audio_buffer.committed', item_id: 'tail-first-turn' })
+  tailPeer.emit({ type: 'response.created', response: { id: 'tail-first-response' } })
+  sendTailAudio(2)
+  await until(() => tailFrames() === 2, 'the next audio reaches the provider before the older receipt')
+  tailPeer.emit({ type: 'response.done', response: { id: 'tail-first-response', usage: providerUsage } })
+  await until(async () => Boolean(await one('SELECT id FROM support_phone_usage WHERE call_id = ?', [tailRow.id])), 'older response receipt is retained for reconciliation')
+  tailSocket.send(JSON.stringify({ event: 'stop', sequenceNumber: '4', streamSid: tailStream, stop: { accountSid, callSid: tailProvider.sid } }))
+  await until(async () => (await one('SELECT stream_state FROM support_phone_calls WHERE id = ?', [tailRow.id]))?.stream_state === 'finished', 'the delayed-receipt call finishes cleanly')
+  tailProvider.status = 'completed'; tailProvider.duration = '5'; tailProvider.price = '-0.010000'; tailProvider.price_unit = 'USD'
+  const tailSettlement = await request(`${path}/calls/${tailId}/reconcile`, 'POST', {}, owner)
+  check(tailSettlement.status === 200 && tailSettlement.data.pending, 'an older usage receipt cannot settle newer unpriced audio')
+  check((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [tailRow.ai_reservation_id]))?.status === 'reserved', 'the AI hold remains reserved')
+  check((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [tailRow.reservation_id]))?.status === 'settled', 'the separate carrier cost still settles')
+  check(tailSettlement.data.call.lastError === 'realtime_usage_pending', 'the operator can identify the unresolved AI usage')
   console.log(`PASS phone HTTP and media (${checks} checks)`)
   if (process.env.SUPPORT_PHONE_BROWSER_FIXTURE === '1') {
     const statePath = process.env.SUPPORT_PHONE_FIXTURE_STATE
