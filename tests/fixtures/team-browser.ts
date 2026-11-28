@@ -34,6 +34,12 @@ let savedReplyGate: { entered: ReturnType<typeof Promise.withResolvers<void>>, r
 const presenceTiming: Record<string, number> = {}
 const assertions: string[] = [], runtimeErrors: string[] = []
 const searchTraffic: Array<{ q: string | null, inboxId: string | null, status: string | null, cursor: string | null, limit: string | null, path: string }> = []
+interface InboxArrivalGate {
+  entered: ReturnType<typeof Promise.withResolvers<void>>
+  release: ReturnType<typeof Promise.withResolvers<void>>
+  recorded: ReturnType<typeof Promise.withResolvers<typeof searchTraffic[number]>>
+}
+let inboxArrivalGate: InboxArrivalGate | undefined
 let searchGate: { query: string, used: boolean, entered: ReturnType<typeof Promise.withResolvers<void>>, release: ReturnType<typeof Promise.withResolvers<void>> } | undefined
 function holdSearch(query: string) { searchGate = { query, used: false, entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() }; return searchGate }
 const check = (condition: unknown, message: string) => { assert.ok(condition, message); assertions.push(message) }
@@ -85,7 +91,17 @@ try {
       }
       if (failList && request.method === 'GET' && url.pathname.endsWith('/inbox')) { failList = false; return Response.json({ error: { message: 'Fixture inbox refresh failure. Reply draft kept.' } }, { status: 503 }) }
       if (failSend && request.method === 'POST' && url.pathname.endsWith('/messages')) { failSend = false; return Response.json({ error: { message: 'Fixture transport failure. Keep this reply draft.' } }, { status: 503 }) }
-      if (request.method === 'GET' && url.pathname.endsWith('/inbox')) searchTraffic.push({ q: url.searchParams.get('q'), inboxId: url.searchParams.get('inboxId'), status: url.searchParams.get('status'), cursor: url.searchParams.get('cursor'), limit: url.searchParams.get('limit'), path: url.pathname })
+      if (request.method === 'GET' && url.pathname.endsWith('/inbox')) {
+        const gate = !url.searchParams.has('q') && !url.searchParams.has('limit') ? inboxArrivalGate : undefined
+        if (gate) {
+          inboxArrivalGate = undefined
+          gate.entered.resolve()
+          await gate.release.promise
+        }
+        const recorded = { q: url.searchParams.get('q'), inboxId: url.searchParams.get('inboxId'), status: url.searchParams.get('status'), cursor: url.searchParams.get('cursor'), limit: url.searchParams.get('limit'), path: url.pathname }
+        searchTraffic.push(recorded)
+        gate?.recorded.resolve(recorded)
+      }
       const headers = new Headers(request.headers); headers.delete('host')
       const response = await fetch(new URL(url.pathname + url.search, apiOrigin), { method: request.method, headers, body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body })
       if (response.ok && request.method === 'GET' && url.pathname === incompleteRetentionPath) {
@@ -146,7 +162,8 @@ try {
   cdp.on('Runtime.exceptionThrown', event => runtimeErrors.push(String(event.exceptionDetails.exception?.description || event.exceptionDetails.text)))
   await cdp.intercept([{ urlPattern: '*' }], async (event, session) => { const url = new URL(event.request.url); if (['http:', 'https:'].includes(url.protocol) && url.origin !== origin) await session.send('Fetch.fulfillRequest', { requestId: event.requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: 'text/css' }], body: '' }); else await session.send('Fetch.continueRequest', { requestId: event.requestId }) })
   const evaluate = (expression: string) => cdp.evaluate(expression)
-  const input = (selector: string, value: string) => evaluate(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));})()`)
+  const inputScript = (selector: string, value: string) => `(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));})()`
+  const input = (selector: string, value: string) => evaluate(inputScript(selector, value))
   const click = (text: string) => evaluate(`Array.from(document.querySelectorAll('button')).find(el=>el.textContent.trim()===${JSON.stringify(text)})?.click()`)
   async function selectConversation(subject: string) { await evaluate(`Array.from(document.querySelectorAll('.conversation-row strong')).find(el=>el.textContent.trim()===${JSON.stringify(subject)})?.closest('button').click()`); await waitFor(() => evaluate(`document.querySelector('.thread-heading h2')?.textContent === ${JSON.stringify(subject)} && !document.body.textContent.includes('Loading conversation...') && document.querySelector('#reply') !== null && document.querySelector('.resolve-button')?.disabled === false`), 15000, { label: `Open ${subject}` }) }
   const text = (value: string) => waitFor(() => evaluate(`document.body.textContent.includes(${JSON.stringify(value)})`), 15000, { label: value })
@@ -382,11 +399,57 @@ try {
   await waitFor(() => matchingRows(50), 15000, { label: 'Cleared search renders the first inbox page' })
   check(await evaluate(`document.querySelector(${JSON.stringify(searchInput)}).value === ''
     && document.querySelector('#team-inbox').value === ${JSON.stringify(String(archive.id))}`), 'empty search omits q and preserves the status and inbox filters')
-  const beforeLong = searchTraffic.length; await input(searchInput, 'a'.repeat(201)); await text('Search is limited to 200 characters.'); await Bun.sleep(400)
-  check(searchTraffic.length === beforeLong, 'oversized programmatic input never sends an unbounded search request')
-  const stale = holdSearch('stalequerytoken'); await input(searchInput, 'stalequerytoken'); await stale.entered.promise
-  const beforeInvalidEdit = searchTraffic.length; await input(searchInput, 'x'); await text('Enter at least 2 characters'); stale.release.resolve(); await Bun.sleep(400)
-  check(searchTraffic.length === beforeInvalidEdit && await evaluate(`document.querySelectorAll('.conversation-row').length === 0 && !document.body.textContent.includes('Late result must stay hidden')`), 'query edit invalidates an older in-flight result before debounce even when the replacement query is invalid')
+  async function traceInboxRequestsWhileEditing(value: string, waitForResult: () => Promise<void>) {
+    let requests: string[] = []
+    try {
+      // Observe fetch calls in the same browser turn as the edit. The proxy may
+      // still receive requests that the browser started before this boundary.
+      await evaluate(`(() => {
+        const original = globalThis.fetch
+        const requests = []
+        globalThis.finishInboxRequestTrace = () => {
+          globalThis.fetch = original
+          delete globalThis.finishInboxRequestTrace
+          return requests
+        }
+        globalThis.fetch = (input, options) => {
+          const url = new URL(input instanceof Request ? input.url : input, location.href)
+          const method = options?.method ?? (input instanceof Request ? input.method : 'GET')
+          if (method === 'GET' && url.pathname.endsWith('/inbox')) requests.push(url.pathname + url.search)
+          return original.call(globalThis, input, options)
+        }
+        ${inputScript(searchInput, value)}
+      })()`)
+      await waitForResult()
+      await Bun.sleep(400)
+    }
+    finally { requests = await cdp.evaluate<string[]>('globalThis.finishInboxRequestTrace?.() ?? []') }
+    return requests
+  }
+
+  const earlierList = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>(), recorded: Promise.withResolvers<typeof searchTraffic[number]>() }
+  inboxArrivalGate = earlierList
+  try {
+    await evaluate(`document.querySelector('[aria-label="Refresh inbox"]').click()`)
+    await waitFor(() => Promise.race([earlierList.entered.promise.then(() => true), Bun.sleep(20).then(() => false)]), 5000, { label: 'A bounded inbox refresh was initiated before the invalid edit' })
+    const afterEdit = await traceInboxRequestsWhileEditing('a'.repeat(201), async () => {
+      await text('Search is limited to 200 characters.')
+      earlierList.release.resolve()
+      const earlier = await earlierList.recorded.promise
+      check(earlier.q === null && earlier.inboxId === String(archive.id) && earlier.status === 'open', 'bounded refresh traffic can reach the proxy after an invalid edit')
+    })
+    check(!afterEdit.length && await evaluate(`document.querySelectorAll('.conversation-row').length === 0`), `oversized input sends no new inbox request or restores old rows: ${JSON.stringify(afterEdit)}`)
+  }
+  finally { inboxArrivalGate = undefined; earlierList.release.resolve() }
+
+  const stale = holdSearch('stalequerytoken')
+  await input(searchInput, 'stalequerytoken')
+  await stale.entered.promise
+  const afterShortEdit = await traceInboxRequestsWhileEditing('x', async () => {
+    await text('Enter at least 2 characters')
+    stale.release.resolve()
+  })
+  check(!afterShortEdit.length && await evaluate(`document.querySelectorAll('.conversation-row').length === 0 && !document.body.textContent.includes('Late result must stay hidden')`), `query edit invalidates an older in-flight result without starting an invalid request: ${JSON.stringify(afterShortEdit)}`)
   const beforeDebounce = searchTraffic.length; await input(searchInput, 'ar'); await input(searchInput, 'archived'); await input(searchInput, 'archivedsecretneedle'); await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 1 && document.querySelector('.conversation-row strong')?.textContent === 'Archive case 000' && document.querySelector('[aria-label="Refresh inbox"]').disabled === false`), 15000, { label: 'Historical server search result' })
   check(searchTraffic.length === beforeDebounce + 1 && searchTraffic.at(-1)?.q === 'archivedsecretneedle', 'rapid valid edits debounce to the final bounded query')
   const oldProject = holdSearch('projectstaletoken'); await input(searchInput, 'projectstaletoken'); await oldProject.entered.promise
@@ -807,7 +870,12 @@ finally {
   if (browser) {
     await mkdir(artifacts, { recursive: true })
     const captured = await Promise.allSettled([browser.cdp.evaluate(`({ text: document.body.textContent, width: innerWidth, active: document.activeElement?.id, expanded: document.querySelector('[aria-label="Toggle customer details"]')?.getAttribute('aria-expanded'), panelDisplay: getComputedStyle(document.querySelector('#customer-details') || document.body).display })`), browser.cdp.send('Page.captureScreenshot', { format: 'png' })])
-    await Bun.write(resolve(artifacts, 'diagnostic.json'), JSON.stringify({ assertions, runtimeErrors, body: captured[0].status === 'fulfilled' ? captured[0].value : 'Browser closed' }, null, 2))
+    await Bun.write(resolve(artifacts, 'diagnostic.json'), JSON.stringify({
+      assertions,
+      runtimeErrors,
+      recentInboxRequests: searchTraffic.slice(-12).map(({ q, ...request }) => ({ ...request, queryLength: q?.length ?? null })),
+      body: captured[0].status === 'fulfilled' ? captured[0].value : 'Browser closed',
+    }, null, 2))
     if (captured[1].status === 'fulfilled') await Bun.write(resolve(artifacts, 'latest.png'), Buffer.from(captured[1].value.data, 'base64'))
   }
   migrationGate?.release.resolve(); savedReplyGate?.release.resolve(); searchGate?.release.resolve(); host?.stop(true); api.stop(true); await peer?.close(); await browser?.close(); await closeSharedBrowsers(); await rm(output, { recursive: true, force: true })
