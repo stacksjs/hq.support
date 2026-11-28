@@ -2,6 +2,7 @@
 {"tag":"hq-support-messenger","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"opened":{"type":"boolean","default":false},"typing":{"type":"boolean","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"draftRequired":{"type":"boolean","attribute":false,"reflect":false},"deliveryNotice":{"type":"string","attribute":false,"reflect":false},"attachments":{"type":"array","attribute":false,"reflect":false},"thread":{"type":"array","attribute":false,"reflect":false},"conversationId":{"type":"string","attribute":false,"reflect":false},"heading":{"type":"string","default":""},"locale":{"type":"string","attribute":false,"reflect":false,"default":"en"},"csat":{"type":"object","attribute":false,"reflect":false},"csatOffer":{"type":"object","attribute":false,"reflect":false},"csatPending":{"type":"boolean","attribute":false,"reflect":false},"csatNotice":{"type":"string","attribute":false,"reflect":false},"csatChanged":{"type":"boolean","attribute":false,"reflect":false},"olderCursor":{"type":"string","attribute":false,"reflect":false},"olderPending":{"type":"boolean","attribute":false,"reflect":false},"olderFailed":{"type":"boolean","attribute":false,"reflect":false},"newerAvailable":{"type":"boolean","attribute":false,"reflect":false}},"events":{"ready":{},"opened":{},"closed":{},"unread":{},"delivery":{},"error":{}}}
 </script>
 <script client>
+import { useBroadcastStream } from '@stacksjs/stx/composables/use-broadcast-stream'
 import { messengerDate, messengerDirection, messengerLocale, messengerText } from '../../functions/support/messenger-locale'
 import { createCustomerTyping } from '../../functions/support/customer-typing'
 
@@ -36,6 +37,7 @@ interface ComponentState {
   _poll?: ReturnType<typeof setInterval>
   _typingTimer?: ReturnType<typeof setTimeout>
   _typingRequest?: AbortController
+  _typingStream?: { close(): void }
   _customerTyping?: CustomerTyping
   _typingCleanup?: () => void
   _refreshRequest?: AbortController
@@ -159,16 +161,22 @@ function shutdown(): void {
   this.draftRequired = false
   this.clearCsat()
 }
-async function request<T = unknown>(path: string, options: RequestInit = {}, authenticated = true): Promise<T> {
-  const generation = this._generation
-  const response = await fetch(this.apiUrl + '/api/widget/projects/' + encodeURIComponent(this.projectId) + path, {
+function fetchWidget(path: string, options: RequestInit, authenticated: boolean): Promise<Response> {
+  const headers = new Headers(options.headers)
+  headers.set('Content-Type', 'application/json')
+  if (authenticated) headers.set('Authorization', 'Bearer ' + this.sessionToken)
+  return fetch(this.apiUrl + '/api/widget/projects/' + encodeURIComponent(this.projectId) + path, {
     ...options,
     credentials: 'omit',
     cache: 'no-store',
     referrerPolicy: 'origin',
     signal: options.signal ?? this._abort?.signal,
-    headers: { 'Content-Type': 'application/json', ...(authenticated ? { Authorization: 'Bearer ' + this.sessionToken } : {}) },
+    headers,
   })
+}
+async function request<T = unknown>(path: string, options: RequestInit = {}, authenticated = true): Promise<T> {
+  const generation = this._generation
+  const response = await this.fetchWidget(path, options, authenticated)
   const result: T & ResponseError = await response.json().catch(() => ({}))
   if (response.status === 401 && authenticated && generation === this._generation) { this.shutdown(); this.emit('error', { message: 'Your customer session expired. Reconnect support.' }) }
   if (!response.ok) { const failure = new Error(result.message || (typeof result.error === 'object' ? result.error?.message : '') || (typeof result.error === 'string' ? result.error : '') || 'Support request failed (' + response.status + ').'); Object.assign(failure, { status: response.status, code: typeof result.error === 'object' ? result.error?.code : undefined }); throw failure }
@@ -326,6 +334,8 @@ function stopTyping(): void {
   clearTimeout(this._typingTimer)
   this._typingRequest?.abort()
   this._typingRequest = undefined
+  this._typingStream?.close()
+  this._typingStream = undefined
   this.typing = false
 }
 function startTyping(): void {
@@ -334,19 +344,37 @@ function startTyping(): void {
   if (!this.opened || !this.sessionToken || !conversation) return
   const controller = new AbortController()
   this._typingRequest = controller
+  const path = '/conversations/' + encodeURIComponent(conversation) + '/typing'
   const current = () => this._typingRequest === controller && this.opened && conversation === this.conversationId
+  let pending: AbortController | undefined
   const poll = async () => {
     if (!current()) return
+    clearTimeout(this._typingTimer)
+    pending?.abort()
+    const read = new AbortController()
+    pending = read
+    const latest = () => current() && pending === read
     try {
-      const { typing } = await this.request<{ typing: boolean }>('/conversations/' + encodeURIComponent(conversation) + '/typing', {
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3500)]),
+      const { typing } = await this.request<{ typing: boolean }>(path, {
+        signal: AbortSignal.any([controller.signal, read.signal, AbortSignal.timeout(3500)]),
       })
-      if (current()) this.typing = typing === true
+      if (latest()) this.typing = typing === true
     }
-    catch { if (current()) this.typing = false }
-    finally { if (current()) this._typingTimer = setTimeout(poll, 2000) }
+    catch { if (latest()) this.typing = false }
+    finally {
+      if (latest()) {
+        pending = undefined
+        this._typingTimer = setTimeout(poll, 2000)
+      }
+    }
   }
   void poll()
+  this._typingStream = useBroadcastStream({
+    endpoint: path + '/stream',
+    request: (endpoint, options) => this.fetchWidget(endpoint, { ...options, method: 'POST' }, true),
+    onConnected: () => { void poll() },
+    onMessage: (frame) => { if (frame.event === 'invalidated') void poll() },
+  })
 }
 async function refresh(): Promise<void> {
   if (!this.sessionToken || this.pending || this._refreshRequest || !this.conversationId) return

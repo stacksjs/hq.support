@@ -23,6 +23,8 @@ const releaseSend = Promise.withResolvers<void>()
 let agentCookie = ''
 let typingStreamAvailable = true
 let typingForward: AbortController | undefined
+let replyTypingStreamAvailable = true
+let replyTypingForward: AbortController | undefined
 const traffic: string[] = []
 const heldResponses = new Map<string, { arrived: boolean, hold: ReturnType<typeof Promise.withResolvers<void>> }>()
 function holdResponse(method: string, path: string) {
@@ -37,7 +39,9 @@ const host = Bun.serve({
     const url = new URL(request.url)
     if (url.pathname === '/_fixture/agent') return new Response(null, { status: 303, headers: { location: '/app', 'set-cookie': agentCookie } })
     if (url.pathname.startsWith('/api/')) {
-      if (!typingStreamAvailable && url.pathname.endsWith('/typing/stream')) {
+      const typingStream = url.pathname.endsWith('/typing/stream')
+      const widgetStream = typingStream && url.pathname.startsWith('/api/widget/')
+      if (typingStream && !(widgetStream ? replyTypingStreamAvailable : typingStreamAvailable)) {
         traffic.push(`${request.method} ${url.pathname} 503`)
         return new Response(null, { status: 503 })
       }
@@ -48,7 +52,10 @@ const host = Bun.serve({
       }
       const headers = new Headers(request.headers)
       headers.delete('host')
-      const signal = url.pathname.endsWith('/typing/stream') ? (typingForward = new AbortController()).signal : undefined
+      const forward = typingStream ? new AbortController() : undefined
+      if (widgetStream) replyTypingForward = forward
+      else if (typingStream) typingForward = forward
+      const signal = forward ? AbortSignal.any([forward.signal, request.signal]) : undefined
       const response = await fetch(new URL(url.pathname + url.search, api.url), {
         method: request.method,
         headers,
@@ -284,6 +291,31 @@ try {
   const typingShown = `${typingStatus}?.textContent.trim() === 'Support is typing…'`
   const typingHidden = `${typingStatus}?.textContent.trim() === ''`
   await wait(typingHidden, 'Agent viewing does not show typing')
+  const replyTypingPath = `/api/widget/projects/${project.public_id}/conversations/${id}/typing`
+  const typingPolls = () => traffic.filter(entry => entry === `GET ${replyTypingPath} 200`).length
+  await waitFor(() => traffic.includes(`POST ${replyTypingPath}/stream 200`), 8000, { label: 'The visitor connects to the native agent typing stream' })
+  const lastPoll = typingPolls()
+  await waitFor(() => typingPolls() > lastPoll, 5000, { label: 'The visitor just read a clear typing snapshot' })
+  const typingReadsBeforeBurst = typingPolls()
+  const burstStarted = performance.now()
+  await typeReply('A short private draft')
+  const sawShortDraft = await waitFor(() => cdp.evaluate(typingShown), 1050, { label: 'The visitor sees a short agent draft' }).then(() => true, () => false)
+  const burstMs = Math.round(performance.now() - burstStarted)
+  await typeReply('')
+  assert.ok(sawShortDraft, `The visitor missed a short agent draft between polls (reads during burst: ${typingPolls() - typingReadsBeforeBurst})`)
+  await wait(typingHidden, 'The status clears after a short draft')
+  const oldReplySnapshot = holdResponse('GET', replyTypingPath)
+  try {
+    await typeReply('A draft before the visitor closes')
+    await waitFor(() => oldReplySnapshot.arrived, 5000, { label: 'A typing snapshot is waiting on the old connection' })
+    await clickChat()
+    await wait(`!${widget}.opened && !${widget}.typing`, 'Closing clears the visitor typing status and ends the stream')
+    await typeReply('')
+  }
+  finally { oldReplySnapshot.hold.resolve() }
+  await clickChat()
+  await wait(`${widget}.opened && ${typingHidden}`, 'The old typing response cannot restore the indicator on reopen')
+  await cdp.evaluate(`${sendButton}.focus()`)
   const beganTyping = performance.now()
   await typeReply('Private until it is sent')
   await wait(typingShown, 'Public keystrokes show a typing indicator')
@@ -298,7 +330,6 @@ try {
     select.dispatchEvent(new Event('change', { bubbles: true }))
   })()`)
   await typeReply('Internal note activity')
-  const typingPolls = () => traffic.filter(entry => entry === `GET /api/widget/projects/${project.public_id}/conversations/${id}/typing 200`).length
   const beforeNote = typingPolls()
   await waitFor(() => typingPolls() > beforeNote, 5000, { label: 'Visitor polls while the agent edits a private note' })
   await wait(typingHidden, 'Private note editing leaves the customer indicator blank')
@@ -310,6 +341,15 @@ try {
   const beforeModeSwitch = typingPolls()
   await waitFor(() => typingPolls() > beforeModeSwitch, 5000, { label: 'Visitor polls after switching the reply mode' })
   await wait(typingHidden, 'Switching modes alone does not show typing')
+  replyTypingStreamAvailable = false
+  assert.ok(replyTypingForward, 'The visitor opened a stream that can be interrupted')
+  replyTypingForward.abort()
+  await waitFor(() => traffic.includes(`POST ${replyTypingPath}/stream 503`), 8000, { label: 'The visitor’s native typing stream is unavailable' })
+  await typeReply('Private agent draft during the stream outage')
+  await wait(typingShown, 'The visitor poll recovers agent typing during an outage')
+  await typeReply('')
+  await wait(typingHidden, 'The visitor poll clears agent typing during an outage')
+  replyTypingStreamAvailable = true
   await typeReply('Reply from the team inbox')
   await wait(typingShown, 'Public typing resumes')
   await agent.evaluate(`document.querySelector('#reply').form.requestSubmit()`)
@@ -387,7 +427,7 @@ try {
   }
   await cdp.evaluate('globalThis.stopInlineAppearanceProof()')
   assert.deepEqual(errors, [])
-  await Bun.write(resolve(artifacts, 'typing.json'), JSON.stringify({ typingMs, customerTypingMs, customerClearMs, runtimeErrors: errors.length }))
+  await Bun.write(resolve(artifacts, 'typing.json'), JSON.stringify({ typingMs, burstMs, customerTypingMs, customerClearMs, runtimeErrors: errors.length }))
   console.info(`PASS homepage Messenger (typing visible in ${typingMs} ms)`)
 }
 catch (error) {

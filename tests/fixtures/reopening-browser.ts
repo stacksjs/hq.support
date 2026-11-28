@@ -76,6 +76,7 @@ try {
   const compiled = await generateStaticSite({ pagesDir: resolve(root, 'resources/views'), outputDir: output, publicDir: resolve(root, 'public'), partialsDir: resolve(root, 'resources/partials'), componentsDir: resolve(root, 'resources/components'), router: { enabled: false }, minify: false, cache: false, sitemap: false, robots: false }); assert.equal(compiled.failedCount, 0)
   const manifest = await Bun.file(resolve(root, 'public/widgets/manifest.json')).json()
   await Bun.write(fixtureImage, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVgAAAABJRU5ErkJggg==', 'base64'))
+  const replyTypingConnections = new Set<string>()
   const handler = async (request: Request): Promise<Response> => {
     const url = new URL(request.url)
     if (url.pathname === '/_fixture/owner') return new Response(null, { status: 303, headers: { location: '/app', 'set-cookie': ownerCookie } })
@@ -84,6 +85,7 @@ try {
       const body = ['GET', 'HEAD'].includes(request.method) ? undefined : await request.arrayBuffer()
       requests.push(`${request.method} ${url.pathname}${url.search}`)
       const response = await fetch(new URL(url.pathname + url.search, apiOrigin), { method: request.method, headers, ...(body === undefined ? {} : { body }) })
+      if (response.ok && request.method === 'POST' && url.pathname.includes('/widget/') && url.pathname.endsWith('/typing/stream')) replyTypingConnections.add(url.pathname)
       const outgoing = new Headers(response.headers); outgoing.delete('content-encoding'); outgoing.delete('content-length')
       const pending = held
       const isOlderPage = url.searchParams.has('beforeMessage')
@@ -141,6 +143,8 @@ try {
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: false })
   await boot(late.token)
   await wait(`${shadow}.textContent.includes('Original resolved request question')`, 'Original CSAT shown')
+  const waitForReplyTypingConnection = (id: string) => waitFor(() => replyTypingConnections.has(`/api/widget/projects/${project.public_id}/conversations/${id}/typing/stream`), 8000, { label: 'Server-identified Messenger opens a typing stream across origins' })
+  await waitForReplyTypingConnection(late.id)
   const typingTab = crypto.randomUUID()
   assert.equal((await http(prefix + `/conversations/${late.id}/presence`, 'POST', { tabId: typingTab, state: 'composing', sequence: 1 }, owner)).status, 200)
   await wait(`${shadow}.querySelector('.typing-status').textContent.trim() === 'Support is typing…'`, 'Server-identified customer sees typing in the original request')
@@ -172,6 +176,7 @@ try {
   check(true, 'submitting the continuation clears customer typing for the previous request')
   check(destination !== late.id && await evaluate(`${widget}.conversationId === ${JSON.stringify(destination)}`), 'late reply selects the actual committed destination')
   check(await evaluate(`${shadow}.querySelector('.typing-status').textContent.trim() === ''`), 'typing from the previous conversation clears when the customer changes conversations')
+  await waitForReplyTypingConnection(destination)
   assert.equal((await http(prefix + `/conversations/${destination}/presence`, 'POST', { tabId: typingTab, state: 'composing', sequence: 2 }, owner)).status, 200)
   await wait(`${shadow}.querySelector('.typing-status').textContent.trim() === 'Support is typing…'`, 'Signed-in customer tracks new conversation typing')
   check(true, 'the continuation rebinds typing to its own conversation across the widget origin boundary')

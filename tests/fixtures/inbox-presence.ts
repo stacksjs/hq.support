@@ -6,7 +6,7 @@ import { route } from '@stacksjs/router'
 import { injectGlobalAutoImports } from '@stacksjs/server'
 import { assertIsolatedOk, runIsolated } from '@stacksjs/testing/isolated'
 import { one, insert, query } from '../../app/Support/database'
-import { inboxPresenceLeaseMs, pruneInboxPresence, supportTypingInvalidations, updateCustomerPresence } from '../../app/Support/inbox-presence'
+import { inboxPresenceLeaseMs, pruneInboxPresence, supportReplyTypingInvalidations, supportTypingInvalidations, updateCustomerPresence } from '../../app/Support/inbox-presence'
 
 await overridesReady
 assert.equal((await migrateAuthTables()).success, true)
@@ -205,6 +205,56 @@ try {
   assert.equal((await http(presence, teammate.token, payload(otherTab, 12, 'composing'))).status, 403)
   await query("UPDATE support_memberships SET status = 'active' WHERE workspace_id = ? AND user_id = ?", [workspace.id, teammate.id])
 
+  const allowed = 'https://widget.example.test'
+  const openReplyStream = (token?: string, origin = allowed) => fetch(base + typingPath + '/stream', {
+    method: 'POST',
+    signal: AbortSignal.timeout(12_000),
+    headers: { origin, ...(token ? { authorization: 'Bearer ' + token } : {}) },
+  })
+  const deniedReply = await openReplyStream(session.data.token, 'https://outside.example.test')
+  assert.equal(deniedReply.status, 403)
+  assert.equal(deniedReply.headers.get('access-control-allow-origin'), null)
+  await deniedReply.body?.cancel()
+  const wrongContact = await openReplyStream(otherSession.data.token)
+  assert.equal(wrongContact.status, 404)
+  await wrongContact.body?.cancel()
+  const noToken = await openReplyStream()
+  assert.equal(noToken.status, 401)
+  await noToken.body?.cancel()
+  const replyStream = await openReplyStream(session.data.token)
+  assert.equal(replyStream.status, 200)
+  assert.equal(replyStream.headers.get('access-control-allow-origin'), allowed)
+  const replyReader = replyStream.body!.getReader()
+  const readReply = async () => new TextDecoder().decode((await replyReader.read()).value)
+  assert.ok((await readReply()).includes(': connected'))
+  const replyPresence = crypto.randomUUID()
+  const sendReplyPresence = async (state: 'away' | 'composing', sequence: number) => {
+    const input = payload(replyPresence, sequence, state)
+    if (process.env.SUPPORT_REALTIME_REDIS_URL) {
+      const result = await runIsolated('tests/fixtures/typing-producer.ts', { stdin: JSON.stringify({ projectId: project.public_id, conversationId: project.thread, userId: owner.id, input }), envFile: false, preload: [], timeoutMs: 7500 })
+      assertIsolatedOk(result, 'PASS independent typing producer')
+    }
+    else assert.equal((await http(presence, owner.token, input)).status, 200)
+  }
+  const replyReplay = await one('SELECT COUNT(*) AS count FROM support_replay_events')
+  for (const [sequence, compose] of [true, false].entries()) {
+    await sendReplyPresence(compose ? 'composing' : 'away', sequence + 1)
+    const message = (await readReply()).split('\n').find(line => line.startsWith('data: '))
+    assert.deepEqual(JSON.parse(message!.slice(6)), { channel: `support.reply-typing.${project.thread}`, event: 'invalidated', data: null })
+    assert.deepEqual((await http(typingPath, session.data.token, undefined, true)).data, { typing: compose })
+  }
+  assert.deepEqual(await one('SELECT COUNT(*) AS count FROM support_replay_events'), replyReplay)
+  await replyReader.cancel()
+  const temporarySession = await http(project.sdk + '/sessions', project.ingest, { externalId: 'disposable-customer' })
+  const authorizedUntilRevoked = await openReplyStream(temporarySession.data.token)
+  assert.equal(authorizedUntilRevoked.status, 200)
+  const revokedReader = authorizedUntilRevoked.body!.getReader()
+  assert.ok(new TextDecoder().decode((await revokedReader.read()).value).includes(': connected'))
+  assert.equal((await http(`/widget/projects/${project.public_id}/session/revoke`, temporarySession.data.token, {}, true)).status, 200)
+  await sendReplyPresence('composing', 3)
+  assert.equal((await revokedReader.read()).done, true, 'a revoked session receives no subsequent typing hint')
+  await sendReplyPresence('away', 4)
+
   const first = { body: 'First physical draft', idempotencyKey: 'draft-first', afterAgentReplyId: '0' }
   const secondDraft = { body: 'Second physical draft', idempotencyKey: 'draft-second', afterAgentReplyId: '0' }
   const replies = detail + '/messages'
@@ -230,5 +280,5 @@ try {
 }
 finally {
   server.stop(true)
-  await supportTypingInvalidations().close()
+  await Promise.all([supportTypingInvalidations().close(), supportReplyTypingInvalidations().close()])
 }

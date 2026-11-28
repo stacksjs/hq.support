@@ -9,17 +9,25 @@ import { conversation, digest, latestAgentReplyId, member } from './service'
 export const inboxPresenceLeaseMs = 24_000
 const maxActiveTabs = 16
 export const maxTypingStreams = 512
+export const maxReplyTypingStreams = 1536
 export const customerTypingChannel = (project: Row, conversationId: unknown) => `support.typing.${project.id}.${conversationId}`
+export const replyTypingChannel = (conversationId: unknown) => `support.reply-typing.${conversationId}`
 let typingInvalidations: InvalidationBus | undefined
+let replyTypingInvalidations: InvalidationBus | undefined
+
+function typingBus(prefix: string, limit: number): InvalidationBus {
+  const bounds = { maxChannels: limit, maxSubscriptions: limit }
+  const url = supportRealtimeRedisUrl()
+  const namespace = prefix + new Bun.CryptoHasher('sha256').update(process.env.SUPPORT_REALTIME_NAMESPACE || 'hq-support-replay-v1').digest('hex')
+  return url ? createRedisInvalidationBus({ ...bounds, url, namespace }) : createMemoryInvalidationBus(bounds)
+}
 
 export function supportTypingInvalidations(): InvalidationBus {
-  if (!typingInvalidations) {
-    const bounds = { maxChannels: maxTypingStreams, maxSubscriptions: maxTypingStreams }
-    const url = supportRealtimeRedisUrl()
-    const namespace = 'hq-support-typing-' + new Bun.CryptoHasher('sha256').update(process.env.SUPPORT_REALTIME_NAMESPACE || 'hq-support-replay-v1').digest('hex')
-    typingInvalidations = url ? createRedisInvalidationBus({ ...bounds, url, namespace }) : createMemoryInvalidationBus(bounds)
-  }
-  return typingInvalidations
+  return typingInvalidations ??= typingBus('hq-support-typing-', maxTypingStreams)
+}
+
+export function supportReplyTypingInvalidations(): InvalidationBus {
+  return replyTypingInvalidations ??= typingBus('hq-support-reply-typing-', maxReplyTypingStreams)
 }
 
 async function hasCustomerTyping(project: Row, selected: Row, now = Date.now()): Promise<boolean> {
@@ -89,12 +97,12 @@ export async function updateCustomerPresence(project: Row, reference: unknown, t
 
 export async function updateInboxPresence(project: Row, reference: unknown, userId: number, input: Row) {
   const { tabId, sequence, state } = decodePresence(input, true)
-  return await workspaceTransaction(Number(project.workspace_id), async () => {
+  return await workspaceTransaction(Number(project.workspace_id), async (tx) => {
     await member(userId, Number(project.workspace_id))
     const selected = await conversation(project, reference)
     const now = Date.now(), timestamp = new Date(now).toISOString()
     const identity = [project.workspace_id, userId, tabId]
-    const previous = await one('SELECT id, sequence, expires_at FROM support_inbox_presences WHERE workspace_id = ? AND user_id = ? AND tab_id = ?', identity)
+    const previous = await one('SELECT id, sequence, state, conversation_id, expires_at FROM support_inbox_presences WHERE workspace_id = ? AND user_id = ? AND tab_id = ?', identity)
     if (!previous || Number(previous.sequence) < sequence) {
       if (!previous || Number(previous.expires_at) <= now) {
         const tabs = await one('SELECT COUNT(*) AS total FROM support_inbox_presences WHERE workspace_id = ? AND user_id = ? AND expires_at > ?', [project.workspace_id, userId, now])
@@ -106,6 +114,12 @@ export async function updateInboxPresence(project: Row, reference: unknown, user
           project_id = excluded.project_id, conversation_id = excluded.conversation_id, sequence = excluded.sequence,
           state = excluded.state, expires_at = excluded.expires_at, updated_at = excluded.updated_at`,
       [...identity, project.id, selected.id, sequence, state, now + inboxPresenceLeaseMs, timestamp, timestamp])
+      const prior = previous?.state === 'composing' && Number(previous.expires_at) > now ? replyTypingChannel(previous.conversation_id) : undefined
+      const current = state === 'composing' ? replyTypingChannel(selected.id) : undefined
+      if (prior !== current) {
+        const changed = [prior, current].filter(channel => channel !== undefined)
+        tx.afterCommit(async () => { await Promise.allSettled(changed.map(async channel => await supportReplyTypingInvalidations().publish(channel))) })
+      }
     }
     if (state === 'away') return { viewers: [] }
     const viewers = await query(`SELECT p.user_id, MAX(CASE WHEN p.state = 'composing' THEN 1 ELSE 0 END) AS composing
