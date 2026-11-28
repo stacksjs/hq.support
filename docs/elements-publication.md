@@ -69,19 +69,25 @@ The workflow uses only `contents: read` and `actions: read`. Its GitHub token is
 
 ## Current evidence and remaining qualification
 
-The reviewed `0.1.0-alpha.5` candidate passed the publication dry run,
-including clean consumer types, component imports, and hosted loader checks.
-Use the following inputs for the retained archive. [Source CI](https://github.com/stacksjs/hq.support/actions/runs/46027001719) · [Publication dry run](https://github.com/stacksjs/hq.support/actions/runs/46030852097)
+The reviewed `0.1.0-alpha.6` archive passed the publication dry run, including
+clean consumer types, component imports, and the hosted loader. The live
+upload reached npm and returned `ENEEDAUTH`. The public `alpha` tag remains
+on `0.1.0-alpha.1`. [Source CI](https://github.com/stacksjs/hq.support/actions/runs/46092019261) · [Publication dry run](https://github.com/stacksjs/hq.support/actions/runs/46093696425) · [Upload run](https://github.com/stacksjs/hq.support/actions/runs/46098718625)
+
+Use these inputs for the reviewed archive.
 
 ```text
-version: 0.1.0-alpha.5
-source_sha: 9f42634b567825ef66c4d97bda50a23903dd7c1e
-ci_run_id: 46027001719
-archive_sha256: 2cf63dba9b5a533bf73dbd0e29425a1007e1d23169ad9c620c6abf0cbf3e1f05
+version: 0.1.0-alpha.6
+source_sha: 1e35dad2fb918a39f317c3708e6742ca97cd30da
+ci_run_id: 46092019261
+archive_sha256: 3d5173bc666ed21ab6a5350d83a9f18ef40b46daddf8967ae7b3a366a6bf2761
 ```
 
-The remaining release steps are Trusted Publisher approval, publication of
-that archive under the `alpha` tag, and verified public registry readback.
+A package maintainer can register the trusted publisher in the npm package
+settings for repository `stacksjs/hq.support` and workflow
+`publish-elements.yml`. Leave the environment blank and enable npm publish.
+After approval, publish the retained archive under `alpha` and verify the
+public registry readback. [Package access settings](https://www.npmjs.com/package/@stacksjs/support-elements/access) · [Publication tracker](https://github.com/stacksjs/hq.support/issues/30)
 
 The earlier source `6fb11394806ce659abec5c7c806b99e01f2864dd` was held after focused-control and disabled-binding compiler defects were found. It was not the published candidate. Released stx 0.2.880 and Stacks 0.75.585 are installed without source aliases, package patches or workspace dependency links. Source [main CI 43623581540](https://github.com/stacksjs/hq.support/actions/runs/43623581540) at `f2faf6f414e257b80d0a648dbe723572fe17a51b` passed the strengthened compiler proof, 75 tests and native application browser journeys, retaining the exact publication candidate. [Dry run 43624504199](https://github.com/stacksjs/hq.support/actions/runs/43624504199) also passed.
 
