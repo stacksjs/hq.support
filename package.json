@@ -86,7 +86,7 @@
     "@stacksjs/sms": "0.75.712",
     "@stacksjs/socials": "0.75.712",
     "@stacksjs/storage": "0.75.712",
-    "@stacksjs/stx": "0.2.959",
+    "@stacksjs/stx": "0.2.960",
     "@stacksjs/support": "0.75.712",
     "@stacksjs/telephony": "0.75.712",
     "@stacksjs/ts-cloud": "0.16.157",
@@ -111,7 +111,7 @@
   },
   "devDependencies": {
     "@actions/expressions": "0.3.62",
-    "@stacksjs/components": "0.2.959",
+    "@stacksjs/components": "0.2.960",
     "@stacksjs/testing": "0.75.712",
     "@stacksjs/types": "0.75.712",
     "better-dx": "^0.2.40",
