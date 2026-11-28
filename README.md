@@ -6,7 +6,7 @@ This repository is under development. The [launch tracker](https://github.com/st
 
 ## Local development
 
-Use Bun 1.4.4. SQLite development requires SQLite 3.47.2 or newer. Start from the committed lockfile:
+Use Bun 1.4.5. SQLite development requires SQLite 3.47.2 or newer. Start from the committed lockfile:
 
 ```sh
 bun install --frozen-lockfile

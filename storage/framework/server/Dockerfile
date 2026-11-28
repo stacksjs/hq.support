@@ -1,4 +1,4 @@
-ARG BUN_VERSION=1.4.4
+ARG BUN_VERSION=1.4.5
 
 FROM oven/bun:${BUN_VERSION}-alpine AS builder
 WORKDIR /usr/src

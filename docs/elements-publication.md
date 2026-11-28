@@ -20,7 +20,7 @@ After the native element build and Chromium compiler proof, [main CI](../.github
 
 The prepare command only replaces its dedicated generated release directory. It requires a real installed native actions package at least 0.75.581, with no workspace link. It also requires exactly one reviewed npm library, the pinned version and current Git SHA, all concrete export targets, standalone runtime imports, strict declarations, CEM tags, and no application/server/private files or known server-secret access markers. Lifecycle scripts and server/framework dependencies are refused.
 
-Bun 1.4.4 produces `package.tgz`. `release.json` records source SHA, version, canonical archive SHA-256, every package file hash, every hosted file hash and the packer version. The four passing compiler/browser journeys and hosted assets are retained with the candidate. Hosted asset hashes are checked against the native manifest, and the hosted immutable bundle must equal npm `dist/bundle.js`.
+The publisher gives the generated library files a consistent non-executable mode before Bun 1.4.5 produces `package.tgz`. `release.json` records source SHA, version, canonical archive SHA-256, every package file hash, every hosted file hash and the packer version. Bun 1.4.5 accepts the retained Bun 1.4.4 archive when its reviewed SHA-256 is supplied. The four passing compiler/browser journeys and hosted assets are retained with the candidate. Hosted asset hashes are checked against the native manifest, and the hosted immutable bundle must equal npm `dist/bundle.js`.
 
 Before uploading, a clean disposable consumer installs the archive with scripts disabled and no app dependency aliases. It must be a real installed directory. Bun's installer-only `.bun-tag` marker is excluded from installation comparison; that filename is never allowed inside the reviewed archive. Strict TypeScript compilation uses the declarations with no ambient stubs and `skipLibCheck: false`, importing root, suffixless/explicit per-element modules and SSR. Actual Chromium imports the bundle and each of the five individual ESM modules in fresh contexts on a plain host, under strict script/style CSP. Exported constructors must match native registrations, create shadow roots and avoid customer-token reflection. External requests are blocked. Source and temporary consumer files are removed after verification.
 
@@ -74,7 +74,7 @@ clean consumer types, component imports, and the hosted loader. The live
 upload reached npm and returned `ENEEDAUTH`. The public `alpha` tag remains
 on `0.1.0-alpha.1`. [Source CI](https://github.com/stacksjs/hq.support/actions/runs/46092019261) · [Publication dry run](https://github.com/stacksjs/hq.support/actions/runs/46093696425) · [Upload run](https://github.com/stacksjs/hq.support/actions/runs/46098718625)
 
-Use these inputs for the reviewed archive.
+The previous publication attempt used these reviewed inputs.
 
 ```text
 version: 0.1.0-alpha.6
@@ -86,8 +86,8 @@ archive_sha256: 3d5173bc666ed21ab6a5350d83a9f18ef40b46daddf8967ae7b3a366a6bf2761
 A package maintainer can register the trusted publisher in the npm package
 settings for repository `stacksjs/hq.support` and workflow
 `publish-elements.yml`. Leave the environment blank and enable npm publish.
-After approval, publish the retained archive under `alpha` and verify the
-public registry readback. [Package access settings](https://www.npmjs.com/package/@stacksjs/support-elements/access) · [Publication tracker](https://github.com/stacksjs/hq.support/issues/30)
+After approval, use the final reviewed archive tracked in #30 for the
+`alpha` upload and public registry verification. [Package access settings](https://www.npmjs.com/package/@stacksjs/support-elements/access) · [Publication tracker](https://github.com/stacksjs/hq.support/issues/30)
 
 The earlier source `6fb11394806ce659abec5c7c806b99e01f2864dd` was held after focused-control and disabled-binding compiler defects were found. It was not the published candidate. Released stx 0.2.880 and Stacks 0.75.585 are installed without source aliases, package patches or workspace dependency links. Source [main CI 43623581540](https://github.com/stacksjs/hq.support/actions/runs/43623581540) at `f2faf6f414e257b80d0a648dbe723572fe17a51b` passed the strengthened compiler proof, 75 tests and native application browser journeys, retaining the exact publication candidate. [Dry run 43624504199](https://github.com/stacksjs/hq.support/actions/runs/43624504199) also passed.
 
