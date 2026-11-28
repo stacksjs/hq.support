@@ -6,9 +6,9 @@
   "description": "Commercial identity and governance modules for HQ.support.",
   "license": "SEE LICENSE IN LICENSE.txt",
   "dependencies": {
-    "@stacksjs/auth": "^0.75.711",
-    "@stacksjs/socials": "^0.75.711",
-    "@stacksjs/types": "^0.75.711"
+    "@stacksjs/auth": "^0.75.712",
+    "@stacksjs/socials": "^0.75.712",
+    "@stacksjs/types": "^0.75.712"
   },
   "files": [
     "*.ts",
