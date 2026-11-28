@@ -23,7 +23,7 @@ export const config: PantryConfig = {
    * These are binary tools and system packages required for development
    */
   dependencies: {
-    bun: '1.4.4',
+    bun: '1.4.5',
     curl: '^8.23.0.2',
     git: '^2.56.1',
     // The database engine is swapped for the one DB_CONNECTION names when

@@ -5,7 +5,7 @@
   "private": true,
   "description": "Customer support, built with Stacks.",
   "engines": {
-    "bun": "1.4.4"
+    "bun": "1.4.5"
   },
   "scripts": {
     "build:reset": "rm -rf node_modules && pantry install && ./buddy generate:types && ./buddy lint:fix",

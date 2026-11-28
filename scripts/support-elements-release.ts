@@ -41,9 +41,11 @@ async function readRelease(directory: string, version: string, expectedSha: stri
   alpha(version); assert.match(expectedSha, /^[a-f0-9]{40}$/)
   const release: Release = await Bun.file(resolve(directory, 'release.json')).json()
   assert.equal(release.schemaVersion, 1); assert.equal(release.name, packageName); assert.equal(release.version, version); assert.equal(release.sourceSha, expectedSha)
-  assert.equal(release.packer, `bun-${Bun.version}`, 'Restore and publish with the same pinned native Bun packer')
-  const bytes = new Uint8Array(await Bun.file(resolve(directory, 'package.tgz')).arrayBuffer())
   const reviewedDigest = process.env.SUPPORT_ELEMENTS_ARCHIVE_SHA256
+  // Keep the retained, hash-pinned alpha review usable across this runtime update.
+  const reviewedPreviousPacker = Bun.version === '1.4.5' && release.packer === 'bun-1.4.4' && Boolean(reviewedDigest)
+  assert.ok(release.packer === `bun-${Bun.version}` || reviewedPreviousPacker, 'Use the pinned native Bun packer or provide the SHA-256 of the reviewed Bun 1.4.4 archive')
+  const bytes = new Uint8Array(await Bun.file(resolve(directory, 'package.tgz')).arrayBuffer())
   const digest = sha256(bytes)
   assert.equal(digest, release.archiveSha256)
   if (reviewedDigest) assert.equal(digest, reviewedDigest, 'The retained archive must match the reviewed SHA-256.')

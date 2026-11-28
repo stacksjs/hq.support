@@ -48,7 +48,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.5
       - run: bun install --frozen-lockfile
       - name: Qualify the published Support SDK in a clean Buddy app
         timeout-minutes: 4
