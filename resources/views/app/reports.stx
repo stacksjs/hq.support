@@ -17,6 +17,10 @@ onDestroy(() => workspace.destroy())
 <div class="console-toolbar"><a href="/app/customer-satisfaction" class="console-link">Customer satisfaction totals</a><button type="button" class="button button-outline" @click="reports.load()" :disabled="workspace.loading()">Refresh reports</button></div>
 <p :if="workspace.loading()" class="console-loading" role="status">Loading reports…</p>
 <div :if="reports.report()">
+  <section :if="reports.report()?.consolidations" class="mt-6" aria-labelledby="report-consolidations-heading">
+    <h2 id="report-consolidations-heading">Duplicate conversations</h2>
+    <p>{{ reports.report()?.consolidations?.active ?? 0 }} active consolidations out of {{ reports.report()?.consolidations?.total ?? 0 }} recorded.</p>
+  </section>
   <section aria-labelledby="report-messenger-heading" class="mt-6">
     <h2 id="report-messenger-heading">Messenger response and resolution</h2>
     <p class="field-help">Averages for conversations created in the past 30 days. Times include nights and weekends.</p>

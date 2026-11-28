@@ -1,7 +1,7 @@
 import type { Row } from './database'
 import { insert, one, query, workspaceTransaction } from './database'
 import { fail, identifier, text } from './errors'
-import { conversation, createConversation, enqueue, idempotent, member, object } from './service'
+import { assertConversationWritable, conversation, createConversation, enqueue, idempotent, member, object } from './service'
 import { customFieldValues, parseTicketForm, publicForm, storedJson, ticketForm } from './ticket-forms'
 import { parseBusinessHours } from './ticket-calendar'
 import { currentTicketClock, startTicketClock, transitionTicketClock } from './ticket-sla'
@@ -45,7 +45,12 @@ export async function createTicket(project: Row, input: Row, customer?: Row, at 
     const contactId = customer?.id ?? identifier(input.contactId)
     if (!await one('SELECT id FROM support_contacts WHERE id = ? AND project_id = ?', [contactId, project.id])) fail(404, 'not_found', 'Contact not found.')
     let conversationId = input.conversationId === undefined || input.conversationId === null ? null : identifier(input.conversationId)
-    if (conversationId) { const row = await conversation(project, conversationId, customer); if (String(row.contact_id) !== String(contactId)) fail(422, 'contact_mismatch', 'Ticket and conversation must belong to the same contact.') }
+    if (conversationId) {
+      const row = await conversation(project, conversationId, customer)
+      if (String(row.contact_id) !== String(contactId))
+        fail(422, 'contact_mismatch', 'Ticket and conversation must belong to the same contact.')
+      assertConversationWritable(row)
+    }
     const type = input.typeId ? await scoped(project, 'support_ticket_types', input.typeId) : undefined
     if (customer && type && type.kind !== 'customer') fail(404, 'not_found', 'Ticket form not found.')
     const form = type ? { fields: storedJson(type.fields, []), states: storedJson(type.states, []) } : parseTicketForm({}, 'customer')

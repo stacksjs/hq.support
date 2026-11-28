@@ -176,9 +176,12 @@ export async function assertAgentReplyCursor(project: Row, conversationId: unkno
   if (cursor !== await latestAgentReplyId(project, conversationId)) fail(409, 'agent_reply_changed', 'The conversation has a new public reply. Review it before sending your draft.')
 }
 export async function conversation(projectRow: Row, id: unknown, person?: Row): Promise<Row> {
-  const row = await one(`SELECT * FROM support_conversations WHERE id = ? AND project_id = ?${person ? ' AND contact_id = ?' : ''}`, [identifier(id), projectRow.id, ...(person ? [identifier(person.id)] : [])])
+  const row = await one(`SELECT * FROM support_conversations WHERE id = ? AND project_id = ? AND workspace_id = ?${person ? ' AND contact_id = ?' : ''}`, [identifier(id), projectRow.id, projectRow.workspace_id, ...(person ? [identifier(person.id)] : [])])
   if (!row) fail(404, 'not_found', 'Conversation not found.')
   return row
+}
+export function assertConversationWritable(row: Row) {
+  if (row.merged_into_id) fail(409, 'conversation_merged', 'Continue this request in its primary conversation.')
 }
 /** States supported by actual conversation transitions, independent of ticket state names. */
 export const conversationStatuses = ['open', 'closed', 'snoozed'] as const
@@ -211,7 +214,8 @@ export async function detail(projectRow: Row, id: unknown, person?: Row, beforeM
   const personRow = await one('SELECT * FROM support_contacts WHERE id = ? AND project_id = ? AND workspace_id = ?', [row.contact_id, projectRow.id, projectRow.workspace_id])
   const files = await query(`SELECT id, file_name, mime_type, bytes, status, visibility FROM support_attachments WHERE workspace_id = ? AND project_id = ? AND conversation_id = ? AND id < ? AND status = 'stored'${person ? " AND (visibility = 'public' OR contact_id = ?)" : ''} ORDER BY id DESC LIMIT ?`, [projectRow.workspace_id, projectRow.id, row.id, attachmentBefore, ...(person ? [person.id] : []), attachmentLimit + 1])
   const attachments = boundedPage(files, attachmentLimit, customerProjectionLimits.attachmentBytes, file => ({ id: String(file.id), fileName: file.file_name, mimeType: file.mime_type, bytes: Number(file.bytes), status: file.status, visibility: file.visibility }))
-  return boundedEnvelope({ ...(lastAgentReplyId === undefined ? {} : { lastAgentReplyId }), attachments: attachments.items.reverse(), attachmentsNextCursor: attachments.nextCursor, conversation: person ? await customerConversationSummary(row) : summary(row, true), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.items.reverse(), messagesNextCursor: messages.nextCursor })
+  const merge = person || beforeMessage || options.beforeAttachment ? undefined : await (await import('./conversation-merge')).conversationMergeDetails(projectRow, row)
+  return boundedEnvelope({ ...(lastAgentReplyId === undefined ? {} : { lastAgentReplyId }), ...(merge ? { merge } : {}), attachments: attachments.items.reverse(), attachmentsNextCursor: attachments.nextCursor, conversation: person ? await customerConversationSummary(row) : summary(row, true), contact: { id: String(personRow?.id), name: String(personRow?.name), email: String(personRow?.email), externalId: String(personRow?.external_id) }, messages: messages.items.reverse(), messagesNextCursor: messages.nextCursor })
 }
 export async function createConversation(projectRow: Row, identity: Row, input: Row, person?: Row, automation?: { workflowRunId: number, automationDepth: number }, options?: { mediaOnly?: boolean, continuedFrom?: Row }) {
   return await idempotent(projectRow, options?.continuedFrom ? `conversation-continuation:${options.continuedFrom.id}` : `conversation:${person?.id ?? identity.externalId}`, input.idempotencyKey, input, async () => {
@@ -232,6 +236,7 @@ export async function reply(projectRow: Row, id: unknown, input: Row, actor: { c
   if (actor.customer) await conversation(projectRow, id, actor.customer)
   return await idempotent(projectRow, `reply:${id}:${actor.customer?.id ?? actor.userId ?? 'server'}`, input.idempotencyKey, input, async () => {
     let row = await conversation(projectRow, id, actor.customer)
+    if (!actor.customer) assertConversationWritable(row)
     if (actor.userId && visibility === 'public' && input.afterAgentReplyId !== undefined) {
       await member(actor.userId, Number(projectRow.workspace_id))
       await assertAgentReplyCursor(projectRow, row.id, input.afterAgentReplyId)

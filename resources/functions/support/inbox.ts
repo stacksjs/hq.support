@@ -15,7 +15,9 @@ interface ReplyImage { file: File, key: string, id?: string }
 interface Message { id: string | number, body: string, visibility: string, author_type: string, created_at: string }
 interface Contact { id?: string | number, name?: string, email?: string, company?: string }
 interface ThreadAttachment { id: string, fileName: string }
-interface ThreadDetail { conversation: Conversation, messages: Message[], messagesNextCursor: string | null, attachments: ThreadAttachment[], attachmentsNextCursor: string | null, contact: Contact | null, lastAgentReplyId?: string }
+interface MergeLink { id: string, primaryId: string, secondaryId: string }
+interface ThreadMerge { primary?: MergeLink, duplicates?: MergeLink[], nextCursor?: string | null }
+interface ThreadDetail { conversation: Conversation, messages: Message[], messagesNextCursor: string | null, attachments: ThreadAttachment[], attachmentsNextCursor: string | null, contact: Contact | null, lastAgentReplyId?: string, merge?: ThreadMerge }
 interface RetentionEvidence {
   scope: 'closed_conversation_content'
   conversationId: string
@@ -52,6 +54,14 @@ export function createInbox() {
   const project = state('')
   const conversations = state<Conversation[]>([])
   const current = state<Conversation | null>(null)
+  const threadMerge = state<ThreadMerge | null>(null)
+  const additionalMergeLinks = state<MergeLink[]>([])
+  const allMergeLinks = derived(() => [...new Map([...(threadMerge()?.duplicates ?? []), ...additionalMergeLinks()].map(link => [link.id, link])).values()])
+  const mergeCursor = state<string | null | undefined>(undefined)
+  const moreMergeLinks = derived(() => mergeCursor() === undefined ? threadMerge()?.nextCursor : mergeCursor())
+  const mergeTarget = state(''), mergePreview = state<Conversation | null>(null)
+  const mergeBusy = state(false), mergeError = state('')
+  let mergeRetry: { action: string, value: string, key: string } | undefined
   const messages = state<Message[]>([])
   const messagesNext = state<string | null>(null), messagesLoading = state(false), messagesError = state(false)
   const newerMessagesAvailable = state(false)
@@ -263,6 +273,7 @@ export function createInbox() {
       for (const key of drafts.keys()) if (key.startsWith(deniedProject + ':')) drafts.delete(key)
     }
     else drafts.clear()
+    resetMerge()
     presence.stop(!disposed); closeSavedReplies(); resetSnooze(); conversations.set([]); current.set(null); clearRetentionEvidence(); resetTranscript(); resetAttachments(); contact.set(null); draft.set(''); replyImage.set(null); replyImageError.set(''); seenReply.set('0'); replyAtStart.set(null); visibility.set('public'); search.set(''); searchError.set(''); searchMode.set(''); nextCursor.set(null); inboxes.set([]); identities.set([]); agents.set([]); teams.set([]); teamMembers.set([]); assignments.set([]); routingError.set(''); routingNotice.set(''); routingInbox.set('0'); routingAssignee.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined; routingKey = ''; routingFingerprint = ''; csrf = ''
   }
   function projectAccessLost() {
@@ -283,6 +294,7 @@ export function createInbox() {
     clearRetentionEvidence()
     const item = current()
     if (item) drafts.delete(draftId(project(), item))
+    resetMerge()
     current.set(null); contact.set(null); resetTranscript(); resetAttachments(); assignments.set([]); draft.set(''); replyImage.set(null); replyImageError.set(''); replyAtStart.set(null); seenReply.set('0'); retryKey = ''; retryFingerprint = ''; retryCursor = undefined
     threadLoading.set(false); sending.set(false); routingBusy.set(false)
     error.set('This conversation is no longer available to your account.')
@@ -353,7 +365,7 @@ export function createInbox() {
   }
   async function route(mode: 'manual' | 'auto', selfAction?: 'claim' | 'release') {
     const item = current(), selectedProject = project(), selected = selection
-    if (!item || threadLoading() || routingBusy() || sending() || (!canManage() && !selfAction)) return
+    if (!item || threadLoading() || routingBusy() || sending() || mergeBusy() || threadMerge()?.primary || (!canManage() && !selfAction)) return
     const payload = selfAction ? { mode: 'manual', assigneeId: selfAction === 'claim' ? Number(user()?.id) : 0 } : { mode, ...((mode === 'auto' || String(item.inbox_id || 0) !== routingInbox()) ? { inboxId: Number(routingInbox()) } : {}), ...(mode === 'manual' ? { assigneeId: Number(routingAssignee()) } : {}) }
     const fingerprint = JSON.stringify({ project: selectedProject, conversationId: item.id, payload })
     if (!routingKey || routingFingerprint !== fingerprint) { routingKey = crypto.randomUUID(); routingFingerprint = fingerprint }
@@ -552,6 +564,7 @@ export function createInbox() {
     closeSavedReplies()
     resetSnooze()
     clearRetentionEvidence()
+    resetMerge()
     current.set(null)
     contact.set(null)
     resetTranscript()
@@ -690,6 +703,7 @@ export function createInbox() {
     const subjectChanged = current()?.subject !== data.conversation.subject
     if (changedBody || subjectChanged) resetTranscript()
     current.set(data.conversation)
+    threadMerge.set(data.merge ?? null)
     const shown = messages()
     const first = threadMessages[0]
     const shownNewest = shown.at(-1)
@@ -715,7 +729,7 @@ export function createInbox() {
     else acknowledgeLoadedReply()
   }
   async function select(item: Conversation, loaded?: ThreadDetail) {
-    if (sending() || routingBusy()) return
+    if (sending() || routingBusy() || mergeBusy()) return
     stashDraft()
     closeSavedReplies()
     resetSnooze()
@@ -723,6 +737,7 @@ export function createInbox() {
     const version = ++selection
     const selectedProject = project()
     clearRetentionEvidence()
+    resetMerge()
     current.set(item)
     resetTranscript()
     resetAttachments()
@@ -747,9 +762,14 @@ export function createInbox() {
   }
 
   async function openLinked(direction: 'previous' | 'next') {
-    const item = current(), selectedProject = project(), selected = selection
+    const item = current()
     const id = direction === 'previous' ? item?.continued_from_id : item?.continuation_id
-    if (!id || threadLoading() || sending() || routingBusy()) return
+    if (id) await openConversationLink(id)
+  }
+
+  async function openConversationLink(id: string) {
+    const selectedProject = project(), selected = selection
+    if (!id || threadLoading() || sending() || routingBusy() || mergeBusy()) return
     stashDraft(); threadLoading.set(true); error.set('')
     try {
       const data: ThreadDetail = await request(threadDetailPath(selectedProject, id))
@@ -759,6 +779,101 @@ export function createInbox() {
     }
     catch (failure) { if (!disposed && selected === selection) error.set(failure instanceof Error ? failure.message : 'The linked request could not be loaded. Your draft is unchanged.') }
     finally { if (!disposed && selected === selection) threadLoading.set(false) }
+  }
+
+  function resetMerge() {
+    threadMerge.set(null)
+    additionalMergeLinks.set([])
+    mergeCursor.set(undefined)
+    mergeTarget.set('')
+    mergePreview.set(null)
+    mergeError.set('')
+    mergeBusy.set(false)
+    mergeRetry = undefined
+  }
+
+  function setMergeTarget(event: Event) {
+    mergeTarget.set((event.target as HTMLInputElement).value)
+    mergePreview.set(null)
+    mergeError.set('')
+  }
+
+  async function previewMerge() {
+    const item = current(), selected = selection, selectedProject = project()
+    const id = /^#?([1-9]\d*)$/.exec(mergeTarget().trim())?.[1]
+    if (!item || threadLoading() || mergeBusy() || !contact()) return
+    if (!id || id === String(item.id) || !Number.isSafeInteger(Number(id))) {
+      mergeError.set('Enter the ID of a different conversation.')
+      return
+    }
+    const active = () => !disposed && selection === selected && project() === selectedProject
+    mergeBusy.set(true)
+    mergeError.set('')
+    try {
+      const data: ThreadDetail = await request(conversationPath(selectedProject, id) + '?limit=1&attachmentLimit=1')
+      if (!active()) return
+      if (String(data.conversation.id) !== id || String(data.conversation.customer_id) !== String(item.customer_id))
+        throw new Error('Choose another conversation for the same customer.')
+      if (data.conversation.channel !== 'widget' || data.conversation.continuation_id || data.merge?.primary)
+        throw new Error('Choose a primary Messenger conversation without a newer linked thread.')
+      mergePreview.set(data.conversation)
+    }
+    catch (failure) {
+      if (active()) mergeError.set(failure instanceof Error ? failure.message : 'The primary conversation could not be loaded.')
+    }
+    finally {
+      if (active()) mergeBusy.set(false)
+    }
+  }
+
+  async function applyMerge(undo = false) {
+    const item = current(), selected = selection, selectedProject = project()
+    const value = undo ? threadMerge()?.primary?.id : mergePreview()?.id
+    if (!item || !value || threadLoading() || mergeBusy() || routingBusy() || sending()) return
+    const action = undo ? 'undo' : 'merge', target = String(value)
+    const retry = mergeRetry?.action === action && mergeRetry.value === target ? mergeRetry : { action, value: target, key: crypto.randomUUID() }
+    mergeRetry = retry
+    const active = () => !disposed && selection === selected && project() === selectedProject
+    mergeBusy.set(true)
+    mergeError.set('')
+    try {
+      await request(conversationPath(selectedProject, item.id) + (undo ? '/merge/undo' : '/merge'), {
+        method: 'POST',
+        body: JSON.stringify({ ...(undo ? { mergeId: target } : { primaryConversationId: target }), idempotencyKey: retry.key }),
+      })
+      if (!active()) return
+      mergeTarget.set('')
+      mergePreview.set(null)
+      mergeRetry = undefined
+      await refreshConversation(true)
+      if (active()) await refresh()
+    }
+    catch (failure) {
+      if (active()) mergeError.set(failure instanceof Error ? failure.message : 'The consolidation could not be saved.')
+    }
+    finally {
+      if (active()) mergeBusy.set(false)
+    }
+  }
+
+  async function loadOlderMergeLinks() {
+    const item = current(), cursor = moreMergeLinks(), selected = selection, selectedProject = project()
+    if (!item || !cursor || mergeBusy() || threadLoading()) return
+    const active = () => !disposed && selection === selected && project() === selectedProject
+    mergeBusy.set(true)
+    mergeError.set('')
+    try {
+      const data: { merge: ThreadMerge } = await request(conversationPath(selectedProject, item.id) + '/merge?' + new URLSearchParams({ before: cursor }))
+      if (!active()) return
+      additionalMergeLinks.update(previous => [...previous, ...(data.merge.duplicates ?? [])])
+      mergeCursor.set(data.merge.nextCursor ?? null)
+    }
+    catch (failure) {
+      if (active()) mergeError.set(failure instanceof Error ? failure.message : 'The duplicate conversations could not be loaded.')
+    }
+    finally {
+      if (active()) mergeBusy.set(false)
+    }
   }
 
   async function markRead() {
@@ -822,7 +937,7 @@ export function createInbox() {
   async function send(confirmed = false) {
     const body = draft().trim()
     const item = current()
-    if (!item || !hasReply() || !contact() || threadLoading() || sending() || routingBusy()) return
+    if (!item || !hasReply() || !contact() || threadLoading() || sending() || routingBusy() || mergeBusy() || threadMerge()?.primary) return
     const selectedProject = project(), path = conversationPath(selectedProject, item.id)
     const mode = visibility(), isPublic = mode === 'public', image = canAttachReplyImage() ? replyImage() : null
     if (image && image.file.size + new TextEncoder().encode(body).byteLength >= 5000000) {
@@ -947,7 +1062,7 @@ export function createInbox() {
 
   async function changeStatus(nextStatus?: 'open' | 'closed' | 'snoozed', snoozedUntil?: number) {
     const item = current(), selectedProject = project(), selected = selection
-    if (!item || !contact() || threadLoading() || sending() || routingBusy()) return
+    if (!item || !contact() || threadLoading() || sending() || routingBusy() || mergeBusy() || threadMerge()?.primary) return
     sending.set(true)
     error.set('')
     try {
@@ -1008,5 +1123,5 @@ export function createInbox() {
     detailsCleanup.push(presence.listen(), () => { refreshOnReturn.remove(); clearInterval(refreshTimer) })
   }
   function destroy() { presence.stop(); disposed = true; cancelList(); selection++; clearPrivateState(); user.set(null); workspaces.set([]); projects.set([]); project.set(''); activeProject = '';  for (const cleanup of detailsCleanup.splice(0)) cleanup(); detailsScroll?.set(false); detailsOpener = null }
-  return { snoozeOpen, snoozeTime, snoozeInvalid, toggleSnooze, dismissSnooze, snoozeKey, saveSnooze, reopenSnoozed, formatSnooze, savedReplies, savedRepliesOpen, savedReplyTooLong, toggleSavedReplies, savedReplyPickerKey, savedReplySearchKey, insertSavedReply, retentionEvidence, retentionLoading, retentionError, loadRetentionEvidence, messagesNext, messagesLoading, messagesError, newerMessagesAvailable, pendingAgentReply, replyTimelineBlocked, loadOlderMessages, attachments, attachmentsNext, attachmentsLoading, attachmentsError, attachmentDownloadPath, loadOlderAttachments, canAttachReplyImage, hasReply, replyImage, replyImageError, selectReplyImage, removeReplyImage, searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy, setupPresence, viewerNames, composingNames, customerTyping: presence.customerTyping, replyChanged, collision, draftActivity, visibilityActivity, reviewReply }
+  return { threadMerge, allMergeLinks, moreMergeLinks, loadOlderMergeLinks, mergeTarget, mergePreview, mergeBusy, mergeError, setMergeTarget, previewMerge, applyMerge, openConversationLink, snoozeOpen, snoozeTime, snoozeInvalid, toggleSnooze, dismissSnooze, snoozeKey, saveSnooze, reopenSnoozed, formatSnooze, savedReplies, savedRepliesOpen, savedReplyTooLong, toggleSavedReplies, savedReplyPickerKey, savedReplySearchKey, insertSavedReply, retentionEvidence, retentionLoading, retentionError, loadRetentionEvidence, messagesNext, messagesLoading, messagesError, newerMessagesAvailable, pendingAgentReply, replyTimelineBlocked, loadOlderMessages, attachments, attachmentsNext, attachmentsLoading, attachmentsError, attachmentDownloadPath, loadOlderAttachments, canAttachReplyImage, hasReply, replyImage, replyImageError, selectReplyImage, removeReplyImage, searchChanged, searchError, searchMode, narrowDetails, setupDetails, openDetails, closeDetails, toggleDetails, threadLoading, inboxes, identities, agents, teams, teamMembers, inboxFilter, nextCursor, routingInbox, routingAssignee, routingBusy, routingError, routingNotice, assignments, canManage, canAutoRoute, candidateAgents, person, inboxName, candidateDisabled, agentLabel, actorLabel, routingReasonLabel, loadHistory, changeFilter, loadMore, route, user, workspaces, projectName, needsProject, createProject, projects, project, conversations, current, messages, contact, search, filter, draft, visibility, loading, sending, error, notice, workspaceName, creating, needsWorkspace, detailsOpen, filtered, selectedTitle, customerName, customerInitial, load, refresh, changeProject, select, openLinked, markRead, send, changeStatus, createWorkspace, formatDate, destroy, setupPresence, viewerNames, composingNames, customerTyping: presence.customerTyping, replyChanged, collision, draftActivity, visibilityActivity, reviewReply }
 }

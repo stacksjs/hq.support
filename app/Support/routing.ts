@@ -2,7 +2,7 @@ import type { Row } from './database'
 import { insert, one, query, workspaceTransaction } from './database'
 import { fail, identifier, text } from './errors'
 import { appendRoutingReplay } from './replay'
-import { conversation, conversationStatuses, member, summary } from './service'
+import { assertConversationWritable, conversation, conversationStatuses, member, summary } from './service'
 
 export type RoutingActor = { userId: number, source: 'manual' } | { source: 'workflow', workflowRunId: number } | { userId: number, source: 'configuration' } | { source: 'ingress' | 'overflow' | 'snooze' }
 const timestamp = () => new Date().toISOString()
@@ -70,6 +70,7 @@ async function writeRouting(project: Row, before: Row, values: { assigneeId: num
 export async function routeConversation(project: Row, id: unknown, input: Row, actor: RoutingActor) {
   return await workspaceTransaction(Number(project.workspace_id), async () => {
     const principal = await authorize(project, actor), before = await conversation(project, id)
+    assertConversationWritable(before)
     const selectedId = input.inboxId === undefined ? Number(before.inbox_id) : input.inboxId === 0 ? 0 : identifier(input.inboxId)
     const selected = selectedId ? await inbox(project, selectedId, input.inboxId !== undefined || input.mode === 'auto') : undefined
     const mode = input.mode ?? 'manual'

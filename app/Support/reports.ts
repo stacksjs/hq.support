@@ -97,8 +97,10 @@ async function ticketSlaTimings(scope: unknown[], through: number): Promise<SlaR
 export async function projectReports(project: Row, through: number) {
   await ensureDatabaseConfigLoaded()
   const scope = [project.workspace_id, project.id]
+  const consolidation = await one('SELECT COUNT(*) AS total, COUNT(CASE WHEN undone_at IS NULL THEN 1 END) AS active FROM support_conversation_merges WHERE workspace_id = ? AND project_id = ?', scope)
   return {
     conversations: await query('SELECT status, COUNT(*) AS total FROM support_conversations WHERE workspace_id = ? AND project_id = ? GROUP BY status', scope),
+    consolidations: { total: Number(consolidation?.total ?? 0), active: Number(consolidation?.active ?? 0) },
     messages: await query('SELECT author_type, COUNT(*) AS total FROM support_messages WHERE workspace_id = ? AND project_id = ? GROUP BY author_type', scope),
     tickets: await query('SELECT status, COUNT(*) AS total FROM support_tickets WHERE workspace_id = ? AND project_id = ? GROUP BY status', scope),
     ...await responseTimings(scope, through),

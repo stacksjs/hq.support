@@ -8,6 +8,7 @@ export default defineModel({
   dashboard: { access: false },
   indexes: [{ name: 'support_conversation_continuation', columns: ['workspace_id', 'project_id', 'continued_from_id'], unique: true }, { name: 'support_conversation_cursor', columns: ['project_id', 'id'] }, { name: 'support_conversation_capacity', columns: ['workspace_id', 'assignee_id', 'status'] }, { name: 'support_conversation_inbox', columns: ['project_id', 'inbox_id', 'status'] }, { name: 'support_conversation_snoozed', columns: ['status', 'snoozed_until', 'id'] }],
   attributes: {
+    mergedIntoId: { foreignKey: false, type: 'bigint', fillable: true, nullable: true, validation: { rule: schema.number().integer() } },
     resolvedAt: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
     snoozedUntil: { type: 'bigint', fillable: true, nullable: true, validation: { rule: schema.number().integer() } },
     continuedFromId: { foreignKey: false, type: 'bigint', fillable: true, nullable: true, validation: { rule: schema.number().integer() } },
