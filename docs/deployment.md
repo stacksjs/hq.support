@@ -160,10 +160,20 @@ preserve the previous release. A separate supervised media process and qualified
 voice worker are required before phone/voice launch. They are not provisioned by
 the initial web/API-only cloud configuration.
 
-Required final hostnames are hq.support, api.hq.support, cdn.hq.support,
-help.hq.support, mail.hq.support and status.hq.support. The initial cloud config
-contains only the web/API/www routes; add qualified asset, help, mail and StatusHQ
-routes alongside the corresponding runtime implementation.
+Buddy routes the web, API, and www hosts for each environment. The Help Center
+hostname redirects to the site's canonical `/help` paths with the original
+query string. The asset hostname serves `/support.js` and `/widgets/*` from the
+same retained Stacks release. Staging uses `help.staging.hq.support` and
+`cdn.staging.hq.support`. Keep their DNS and TLS scoped to the staging host.
+
+Integrations importing from `https://cdn.hq.support/support.js` pass
+`endpoint: 'https://hq.support'` to `boot()` alongside their project ID. The
+asset host serves the widget files, and the application host handles sessions
+and messages. Allow the asset host in `script-src` and the application endpoint
+in `connect-src` when using CSP.
+
+The native Mail tenant owns `mail.hq.support`. Qualify the independent
+`status.hq.support` service page on StatusHQ before the public launch.
 
 Backups must meet the 15-minute RPO and demonstrated four-hour RTO. A failed
 shared-host voice load rehearsal requires isolated compute before launch.

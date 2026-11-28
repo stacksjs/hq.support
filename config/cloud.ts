@@ -11,6 +11,8 @@ const target = selected === 'staging' ? 'staging' : selected === 'development' ?
 const suffix = target === 'production' ? '' : `-${target}`
 const zone = env.APP_DOMAIN || 'hq.support'
 const domain = `${target === 'production' ? '' : target === 'staging' ? 'staging.' : 'dev.'}${zone}`
+const helpDomain = `help.${domain}`
+const assetDomain = `cdn.${domain}`
 const database = `hq_support${target === 'production' ? '' : `_${target}`}`
 const webPort = target === 'production' ? 3340 : target === 'staging' ? 3350 : 3360
 const apiPort = webPort + 8
@@ -59,7 +61,7 @@ export const tsCloud: TsCloudConfig = {
     dns: { provider: 'porkbun', domain: zone },
     ssl: {
       enabled: true, provider: 'letsencrypt', redirectHttp: true,
-      domains: [domain, `www.${domain}`, `api.${domain}`],
+      domains: [domain, `www.${domain}`, `api.${domain}`, helpDomain, assetDomain],
       letsEncrypt: { email: 'hello@hq.support', staging: false, autoRenew: true },
     },
     storage: {
@@ -87,6 +89,9 @@ export const tsCloud: TsCloudConfig = {
       env: { ...variables, ...(siteMessengerProject ? { SUPPORT_SITE_MESSENGER_PROJECT_ID: siteMessengerProject } : {}), HOST: '127.0.0.1', PORT_API: String(apiPort) },
     },
     www: { domain: `www.${domain}`, redirect: `https://${domain}` },
+    help: { domain: helpDomain, redirect: { to: `https://${domain}/help`, preservePath: true } },
+    widgetLoader: { domain: assetDomain, path: '/support.js', proxyTo: `127.0.0.1:${webPort}` },
+    widgetAssets: { domain: assetDomain, path: '/widgets', proxyTo: `127.0.0.1:${webPort}` },
   },
 }
 

@@ -100,13 +100,29 @@ jobs:
         run: |
           test -n "$HCLOUD_TOKEN" || { echo "::error::Set the production HCLOUD_TOKEN secret."; exit 1; }
           ./buddy deploy --prod --yes
-      - name: Verify production HTTPS and Messenger configuration
+      - name: Verify production HTTPS, Help Center, and Messenger assets
         shell: bash
         run: |
           curl -fsS --retry 5 --max-time 15 https://hq.support/ -o "$RUNNER_TEMP/hq-home.html"
           grep -q 'id="site-chat"' "$RUNNER_TEMP/hq-home.html"
-          jq -r '.files[].path' public/widgets/manifest.json | while IFS= read -r path; do
+          curl -fsSL --retry 5 --max-time 15 https://help.hq.support/ -o "$RUNNER_TEMP/hq-help.html"
+          grep -q 'Practical guides for setting up your workspace' "$RUNNER_TEMP/hq-help.html"
+          curl -fsSL --retry 5 --max-time 15 https://help.hq.support/getting-started -o "$RUNNER_TEMP/hq-guide.html"
+          grep -q 'Start with a workspace' "$RUNNER_TEMP/hq-guide.html"
+          test "$(curl -fsS --retry 5 --max-time 15 -o /dev/null -w '%{redirect_url}' 'https://help.hq.support/article?project=fixture&slug=guide&locale=en')" = 'https://hq.support/help/article?project=fixture&slug=guide&locale=en'
+          version=$(jq -er '.version' public/widgets/manifest.json)
+          jq -er '.hosted | keys[] | "/" + .' storage/framework/runtime/support-elements-release/release.json | while IFS= read -r path; do
             curl -fsS --retry 5 --max-time 15 "https://hq.support$path" -o "$RUNNER_TEMP/hq-widget-asset"
             cmp "public$path" "$RUNNER_TEMP/hq-widget-asset"
+            curl -fsS --retry 5 --max-time 15 -H 'Origin: https://example.test' -D "$RUNNER_TEMP/hq-widget-headers" "https://cdn.hq.support$path" -o "$RUNNER_TEMP/hq-widget-asset"
+            cmp "public$path" "$RUNNER_TEMP/hq-widget-asset"
+            grep -qiE '^access-control-allow-origin: \*[[:space:]]*$' "$RUNNER_TEMP/hq-widget-headers"
+            case "$path" in
+              /widgets/"$version"/*) grep -qiE '^cache-control: .*immutable' "$RUNNER_TEMP/hq-widget-headers" ;;
+              *) grep -qiE '^cache-control: .*no-cache' "$RUNNER_TEMP/hq-widget-headers" ;;
+            esac
+          done
+          for path in / /api/health /app; do
+            test "$(curl -sS --retry 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://cdn.hq.support$path")" = 404
           done
           curl -fsS --retry 5 --max-time 15 https://hq.support/api/support/site-messenger | jq -e '.project | type == "string" and test("^[a-fA-F0-9]{8}(-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$")'

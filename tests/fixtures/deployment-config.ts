@@ -1,9 +1,11 @@
 import { resolve } from 'node:path'
+import { buildRpxConfig } from '@stacksjs/ts-cloud'
 // Use the same path specifier as Buddy's loadTsCloudConfig, including its query.
 const module = resolve(import.meta.dir, '../../config/cloud.ts') + '?env=' + process.env.SUPPORT_DEPLOYMENT_TEST
 process.env.APP_ENV = process.env.SUPPORT_DEPLOYMENT_TEST
 const { tsCloud: config } = await import(module)
 const { default: email } = await import('../../config/email')
+const gateway = buildRpxConfig(config.sites, { slug: config.project.slug, proxy: config.infrastructure.compute.proxy })
 // Exclude credentials from the child process output.
 console.info(JSON.stringify({
   project: config.project, stateDir: config.stateDir, cloud: config.cloud,
@@ -12,5 +14,9 @@ console.info(JSON.stringify({
   mail: { domain: email.domain, mailboxes: email.mailboxes.map(({ email, passwordPolicy }) => ({ email, passwordPolicy })), enabled: email.server.enabled, attachTo: email.server.attachTo, exactMailboxes: email.server.exactMailboxes },
   database: { name: config.infrastructure.appDatabase.name, username: config.infrastructure.appDatabase.username },
   sslDomains: config.infrastructure.ssl.domains,
+  gateway: {
+    domains: gateway.productionCerts.certsDirServerNames,
+    routes: gateway.proxies.map(({ to, path, from, redirect }) => ({ to, path, from, redirect })),
+  },
 }))
 export {}

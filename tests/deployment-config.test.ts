@@ -9,6 +9,10 @@ interface DeploymentProjection {
   www: { redirect: string }, dns: { domain: string },
   mail: { domain: string, mailboxes: { email: string, passwordPolicy: string }[], enabled: boolean, attachTo: string, exactMailboxes: boolean },
   database: { name: string, username: string }, sslDomains: string[],
+  gateway: {
+    domains: string[],
+    routes: { to: string, path?: string, from?: string, redirect?: { to: string, status?: number, preservePath?: boolean } }[],
+  },
 }
 
 test('deployed realtime reuses managed Redis settings or a dedicated Redis URL', () => {
@@ -53,6 +57,17 @@ test('deployment targets isolate domains, ports, database ownership and release 
     expect(api.env.SUPPORT_SITE_MESSENGER_PROJECT_ID).toBe(target === 'production' ? siteMessengerProject : undefined)
     expect(config.sslDomains).toContain(main.domain)
     expect(config.www.redirect).toBe(`https://${main.domain}`)
+    const helpDomain = `help.${main.domain}`
+    const assetDomain = `cdn.${main.domain}`
+    expect(config.sslDomains).toEqual(expect.arrayContaining([helpDomain, assetDomain]))
+    expect(config.gateway.domains).toEqual(expect.arrayContaining([helpDomain, assetDomain]))
+    expect(config.gateway.routes.filter(route => route.to === helpDomain)).toEqual([
+      { to: helpDomain, redirect: { to: `https://${main.domain}/help`, preservePath: true } },
+    ])
+    expect(config.gateway.routes.filter(route => route.to === assetDomain)).toEqual([
+      { to: assetDomain, path: '/support.js', from: `127.0.0.1:${main.port}` },
+      { to: assetDomain, path: '/widgets', from: `127.0.0.1:${main.port}` },
+    ])
     expect(config.mail.enabled).toBe(target === 'production')
     expect(config.mail.attachTo).toBe('stacks')
     expect(config.mail.exactMailboxes).toBe(true)
