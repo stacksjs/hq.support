@@ -10,9 +10,10 @@ import { knowledgeText, localeOf } from './knowledge'
 import type { KnowledgeAuthor } from './knowledge'
 import { importIntercomArticle, importIntercomCollection } from './import-articles'
 import type { ImportAttachment, ImportAttachmentVerification } from './import-attachments'
-import { checkImportedAttachments, importAttachmentLimit, importAttachmentVerification, parseImportAttachmentFiles, sourceAttachments, storeImportedAttachments } from './import-attachments'
+import { checkImportedAttachments, importAttachmentVerification, parseImportAttachmentFiles, sourceAttachments, storeImportedAttachments } from './import-attachments'
+import { intercomBundleLimits, intercomNextPage } from './intercom-bundle'
 
-export const importLimits = { bytes: 10_000_000, records: 5000, attachmentFiles: importAttachmentLimit, batch: 25, leaseMs: 60000, maximumConversationParts: 500, maximumPaginatedParts: 5000 } as const
+export const importLimits = { ...intercomBundleLimits, batch: 25, leaseMs: 60000 } as const
 export type IntercomBundle = { version: 1, provider: 'intercom', format: 'html' | 'plaintext', contacts: Row[], conversations: Row[], articles: Row[], collections: Row[], articleLocale?: string, attachmentFiles: ReturnType<typeof parseImportAttachmentFiles> }
 export type ImportPrincipal = number | { kind: 'integration', keyDigest: string }
 async function authorizeImport(project: Row, principal: ImportPrincipal) {
@@ -220,21 +221,6 @@ async function importMessage(project: Row, conversation: Row, sourceId: string, 
   staged.push(...files)
   return true
 }
-function nextPage(value: unknown): number | null {
-  if (value === null) return null
-  if (Number.isSafeInteger(value) && Number(value) > 0) return Number(value)
-  const record = object(value)
-  if (Number.isSafeInteger(record.page) && Number(record.page) > 0) return Number(record.page)
-  const cursor = typeof value === 'string' ? URL.parse(value) : null
-  if (cursor) {
-    const partFilters = ['include_part_types', 'exclude_part_types', 'parts_created_after', 'parts_created_before']
-    if (partFilters.some(name => cursor.searchParams.has(name)))
-      fail(422, 'incomplete_source_history', 'A source page cursor filters conversation parts. Retrieve every unfiltered page.')
-    const page = Number(cursor.searchParams.get('page'))
-    if (Number.isSafeInteger(page) && page > 0) return page
-  }
-  fail(422, 'incomplete_source_history', 'Conversation page continuation must identify the next numbered page.')
-}
 function completeConversation(source: Row): Row {
   if (!Array.isArray(source.pages)) return source
   if (!source.pages.length || source.pages.length > 100) fail(422, 'incomplete_source_history', 'Supply an ordered page sequence beginning at page one.')
@@ -276,7 +262,7 @@ function completeConversation(source: Row): Row {
         fail(422, 'incomplete_source_history', 'The source snooze deadline changed between page requests. Retrieve its pages again.')
       recordedSnooze ??= { normalized: deadline, original: response.snoozed_until }
     }
-    const next = nextPage(paging.next)
+    const next = intercomNextPage(paging.next)
     if ((last && next !== null) || (!last && next !== expected + 1)) fail(422, 'incomplete_source_history', 'The page chain must be contiguous and terminate with next:null.')
     for (const candidate of container.conversation_parts) { const part = object(candidate), key = external(part.id); if (seen.has(key)) fail(422, 'duplicate_source_part', 'A part occurs on more than one page. Review the export before migrating.'); seen.add(key); parts.push(part) }
     provenance.push({ page: expected, next, responseHash: fingerprint(response) }); expected++

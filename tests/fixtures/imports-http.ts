@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { config, overridesReady } from '@stacksjs/config'
 import { route } from '@stacksjs/router'
@@ -7,6 +10,7 @@ import { Storage } from '@stacksjs/storage'
 import { injectGlobalAutoImports } from '@stacksjs/server'
 import { runIsolated, assertIsolatedOk } from '@stacksjs/testing/isolated'
 import { one, query } from '../../app/Support/database'
+import { captureIntercomBundle } from '../../app/Support/intercom-capture'
 import ReopenSnoozedConversations from '../../app/Jobs/ReopenSnoozedConversations'
 import Job from '../../app/Jobs/RunSupportImport'
 
@@ -203,8 +207,35 @@ try {
   }
   const publicFile = documentedAttachment('original.txt', 'Original attachment bytes')
   const privateFile = documentedAttachment('note.txt', 'Internal attachment bytes')
-  const withFiles = conversation('supplied-files', 'c1', [{ ...part('file-note', 'note'), attachments: [privateFile.metadata] }])
-  const fileBundle = { version: 1, provider: 'intercom', format: 'plaintext', contacts: [], conversations: [{ ...withFiles, source: { ...withFiles.source, attachments: [publicFile.metadata] } }], attachmentFiles: [publicFile.supplied, privateFile.supplied] }
+  const withFiles = conversation('12345', 'c1', [{ ...part('file-note', 'note'), attachments: [privateFile.metadata] }])
+  const localFiles = await mkdtemp(join(tmpdir(), 'hq-intercom-import-files-'))
+  const capture = await (async () => {
+    try {
+      for (const file of [publicFile, privateFile])
+        await writeFile(join(localFiles, file.metadata.name), Buffer.from(file.supplied.data, 'base64'), { mode: 0o600 })
+      return await captureIntercomBundle({
+        conversations: [withFiles.id],
+        files: [
+          { conversationId: withFiles.id, index: 0, path: publicFile.metadata.name },
+          { conversationId: withFiles.id, partId: 'file-note', index: 0, path: privateFile.metadata.name },
+        ],
+      }, {
+        directory: localFiles, token: 'fixture-intercom-read-token',
+        async transport(url) {
+          assert.equal(url.href, 'https://api.intercom.io/conversations/12345?page=1&per_page=100&display_as=plaintext')
+          return Response.json({
+            ...withFiles,
+            source: { ...withFiles.source, attachments: [publicFile.metadata] },
+            conversation_parts: { ...withFiles.conversation_parts, pages: { page: 1, per_page: 100, total_pages: 1, next: null } },
+          })
+        },
+      })
+    }
+    finally { await rm(localFiles, { recursive: true, force: true }) }
+  })()
+  const fileBundle = JSON.parse(capture.archive)
+  check(capture.summary.conversations === 1 && capture.summary.files === 2 && capture.summary.missingAttachments.length === 0,
+    'the Intercom capture supplies the complete archive and both reviewed local files')
   const attachmentRowsBeforePreview = (await query('SELECT id FROM support_attachments ORDER BY id')).length
   const diskBeforePreview = await one('SELECT storage_bytes FROM support_workspaces WHERE id = ?', [workspace.id])
   const filePreview = await upload(fileBundle, { integration: true, key: keys.ingestKey, dryRun: true })

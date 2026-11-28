@@ -4,6 +4,43 @@ This importer accepts a private file containing supplied Intercom contacts, full
 
 Current Intercom API 2.18 retrieval supports numbered part pagination. Without a page request it returns the most recent 500 parts; list/search responses do not supply full message histories. Retrieve every unfiltered page from page one through `conversation_parts.pages.next:null`, preferably with `display_as=plaintext` to preserve link destinations. [Intercom retrieval reference](https://developers.intercom.com/docs/references/rest-api/api.intercom.io/conversations/retrieveconversation)
 
+## Capture an approved rehearsal selection
+
+Use a private plan to select conversation IDs from the approved workspace. Optional
+contact IDs retrieve the original contact profile and custom attributes. Supply the
+workspace’s regional read credential through `INTERCOM_ACCESS_TOKEN` in the process
+environment. Keep the plan, downloaded files, and resulting archive outside source control.
+
+```json
+{
+  "region": "us",
+  "conversations": ["12345"],
+  "contacts": ["63a07ddf05a32042dffac965"],
+  "files": [
+    { "conversationId": "12345", "index": 0, "path": "customer-upload.txt" },
+    { "conversationId": "12345", "partId": "67890", "index": 0, "path": "internal-note.txt" }
+  ]
+}
+```
+
+```sh
+./buddy support:intercom-capture --plan /private/rehearsal/plan.json --output /private/rehearsal/archive.json
+```
+
+Regions are `us`, `eu`, and `au`. The command makes read-only Intercom 2.18 requests
+for the selected IDs and retains each unfiltered conversation page. Attachment
+positions use a zero-based index on the initial message or the part named by
+`partId`. Paths are relative to the plan directory. The command hashes the approved
+local files, associates them with the source URLs on the captured pages, and reports
+positions whose bytes are still missing. It makes no attachment URL requests. The
+archive is written with owner-only permissions to a new file.
+
+Run the capture with no `files` to inspect the private source material first. After
+obtaining the approved attachment bytes, run it with the file positions and a new
+output path. Open the resulting archive in the owner’s Intercom preview and retain
+the source-ID review inventory before committing an import. Reconcile the plan
+against the workspace inventory to establish which records the rehearsal covers.
+
 ## Bundle format
 
 Upload JSON with `version:1`, `provider:"intercom"`, `format:"plaintext"` (or `"html"`), and `contacts`/`conversations` arrays. These two arrays may be empty for article-only migration. Optional `articles` and `collections` arrays contain their complete original retrieve responses. Contacts contain the original Contact response objects. Conversations contain either a complete retrieve response or an explicit page sequence:

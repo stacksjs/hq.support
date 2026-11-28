@@ -3,12 +3,13 @@ import { Storage } from '@stacksjs/storage'
 import type { Row } from './database'
 import { insert, one, query, requireWorkspaceTransaction } from './database'
 import { fail } from './errors'
+import { intercomBundleLimits } from './intercom-bundle'
 import type { Plan } from './limits'
 import { limitsFor } from './limits'
 import { entitled, object } from './service'
 
 const hash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex')
-export const importAttachmentLimit = 100
+export const importAttachmentLimit = intercomBundleLimits.attachmentFiles
 export const importAttachmentBytes = 10_000_000
 
 interface SuppliedFile {
