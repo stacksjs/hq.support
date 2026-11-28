@@ -42,6 +42,12 @@ function conversationDates(source: Row) {
   if (updatedAt !== undefined && updatedAt < createdAt) fail(422, 'invalid_source_timestamp', 'Conversation update time precedes its creation time.')
   return { createdAt, updatedAt }
 }
+function sourceSnoozeDeadline(value: unknown, createdAt: string) {
+  if (value == null) return null
+  const deadline = timestamp(value, 'conversation.snoozed_until')
+  if (deadline < createdAt) fail(422, 'invalid_source_timestamp', 'Conversation snooze deadline precedes its creation time.')
+  return deadline
+}
 export function parseIntercomBundle(bytes: Uint8Array): IntercomBundle {
   if (!bytes.byteLength || bytes.byteLength > importLimits.bytes) fail(413, 'import_size', 'Migration bundles must be 1 to 10000000 bytes.')
   let parsed: Row
@@ -234,6 +240,7 @@ function completeConversation(source: Row): Row {
   if (!source.pages.length || source.pages.length > 100) fail(422, 'incomplete_source_history', 'Supply an ordered page sequence beginning at page one.')
   let first: { response: Row, id: string, createdAt: string } | undefined
   let recordedUpdate: { normalized: string, original: unknown } | undefined
+  let recordedSnooze: { normalized: string | null, original: unknown } | undefined
   let expected = 1, pageSize: number | undefined
   const parts: Row[] = [], seen = new Set<string>(), provenance: Row[] = []
   for (const wrapper of source.pages) {
@@ -261,13 +268,21 @@ function completeConversation(source: Row): Row {
     if (first.createdAt !== createdAt || (recordedUpdate && updatedAt !== undefined && recordedUpdate.normalized !== updatedAt))
       fail(422, 'incomplete_source_history', 'The source conversation changed between page requests. Retrieve its pages again.')
     if (updatedAt !== undefined) recordedUpdate ??= { normalized: updatedAt, original: response.updated_at }
+    if (response.state !== undefined && response.state !== first.response.state)
+      fail(422, 'incomplete_source_history', 'The source conversation state changed between page requests. Retrieve its pages again.')
+    if (first.response.state === 'snoozed' && response.snoozed_until !== undefined) {
+      const deadline = sourceSnoozeDeadline(response.snoozed_until, createdAt)
+      if (recordedSnooze && recordedSnooze.normalized !== deadline)
+        fail(422, 'incomplete_source_history', 'The source snooze deadline changed between page requests. Retrieve its pages again.')
+      recordedSnooze ??= { normalized: deadline, original: response.snoozed_until }
+    }
     const next = nextPage(paging.next)
     if ((last && next !== null) || (!last && next !== expected + 1)) fail(422, 'incomplete_source_history', 'The page chain must be contiguous and terminate with next:null.')
     for (const candidate of container.conversation_parts) { const part = object(candidate), key = external(part.id); if (seen.has(key)) fail(422, 'duplicate_source_part', 'A part occurs on more than one page. Review the export before migrating.'); seen.add(key); parts.push(part) }
     provenance.push({ page: expected, next, responseHash: fingerprint(response) }); expected++
   }
   if (parts.length > importLimits.maximumPaginatedParts) fail(422, 'source_parts_limit', 'A paginated conversation exceeds the 5000-part operational batch bound.')
-  return { ...first!.response, ...(recordedUpdate ? { updated_at: recordedUpdate.original } : {}), conversation_parts: { conversation_parts: parts, total_count: parts.length, pages: { page: 1, next: null }, complete_page_sequence: true }, import_page_provenance: provenance }
+  return { ...first!.response, ...(recordedUpdate ? { updated_at: recordedUpdate.original } : {}), ...(recordedSnooze ? { snoozed_until: recordedSnooze.original } : {}), conversation_parts: { conversation_parts: parts, total_count: parts.length, pages: { page: 1, next: null }, complete_page_sequence: true }, import_page_provenance: provenance }
 }
 async function importConversation(project: Row, source: Row, bundle: IntercomBundle, verification: ImportAttachmentVerification) {
   const paginated = Array.isArray(source.pages)
@@ -293,6 +308,7 @@ async function importConversation(project: Row, source: Row, bundle: IntercomBun
   const targetContact = who || (await one('SELECT * FROM support_contacts WHERE id = ?', [(await importContact(project, contactReference)).id]))!
   const state = String(source.state)
   if (!['open', 'closed', 'snoozed'].includes(state)) fail(422, 'unsupported_source_state', 'Unknown source conversation state requires review.')
+  const deadline = state === 'snoozed' ? sourceSnoozeDeadline(source.snoozed_until, createdAt) : null
   const previous = await mapping(project, 'conversation', id)
   let row = previous ? await one('SELECT * FROM support_conversations WHERE id = ? AND project_id = ?', [previous.target_id, project.id]) : undefined
   if (previous && !row) fail(409, 'import_target_missing', 'Mapped source conversation was removed. Review before recreating it.')
@@ -309,7 +325,14 @@ async function importConversation(project: Row, source: Row, bundle: IntercomBun
     resolvedAt = Date.parse(closed)
   }
   if (!row) {
-    row = await insert('support_conversations', { workspace_id: project.workspace_id, project_id: project.id, contact_id: targetContact.id, subject: text(source.title || initial.subject || `Imported conversation ${id}`, 'subject', 200), status: state, resolved_at: resolvedAt, unread_count: 0, channel: 'intercom-import' })
+    const wakeAt = deadline === null ? null : Date.parse(deadline)
+    const due = wakeAt !== null && wakeAt <= Date.now()
+    row = await insert('support_conversations', {
+      workspace_id: project.workspace_id, project_id: project.id, contact_id: targetContact.id,
+      subject: text(source.title || initial.subject || `Imported conversation ${id}`, 'subject', 200),
+      status: due ? 'open' : state, snoozed_until: due ? null : wakeAt,
+      resolved_at: resolvedAt, unread_count: 0, channel: 'intercom-import',
+    })
     await query('UPDATE support_conversations SET created_at = ?, updated_at = ? WHERE id = ?', [createdAt, updatedAt, row.id])
   }
   const staged: ImportAttachment[] = []

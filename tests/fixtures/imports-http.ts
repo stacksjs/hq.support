@@ -7,6 +7,7 @@ import { Storage } from '@stacksjs/storage'
 import { injectGlobalAutoImports } from '@stacksjs/server'
 import { runIsolated, assertIsolatedOk } from '@stacksjs/testing/isolated'
 import { one, query } from '../../app/Support/database'
+import ReopenSnoozedConversations from '../../app/Jobs/ReopenSnoozedConversations'
 import Job from '../../app/Jobs/RunSupportImport'
 
 await overridesReady
@@ -383,6 +384,76 @@ try {
   const adminPreview = await upload(source, { key: reviewerToken, dryRun: true })
   check(adminPreview.status === 200 && adminPreview.data.records.length === 4 && adminPreview.data.records.every((record: any) => record.status === 'skipped'),
     'an admin sees every previously imported source record as skipped in a later preview')
+
+  const wakeSeconds = Math.floor(Date.now() / 1000) + 3600
+  const wakeAt = wakeSeconds * 1000
+  const timed = { ...conversation('snooze-future', 'c1'), state: 'snoozed', snoozed_until: wakeSeconds }
+  const elapsed = { ...conversation('snooze-elapsed', 'c1'), state: 'snoozed', snoozed_until: wakeSeconds - 7200 }
+  const indefinite = { ...conversation('snooze-legacy-indefinite', 'c1'), state: 'snoozed' }
+  const nullDeadline = { ...conversation('snooze-explicit-indefinite', 'c1'), state: 'snoozed', snoozed_until: null }
+  const closedWithDeadline = { ...conversation('closed-old-snooze', 'c1'), snoozed_until: wakeSeconds }
+  const paginatedSnooze = (id: string, deadlines: (number | string | undefined)[]) => {
+    const sequence = legacyPageSequence(id, deadlines.map(() => 1500000100))
+    return { pages: sequence.pages.map(({ page, response }, index) => ({ page, response: { ...response, state: 'snoozed', snoozed_until: deadlines[index] } })) }
+  }
+  const pagedSnooze = paginatedSnooze('snooze-paged', [undefined, String(wakeSeconds + 10), wakeSeconds + 10])
+  const snoozeBundle = { ...source, contacts: [], conversations: [timed, elapsed, indefinite, nullDeadline, closedWithDeadline, pagedSnooze] }
+  const outboxBeforeSnooze = JSON.stringify(await query('SELECT * FROM support_outbox ORDER BY id'))
+  const snoozeRun = await upload(snoozeBundle)
+  await resumeInNewProcess(snoozeRun.data.run.id, 'worker')
+  const snoozeReport = (await http(`${prefix}/imports/${snoozeRun.data.run.id}`, 'GET', undefined, token)).data
+  check(snoozeReport.run.status === 'completed' && snoozeReport.run.imported === 6, 'native worker imports the six snoozed and closed source histories')
+  async function readSnooze(sourceId: string) {
+    const record = snoozeReport.records.find((entry: any) => entry.external_id === sourceId)
+    check(record?.target_id, 'the source conversation retained its target: ' + sourceId)
+    const result = await http(`${prefix}/conversations/${record.target_id}`, 'GET', undefined, token)
+    check(result.status === 200, 'the native inbox can read the imported conversation: ' + sourceId)
+    return result.data.conversation
+  }
+  const future = await readSnooze(timed.id)
+  check(future.status === 'snoozed' && future.snoozed_until === wakeAt, 'the native inbox receives the exact scheduled wake-up from the source seconds')
+  const alreadyDue = await readSnooze(elapsed.id)
+  check(alreadyDue.status === 'open' && alreadyDue.snoozed_until === null, 'an already due source conversation arrives open')
+  for (const item of [indefinite, nullDeadline]) {
+    const imported = await readSnooze(item.id)
+    check(imported.status === 'snoozed' && imported.snoozed_until === null, 'legacy indefinite snoozes retain their state without a timer')
+  }
+  const closed = await readSnooze(closedWithDeadline.id)
+  check(closed.status === 'closed' && closed.snoozed_until === null, 'non-snoozed source state takes precedence over a stale deadline')
+  const pagedFuture = await readSnooze('snooze-paged')
+  check(pagedFuture.status === 'snoozed' && pagedFuture.snoozed_until === wakeAt + 10_000, 'agreeing later pages restore the exact deadline omitted from the first page')
+  check(JSON.stringify(await query('SELECT * FROM support_outbox ORDER BY id')) === outboxBeforeSnooze, 'snoozed and already-due imports create no routing or workflow event')
+
+  const invalidSnooze = { ...timed, id: 'snooze-invalid-seconds', snoozed_until: wakeAt }
+  const beforeCreation = { ...timed, id: 'snooze-before-created', snoozed_until: timed.created_at - 1 }
+  const disputedSnooze = paginatedSnooze('snooze-pages-disagree', [wakeSeconds, wakeSeconds + 1])
+  const rejectedSnoozes = { ...snoozeBundle, conversations: [invalidSnooze, beforeCreation, disputedSnooze] }
+  const snoozePreview = await upload(rejectedSnoozes, { dryRun: true })
+  const rejectedSnoozeRun = await upload(rejectedSnoozes)
+  await resumeInNewProcess(rejectedSnoozeRun.data.run.id, 'worker')
+  const rejectedSnoozeReport = (await http(`${prefix}/imports/${rejectedSnoozeRun.data.run.id}`, 'GET', undefined, token)).data
+  const review = [[invalidSnooze.id, 'invalid_source_timestamp'], [beforeCreation.id, 'invalid_source_timestamp'], ['snooze-pages-disagree', 'incomplete_source_history']]
+  assert.deepEqual(snoozePreview.data.records.map((record: any) => [record.sourceId, record.errorCode]), review)
+  assert.deepEqual(rejectedSnoozeReport.records.map((record: any) => [record.external_id, record.error_code]), review)
+  check(rejectedSnoozeReport.run.status === 'needs_review' && rejectedSnoozeReport.run.imported === 0, 'invalid or inconsistent wake-up times retain the original source IDs without partial imports')
+
+  const now = Date.now
+  try {
+    Date.now = () => wakeAt - 1
+    assert.deepEqual(await ReopenSnoozedConversations.handle(), { reopened: 0 })
+    Date.now = () => wakeAt
+    assert.deepEqual(await ReopenSnoozedConversations.handle(), { reopened: 1 })
+    assert.deepEqual(await ReopenSnoozedConversations.handle(), { reopened: 0 })
+  }
+  finally { Date.now = now }
+  const reopened = await readSnooze(timed.id)
+  check(reopened.status === 'open' && reopened.snoozed_until === null, 'the scheduled native job reopens the imported thread once and clears its deadline')
+  check((await readSnooze('snooze-paged')).status === 'snoozed', 'the scheduled boundary leaves the later deadline pending')
+  const snoozeReplay = await upload({ ...snoozeBundle, replay: true, conversations: [{ ...timed, snoozed_until: wakeSeconds + 20 }] })
+  await resumeInNewProcess(snoozeReplay.data.run.id, 'worker')
+  const replayedSnooze = (await http(`${prefix}/imports/${snoozeReplay.data.run.id}`, 'GET', undefined, token)).data
+  check(replayedSnooze.run.status === 'completed' && replayedSnooze.run.skipped === 1 && (await readSnooze(timed.id)).status === 'open',
+    'a new archive cannot resnooze a thread already reopened by the native scheduler')
   console.log(`PASS Intercom migration HTTP ${checks} checks`)
 }
 finally { await server.stop(true) }

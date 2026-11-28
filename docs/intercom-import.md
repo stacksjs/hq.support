@@ -57,6 +57,8 @@ Project/provider/entity/external-ID mappings deduplicate records across files. C
 
 Historical messages preserve source UTC timestamps, public comments and internal notes. Supply whole Unix seconds as numbers or digit strings. The original message inherits the conversation's creation time when its own timestamp is omitted. Each numbered response page must carry the same conversation creation time, and supplied update times must agree. If a legacy export omits the update time throughout, the importer uses creation time. Explicit null, blank, or non-numeric creation, update, and message timestamps leave the source record in `invalid_source_timestamp` review. An absent or null closure date remains unknown. A supplied closure date must be valid, and a closed conversation's resolution must fall within its exported history. Retrieve the complete original dates before submitting a corrected archive.
 
+New snoozed conversations retain a future `snoozed_until` value and reopen through the native follow-up job. An elapsed deadline imports as open. A missing or null deadline retains an indefinite snooze. Supplied deadlines use whole Unix seconds, must be at or after the conversation's creation time, and must agree across numbered pages. Replaying an archive preserves the existing conversation's native state and follow-up time.
+
 Imported messages use `delivery_status:"imported"`. Importing history sends no notifications and runs no workflows. It consumes no new-conversation usage and generates no unread badge. Large conversations expose `messagesNextCursor`. Request `?beforeMessage=<cursor>` to read older pages.
 
 ## Review boundaries
