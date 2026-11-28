@@ -7,6 +7,7 @@ import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { route } from '@stacksjs/router'
 import { injectGlobalAutoImports } from '@stacksjs/server'
 import { closeSharedBrowsers, launch, navigate, waitFor } from '@stacksjs/testing/browser'
+import { verifyHostedSiteMessenger } from '../../scripts/verify-hosted-site-messenger'
 
 await overridesReady
 assert.equal((await migrateAuthTables()).success, true)
@@ -426,6 +427,7 @@ try {
     assert.deepEqual(appearance, { inlineWidth: hostWidth, hostWidth, panel: 'rgb(35, 39, 47)', border: 'rgb(54, 59, 69)', send: 'rgb(23, 102, 200)', sendHeight: 44, placeholder: 'rgb(177, 186, 201)', emptyHistory: 'none' })
   }
   await cdp.evaluate('globalThis.stopInlineAppearanceProof()')
+  await verifyHostedSiteMessenger(origin, project.public_id)
   assert.deepEqual(errors, [])
   await Bun.write(resolve(artifacts, 'typing.json'), JSON.stringify({ typingMs, burstMs, customerTypingMs, customerClearMs, runtimeErrors: errors.length }))
   console.info(`PASS homepage Messenger (typing visible in ${typingMs} ms)`)

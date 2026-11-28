@@ -89,3 +89,20 @@ test('deployment targets isolate domains, ports, database ownership and release 
     (config: DeploymentProjection) => config.main.env.QUEUE_PREFIX,
   ]) expect(new Set(configurations.map(value)).size).toBe(3)
 })
+
+test('production checks the real homepage Messenger after Buddy deploys', async () => {
+  const workflow = Bun.YAML.parse(await Bun.file(new URL('../.github/workflows/deploy.yml', import.meta.url)).text()) as {
+    jobs: Record<string, { steps: { run?: string, env?: Record<string, string> }[] }>
+  }
+  const steps = workflow.jobs.production!.steps
+  const verification = 'bun --no-env-file scripts/verify-hosted-site-messenger.ts https://hq.support'
+  const deploy = steps.findIndex(step => step.run?.includes('./buddy deploy --prod --yes'))
+  const smoke = steps.findIndex(step => step.run === verification)
+  expect(deploy).toBeGreaterThanOrEqual(0)
+  expect(smoke).toBeGreaterThan(deploy)
+  expect(steps[smoke]?.env).toEqual({
+    CHROME_PATH: '/usr/bin/google-chrome',
+    SUPPORT_SITE_MESSENGER_PROJECT_ID: '${{ vars.SUPPORT_SITE_MESSENGER_PROJECT_ID }}',
+  })
+  expect(workflow.jobs.preview!.steps.some(step => step.run?.includes('verify-hosted-site-messenger.ts'))).toBe(false)
+})

@@ -32,7 +32,10 @@ that owns the running `stacks` host, `DEPLOY_SSH_KEY` for SSH to that host,
 and `DOTENV_PRIVATE_KEY_PRODUCTION` for this repository's encrypted
 configuration. The production workflow downloads the reviewed widget assets
 from the successful same-commit CI run and verifies their hashes before
-building the views.
+building the views. After deployment, Chromium opens the homepage Messenger
+at a narrow viewport, verifies that it uses the configured project and obtains
+a working guest session, then revokes the session and confirms that it has lost
+access. The smoke check sends no support messages.
 
 ## Runtime namespace evidence
 

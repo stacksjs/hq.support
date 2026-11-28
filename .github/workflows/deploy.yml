@@ -125,4 +125,9 @@ jobs:
           for path in / /api/health /app; do
             test "$(curl -sS --retry 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://cdn.hq.support$path")" = 404
           done
-          curl -fsS --retry 5 --max-time 15 https://hq.support/api/support/site-messenger | jq -e '.project | type == "string" and test("^[a-fA-F0-9]{8}(-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$")'
+      - name: Open the first-party Messenger on production HTTPS
+        timeout-minutes: 4
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+          SUPPORT_SITE_MESSENGER_PROJECT_ID: ${{ vars.SUPPORT_SITE_MESSENGER_PROJECT_ID }}
+        run: bun --no-env-file scripts/verify-hosted-site-messenger.ts https://hq.support

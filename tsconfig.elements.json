@@ -4,6 +4,7 @@
     "scripts/support-elements-release.ts",
     "scripts/verify-elements-ci.ts",
     "scripts/verify-elements-registry-source.ts",
+    "scripts/verify-hosted-site-messenger.ts",
     "tests/unit/elements-publication.test.ts",
     "tests/unit/elements-registry-workflow.test.ts"
   ]
