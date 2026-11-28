@@ -46,6 +46,8 @@ Live provider qualification, accessibility, load, restore and rollback acceptanc
 
 Connected Stacks applications use the opt-in `@stacksjs/support` server/browser facades and Buddy's `hq:connect supporthq`, `support:install`, `support:doctor`, `support:sync-docs` and `support:import intercom` commands. Customer identity comes from authenticated server context. Integration keys are server-only. Installing Stacks does not send customer information automatically.
 
+See the [SDK setup guide](docs/native-sdk.md#install-in-a-stacks-app) for SDK-only installation, project connection and the separate Messenger elements package.
+
 Verified Stacks installations qualify for one permanent Free workspace per owning account: two agents, 100 monthly conversations with a 20% admission grace, ten hosted text AI conversations, and 300 MB of attachments. Managed paid channels require a funded wallet. [Free eligibility](docs/free-verification.md) and [billing](docs/billing.md) describe the exact rules.
 
 ## Project layout
