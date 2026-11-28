@@ -130,6 +130,25 @@ try {
   const legacy = await insert('support_tickets', { workspace_id: workspace.id, project_id: project.id, contact_id: person.id, title: 'Existing ticket', status: 'pending' })
   const legacyUpdate = await http(`/support/projects/${project.public_id}/tickets/${legacy.id}`, 'PATCH', { priority: 'high' }, owner)
   check(legacyUpdate.status === 200 && legacyUpdate.data.ticket.status === 'pending' && legacyUpdate.data.ticket.state === 'pending', 'legacy pending ticket keeps state when additive schema defaults were applied')
+  const ticketHistory = widget + '/tickets'
+  const allowedOrigin = 'https://customer.example.test'
+  const customerToken = String(customer.token)
+  const secondCustomer = await createSession(project, { externalId: 'other-ticket-customer', name: 'Second customer' })
+  const foreignCustomer = await createSession(other, { externalId: 'sla-customer', name: 'Foreign customer' })
+  await http(ticketHistory, 'POST', { title: 'Second customer ticket', idempotencyKey: 'second-customer-ticket' }, String(secondCustomer.token), allowedOrigin)
+  const firstPage = await http(ticketHistory + '?limit=1', 'GET', undefined, customerToken, allowedOrigin)
+  check(firstPage.status === 200 && firstPage.headers.get('cache-control') === 'no-store' && firstPage.headers.get('access-control-allow-origin') === allowedOrigin, 'personal tickets use private, origin-protected HTTP responses')
+  const firstTicket = firstPage.data.tickets[0]
+  check(firstPage.data.tickets.length === 1 && firstTicket.id === String(legacy.id) && firstTicket.state === 'pending' && firstPage.data.nextCursor === firstTicket.id, 'newest owned legacy ticket is returned with its legacy state and a cursor')
+  const secondPage = await http(ticketHistory + '?cursor=' + firstPage.data.nextCursor, 'GET', undefined, customerToken, allowedOrigin)
+  check(secondPage.status === 200 && secondPage.data.nextCursor === null && secondPage.data.tickets.some((value: any) => value.id === String(ticket.id) && value.conversationId === String(conversation.id)), 'older owned tickets preserve the linked customer conversation')
+  check(secondPage.data.tickets.every((value: any) => String(value.title) !== internal.title && String(value.title) !== incident.title && String(value.title) !== 'Second customer ticket' && !Object.hasOwn(value, 'customFields') && !Object.hasOwn(value, 'assignee_id')), 'ticket history excludes other contacts, agent records and confidential fields')
+  check((await http(ticketHistory, 'GET', undefined, String(foreignCustomer.token), allowedOrigin)).status === 401, 'a same-identity session issued by another project cannot see ticket history')
+  check((await http(ticketHistory, 'GET', undefined, undefined, allowedOrigin)).status === 401, 'ticket history requires a customer session')
+  check((await http(ticketHistory, 'GET', undefined, customerToken, 'https://evil.example.test')).status === 403, 'ticket history uses the allowed origin boundary')
+  for (const search of ['limit=0', 'limit=101', 'cursor=0', 'limit=1&limit=2', 'contactId=1']) {
+    check((await http(ticketHistory + '?' + search, 'GET', undefined, customerToken, allowedOrigin)).status === 422, 'ticket history rejects invalid or unsupported pagination')
+  }
   const utcPolicy = (await http(path + '/policies', 'POST', { name: 'Always open', firstResponseMinutes: 1, resolutionMinutes: 2 }, owner)).data.policy
   const utcType = (await http(path + '/types', 'POST', { name: 'Immediate', slaPolicyId: utcPolicy.id }, owner)).data.type
   now = Date.now()

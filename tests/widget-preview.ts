@@ -72,6 +72,11 @@ export async function createWidgetPreview(options: { port?: number, assetsDirect
           return await createBroadcastResponse({ channels: ['support.reply-typing.1'], signal: request.signal, authorize: () => true })
         }
         if (resource === '/ticket-types' && request.method === 'GET') return Response.json({ types: [{ id: '1', name: 'Compiler qualification', fields: [{ key: 'quantity', label: 'Quantity', type: 'number', visibility: 'customer' }, { key: 'reply_email', label: 'Reply email', type: 'email', visibility: 'customer' }, { key: 'incident_date', label: 'Incident date', type: 'date', visibility: 'customer' }] }] })
+        if (resource === '/tickets' && request.method === 'GET') {
+          if (url.searchParams.get('cursor') === '2') return Response.json({ tickets: [{ id: '1', title: 'Earlier support request', state: 'resolved' }], nextCursor: null })
+          return Response.json({ tickets: [{ id: '2', title: 'Latest support request', state: 'awaiting_customer' }], nextCursor: '2' })
+        }
+        if (resource === '/tickets/2' && request.method === 'GET') return Response.json({ ticket: { id: '2', title: 'Latest support request', state: 'awaiting_customer', conversation_id: '1' } })
         if (resource === '/events') return Response.json({ accepted: true })
         if ((resource === '/conversations' || resource.endsWith('/messages')) && request.method === 'POST') {
           const body = await request.json()

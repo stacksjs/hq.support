@@ -2277,7 +2277,19 @@
             "defaultValue": 1
           }
         ],
-        "indexes": []
+        "indexes": [
+          {
+            "name": "support_customer_ticket_cursor",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "contact_id",
+              "kind",
+              "id"
+            ],
+            "type": "index"
+          }
+        ]
       },
       {
         "table": "support_usage",
@@ -10829,7 +10841,7 @@
       }
     ]
   },
-  "hash": "608785fe2b6348aeb55c3a9e340e0d51e084ca997add04376d84fdd2049b08f2",
+  "hash": "334f34208f788a2b87716dad674f4a99001da4f63ad6736656128943f6cdbe51",
   "dialect": "postgres",
-  "updatedAt": "2026-11-28T08:17:36.207Z"
+  "updatedAt": "2026-11-28T11:06:37.880Z"
 }

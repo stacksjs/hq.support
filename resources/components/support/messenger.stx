@@ -28,6 +28,7 @@ interface ComponentState {
   thread: Message[]
   attachments: Attachment[]
   _olderRequest?: AbortController
+  _conversationSelection?: AbortController
   _loadedOlder?: boolean
   _latestHistory?: ConversationResponse
   _historySubject?: string
@@ -124,6 +125,39 @@ function open(): void {
   this.emit('opened', {})
   if (!this.sessionToken && !this.pending) this.boot().catch(() => {})
 }
+async function openConversation(id: string): Promise<void> {
+  if (!this.sessionToken || !/^[1-9]\d*$/.test(id)) throw new Error('A customer session and conversation ID are required.')
+  this._conversationSelection?.abort()
+  if (id === this.conversationId) { this.open(); return }
+  if (this.pending || this._draft?.trim() || this.csatPending) throw new Error('Finish or clear your draft before opening another conversation.')
+
+  const controller = new AbortController()
+  this._conversationSelection = controller
+  const generation = this._generation, previous = this.conversationId
+  const selected = () => this._conversationSelection === controller && !controller.signal.aborted && generation === this._generation
+  try {
+    const detail = await this.request<ConversationResponse>('/conversations/' + encodeURIComponent(id), { signal: controller.signal })
+    if (!selected() || previous !== this.conversationId) return
+    if (this.pending || this._draft?.trim() || this.csatPending) throw new Error('Finish or clear your draft before opening another conversation.')
+    this.validateHistory(detail, id)
+    this._customerTyping?.stop()
+    this.clearHistory()
+    this.clearCsat()
+    this.conversationId = id
+    this.notice = ''
+    this.deliveryNotice = ''
+    this.draftRequired = false
+    this.applyHistory(detail)
+    this.open()
+    await this.refreshCsat()
+  }
+  catch (error) {
+    if (selected()) throw error
+  }
+  finally {
+    if (this._conversationSelection === controller) this._conversationSelection = undefined
+  }
+}
 function close(): void {
   this.opened = false
   this.draftRequired = false
@@ -144,6 +178,8 @@ async function track(event: { event: string, attributes?: Record<string, unknown
   return this.request<{ id: string, accepted: boolean }>('/events', { method: 'POST', body: JSON.stringify({ ...event, idempotencyKey: event.idempotencyKey || crypto.randomUUID() }) })
 }
 function shutdown(): void {
+  this._conversationSelection?.abort()
+  this._conversationSelection = undefined
   this._customerTyping?.stop()
   this._generation = (this._generation || 0) + 1
   this._abort?.abort()

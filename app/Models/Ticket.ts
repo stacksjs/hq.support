@@ -6,6 +6,7 @@ export default defineModel({
   table: 'support_tickets',
   traits: { useTimestamps: true },
   dashboard: { access: false },
+  indexes: [{ name: 'support_customer_ticket_cursor', columns: ['workspace_id', 'project_id', 'contact_id', 'kind', 'id'] }],
   attributes: {
     typeId: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },
     kind: { fillable: true, required: true, validation: { rule: schema.string() }, default: 'customer' },

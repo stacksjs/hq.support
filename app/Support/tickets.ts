@@ -12,6 +12,38 @@ export async function ticket(project: Row, reference: unknown, customer?: Row): 
   if (!row || (customer && (String(row.contact_id) !== String(customer.id) || row.kind !== 'customer'))) fail(404, 'not_found', 'Ticket not found.')
   return row
 }
+export async function customerTickets(project: Row, customer: Row, search: URLSearchParams) {
+  for (const name of search.keys()) {
+    if (name !== 'cursor' && name !== 'limit') fail(422, 'invalid_query', 'Unsupported ticket history query parameter.')
+    if (search.getAll(name).length > 1) fail(422, 'duplicate_query', `Provide ${name} once.`)
+  }
+
+  const rawCursor = search.get('cursor')
+  const cursor = rawCursor === null ? Number.MAX_SAFE_INTEGER : identifier(rawCursor)
+  const rawLimit = search.get('limit')
+  const limit = rawLimit === null ? 20 : /^[1-9]\d{0,2}$/.test(rawLimit) ? Number(rawLimit) : NaN
+  if (!Number.isSafeInteger(limit) || limit > 100) fail(422, 'invalid_limit', 'Ticket limit must be a whole number from 1 to 100.')
+
+  const rows = await query(`SELECT t.id, t.title, t.status,
+      CASE WHEN t.type_id > 0 THEN t.state ELSE t.status END AS state, t.created_at, t.updated_at,
+      c.id AS conversation_id
+    FROM support_tickets t
+    LEFT JOIN support_conversations c ON c.id = t.conversation_id
+      AND c.workspace_id = t.workspace_id AND c.project_id = t.project_id AND c.contact_id = t.contact_id
+    WHERE t.workspace_id = ? AND t.project_id = ? AND t.contact_id = ? AND t.kind = 'customer' AND t.id < ?
+    ORDER BY t.id DESC LIMIT ?`, [project.workspace_id, project.id, customer.id, cursor, limit + 1])
+  const tickets = rows.slice(0, limit).map(row => ({
+    id: String(row.id),
+    title: row.title,
+    status: row.status,
+    state: row.state,
+    conversationId: row.conversation_id == null ? null : String(row.conversation_id),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }))
+  return { tickets, nextCursor: rows.length > limit ? tickets.at(-1)!.id : null }
+}
+
 export async function ticketView(row: Row, customer = false): Promise<Row> {
   const form = ticketForm(row), fields = storedJson<Row>(row.custom_fields, {})
   const allowed = new Set(form.fields.filter(field => !customer || field.visibility !== 'internal').map(field => field.key))

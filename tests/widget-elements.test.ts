@@ -53,6 +53,7 @@ const update: Promise<void> = messenger.update({ token: 'new-session' })
 const language: Promise<void> = messenger.update({ locale: 'de' })
 const track: Promise<{ id: string, accepted: boolean }> = messenger.track({ event: 'project.viewed', attributes: { section: 'settings' } })
 const open: void = messenger.open()
+const openConversation: Promise<void> = messenger.openConversation('12')
 const close: void = messenger.close()
 const shutdown: void = messenger.shutdown()
 // @ts-expect-error Customer tokens are strings.
@@ -62,7 +63,7 @@ messenger.track({ attributes: {} })
 const form: TicketForm = document.createElement('hq-support-ticket-form')
 const refreshForm: Promise<void> = form.refresh()
 const shutdownForm: void = form.shutdown()
-void [boot, update, language, track, open, close, shutdown, refreshForm, shutdownForm]
+void [boot, update, language, track, open, openConversation, close, shutdown, refreshForm, shutdownForm]
 `)
       await Bun.write(resolve(directory, 'tsconfig.json'), JSON.stringify({ compilerOptions: { noEmit: true, strict: true, skipLibCheck: false, target: 'esnext', lib: ['esnext', 'dom'], module: 'esnext', moduleResolution: 'bundler', types: [] }, files: ['consumer.ts'] }))
       const compiler = Bun.spawn(['bun', 'x', '--bun', 'tsc', '-p', resolve(directory, 'tsconfig.json'), '--pretty', 'false'], { cwd: root, stdout: 'pipe', stderr: 'pipe' })

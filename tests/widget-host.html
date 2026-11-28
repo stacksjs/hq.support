@@ -26,6 +26,30 @@ try {
  await messenger.updateComplete
  check(events.some(event => event.name === 'delivery'), 'message uses scoped HTTP API and emits delivery')
  check(messenger.shadowRoot.textContent.includes(text) && !messenger.shadowRoot.querySelector('.message script'), 'customer HTML renders as escaped text')
+ const ticketHistory = document.querySelector('hq-support-ticket-status')
+ ticketHistory.apiUrl = location.origin
+ ticketHistory.projectId = 'proof'
+ ticketHistory.sessionToken = messenger.sessionToken
+ await ticketHistory.refresh()
+ await ticketHistory.updateComplete
+ check(ticketHistory.shadowRoot.textContent.includes('Latest support request') && !ticketHistory.hasAttribute('session-token'), 'private history renders with the token held only as a property')
+ await ticketHistory.loadMore()
+ await ticketHistory.updateComplete
+ check(ticketHistory.shadowRoot.querySelectorAll('.ticket').length === 2 && ticketHistory.shadowRoot.textContent.includes('Earlier support request'), 'ticket history appends the previous page')
+ const detail = new Promise(resolve => ticketHistory.addEventListener('loaded', resolve, { once: true }))
+ ticketHistory.shadowRoot.querySelector('#ticket-row-2').click()
+ await detail
+ await ticketHistory.updateComplete
+ check(ticketHistory.shadowRoot.querySelector('h2').textContent === 'Latest support request', 'a ticket row opens its customer detail')
+ const linked = new Promise(resolve => ticketHistory.addEventListener('open-conversation', event => resolve(event.detail.conversationId), { once: true }))
+ ;[...ticketHistory.shadowRoot.querySelectorAll('button')].find(button => button.textContent === 'Open conversation').click()
+ check(await linked === '1', 'ticket status provides the linked Messenger conversation')
+ await ticketHistory.backToTickets()
+ check(ticketHistory.shadowRoot.activeElement?.id === 'ticket-row-2', 'returning to ticket history restores focus')
+ ticketHistory.sessionToken = ''
+ await ticketHistory.updateComplete
+ await ticketHistory.updateComplete
+ check(!ticketHistory.shadowRoot.textContent.includes('Latest support request'), 'clearing the session removes personal ticket data')
  messenger.shadowRoot.querySelector('textarea').value = 'FAIL'
  await messenger.send({ preventDefault(){}, target: messenger.shadowRoot.querySelector('form') })
  await messenger.updateComplete

@@ -109,8 +109,22 @@ claim a durable cross-device read cursor.
 `hq-support-launcher` emits `opened`; the host connects that event to its
 messenger's `open()` method. `hq-support-help-search`, `hq-support-ticket-form`,
 and `hq-support-ticket-status` accept `apiUrl`, `projectId`, and the non-reflected
-`sessionToken` property. The ticket status element also accepts `ticketId` and
-loads on `refresh()`.
+`sessionToken` property. The ticket status element accepts `ticketId` for a
+single-ticket view. Leave it unset to offer a private, paginated ticket history.
+The element loads when the customer chooses Load tickets or the host calls
+`refresh()`. It clears list and detail data when the customer session changes.
+
+When a ticket has a conversation, Open conversation emits `open-conversation`
+with `detail.conversationId`. Pass that ID to a Messenger booted with the same
+customer session through `await messenger.openConversation(conversationId)`.
+The Messenger verifies customer access before switching and protects unsent drafts.
+
+```ts
+ticketStatus.addEventListener('open-conversation', async (event) => {
+  const { conversationId } = (event as CustomEvent<{ conversationId: string }>).detail
+  await messenger.openConversation(conversationId)
+})
+```
 
 ## Resolved-conversation feedback
 

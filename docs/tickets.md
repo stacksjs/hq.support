@@ -17,6 +17,14 @@ Additional states contain `key`, `label`, and legacy `category: 'open' | 'pendin
 
 Authenticated customer sessions can `GET /api/widget/projects/{project}/ticket-types` from an allowed origin. Only customer types and customer fields are returned. Customer ticket creation accepts the same form fields, preserves idempotency, refuses private field writes and internal/incident types, and hides private definitions/values from ticket responses. Internal tickets remain inaccessible even when they share the customer's contact record. Agent-only relation metadata is never included in customer projections.
 
+Customers can list their own tickets through `GET /api/widget/projects/{project}/tickets`
+using the same approved origin and bearer session as ticket detail. The response
+contains `tickets` and a nullable `nextCursor`. It returns 20 tickets per page by
+default and accepts `limit` from 1 to 100 and the previous page's `cursor`. Each
+summary contains the customer-facing state and an accessible conversation ID
+when linked. The `hq-support-ticket-status` element offers this history when its
+`ticketId` property is empty.
+
 When a customer submits an opted-in type without a conversation, HQ.support opens a linked conversation for the same contact, consumes one conversation allowance, and uses the project's usual default inbox routing. The ticket and conversation commit together and an unchanged retry returns the same pair. The ticket response includes `conversation_id`. Use that ID with the existing customer conversation endpoint and the same session to read replies. The opening message uses the submitted description or title. Typed form answers stay on the ticket.
 
 ## Clocks and business time
