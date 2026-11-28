@@ -2,7 +2,7 @@
 {"tag":"hq-support-ticket-status","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"ticketId":{"type":"string","default":""},"selectedId":{"type":"string","default":"","attribute":false,"reflect":false},"ticket":{"type":"object","attribute":false,"reflect":false},"tickets":{"type":"array","attribute":false,"reflect":false},"nextCursor":{"type":"string","default":"","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"historyLoaded":{"type":"boolean","attribute":false,"reflect":false}},"events":{"loaded":{},"open-conversation":{},"error":{}}}
 </script>
 <script client>
-interface CustomerTicket {
+interface CustomerTicket extends Record<string, unknown> {
   id?: string | number
   title?: string
   status?: string
@@ -141,7 +141,8 @@ function openConversation() {
   if (conversationId) this.emit('open-conversation', { conversationId: String(conversationId) })
 }
 
-function stateLabel(value = ''): string {
+function stateLabel(value: unknown): string {
+  if (typeof value !== 'string') return ''
   const words = value.replace(/[_-]+/g, ' ')
   return words ? words[0].toUpperCase() + words.slice(1) : ''
 }
