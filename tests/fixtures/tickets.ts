@@ -190,6 +190,8 @@ try {
   const followed = await http(followUpPath, 'POST', followUpInput, secondToken, allowedOrigin)
   const repeated = await http(followUpPath, 'POST', followUpInput, secondToken, allowedOrigin)
   check(followed.status === 201 && repeated.status === 201 && repeated.data.conversationId === followed.data.conversationId && repeated.data.ticket.id === followed.data.ticket.id, 'shared ticket follow-up opens one own conversation and ticket per idempotency key')
+  const receipt = await one('SELECT response FROM support_idempotency WHERE project_id = ? AND operation = ? AND key = ?', [project.id, `shared-ticket-follow-up:${ticket.id}:${secondCustomer.contact.id}`, followUpInput.idempotencyKey])
+  assert.deepEqual(JSON.parse(String(receipt?.response)), { ticketId: String(followed.data.ticket.id), conversationId: followed.data.conversationId }, 'follow-up replay receipts retain only identifiers')
   const followUpThread = await http(`${widget}/conversations/${followed.data.conversationId}`, 'GET', undefined, secondToken, allowedOrigin)
   check(followUpThread.status === 200 && followUpThread.data.messages.length === 1 && followUpThread.data.messages[0].body === followUpInput.body, 'the team member can use Messenger in their own follow-up conversation')
   check((await http(`${widget}/conversations/${conversation.id}`, 'GET', undefined, secondToken, allowedOrigin)).status === 404, 'sharing the ticket cannot authorize the original conversation')

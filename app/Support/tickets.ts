@@ -117,13 +117,14 @@ export async function submitSharedTicketFollowUp(project: Row, reference: unknow
   return await workspaceTransaction(Number(project.workspace_id), async () => {
     const source = await customerTicket(project, ticketId, customer)
     if (source.shared !== true) fail(404, 'not_found', 'Shared ticket not found.')
-    return await idempotent(project, `shared-ticket-follow-up:${ticketId}:${customer.id}`, input.idempotencyKey, { body }, async () => {
+    const receipt = await idempotent(project, `shared-ticket-follow-up:${ticketId}:${customer.id}`, input.idempotencyKey, { body }, async () => {
       const title = `Follow-up on ticket ${ticketId}`
       const thread = await createConversation(project, { externalId: customer.external_id }, { subject: title, body, idempotencyKey: crypto.randomUUID() }, customer)
       const followUp = await createTicket(project, { title, description: body, conversationId: thread.conversation.id }, customer)
       await addTicketRelation(project, followUp.id, { relatedTicketId: ticketId, kind: 'customer' })
-      return { ticket: followUp, conversationId: String(thread.conversation.id) }
+      return { ticketId: String(followUp.id), conversationId: String(thread.conversation.id) }
     })
+    return { ticket: await customerTicket(project, receipt.ticketId, customer), conversationId: receipt.conversationId }
   })
 }
 
