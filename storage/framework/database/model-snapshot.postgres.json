@@ -5916,6 +5916,33 @@
             "isNullable": false,
             "hasDefault": true,
             "defaultValue": false
+          },
+          {
+            "name": "ai_billing_scope",
+            "type": "string",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": ""
+          },
+          {
+            "name": "ai_stream_opened_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
+          },
+          {
+            "name": "ai_stream_closed_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
           }
         ],
         "indexes": [
@@ -5947,6 +5974,14 @@
               "provider_sid"
             ],
             "type": "unique"
+          },
+          {
+            "name": "support_phone_call_ai_billing_scope",
+            "columns": [
+              "ai_billing_scope",
+              "ai_stream_opened_at"
+            ],
+            "type": "index"
           }
         ]
       },
@@ -10608,7 +10643,7 @@
       }
     ]
   },
-  "hash": "1f40f887e4a47013c3b5e6bb5fda41b298c0eba00aa7fc06342908b675946118",
+  "hash": "0a936e6df8d4bf8446e63e8b37a2633ea22b4d516f6ecca398601da20740e4ec",
   "dialect": "postgres",
-  "updatedAt": "2026-11-28T04:44:48.659Z"
+  "updatedAt": "2026-11-28T08:10:49.857Z"
 }

@@ -8,6 +8,7 @@ export default defineModel({
   dashboard: { access: false },
   indexes: [
     { name: 'support_phone_call_operation', columns: ['workspace_id', 'operation_key'], unique: true },
+    { name: 'support_phone_call_ai_billing_scope', columns: ['ai_billing_scope', 'ai_stream_opened_at'] },
   ],
   attributes: {
     assignedAgentId: { type: 'bigint', fillable: true, nullable: true, validation: { rule: schema.number().integer() } },
@@ -47,6 +48,9 @@ export default defineModel({
     durationSeconds: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },
     providerCostMicros: { type: 'bigint', fillable: true, nullable: true, validation: { rule: schema.number().integer() } },
     aiCostMicros: { type: 'bigint', fillable: true, nullable: true, validation: { rule: schema.number().integer() } },
+    aiBillingScope: { fillable: true, required: true, default: '', validation: { rule: schema.string() } },
+    aiStreamOpenedAt: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
+    aiStreamClosedAt: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
     settledAt: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() }, default: 0 },
     transcript: { fillable: true, required: true, validation: { rule: schema.string() }, type: 'text', default: '' },
     notice: { fillable: true, required: true, validation: { rule: schema.string() }, type: 'text', default: '' },

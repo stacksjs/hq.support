@@ -128,6 +128,27 @@ follows the configured account/model tariff. An operator invoice
 reconciliation workflow for unresolved AI usage is still required before broad
 managed voice rollout.
 
+### Review pending Realtime costs
+
+Use a Realtime-only credential for billed voice traffic. Set
+`OPENAI_REALTIME_API_KEY` together with `SUPPORT_REALTIME_BILLING_SCOPE`, a JSON
+object containing the provider's `organizationId`, `projectId`, and `apiKeyId`.
+Keep the key exclusive to this deployment’s voice streams. The media server
+retains a hash of those three identifiers and the observed stream interval.
+
+An operator can run `./buddy support:voice-cost-preview --file /private/realtime-cost.json`
+for a closed UTC day. The private input contains `format: "openai-realtime-costs-v1"`,
+`currency: "USD"`, `day` as `YYYY-MM-DD`, the same identifiers in `scope`, the
+`sourceSha256` of the reviewed provider export, and its total in whole USD
+microdollars as `costMicros`. Set `complete` and `exclusive` only after verifying
+all pages and line items for the dedicated key. Keep provider evidence outside
+source control.
+
+The preview proposes a wallet charge when the completed daily evidence matches
+exactly one eligible scoped call that fits within its hold. It reports other
+outcomes for review and leaves wallet and provider state untouched. Applying
+and correcting reviewed costs is tracked in [#88](https://github.com/stacksjs/hq.support/issues/88).
+
 ## API and browser controller
 
 All agent endpoints are under `/api/support/projects/{project}/phone` and use

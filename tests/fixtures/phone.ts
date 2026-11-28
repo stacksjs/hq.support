@@ -12,6 +12,8 @@ import { saveChannel } from '../../app/Support/channels'
 import { executeSupportTool } from '../../app/Support/tools'
 import { createArticle } from '../../app/Support/knowledge'
 import { recoverPhoneRevocations } from '../../app/Support/phone-agents'
+import { realtimeBillingScope } from '../../app/Support/voice-billing-scope'
+import { previewVoiceCosts } from '../../app/Support/voice-cost-preview'
 import { startVoiceServer } from '../../app/Support/voice-server'
 import type { RealtimeSocket } from '@stacksjs/ai/realtime'
 
@@ -193,7 +195,9 @@ try {
   const streamCapacity = Number(process.env.SUPPORT_TEST_VOICE_STREAMS ?? 4)
   assert.ok(Number.isSafeInteger(streamCapacity) && streamCapacity > 0 && streamCapacity <= 32)
   const realtimePeers: ProviderRealtimeSocket[] = []
-  mediaServer = await startVoiceServer({ port: 0, hostname: '127.0.0.1', maxStreams: streamCapacity, fetch: provider, realtimeSocket: () => {
+  const realtimeAuthorizations: (string | null)[] = []
+  mediaServer = await startVoiceServer({ port: 0, hostname: '127.0.0.1', maxStreams: streamCapacity, fetch: provider, realtimeSocket: (_url, headers) => {
+    realtimeAuthorizations.push(new Headers(headers).get('authorization'))
     realtime = new ProviderRealtimeSocket()
     realtimePeers.push(realtime)
     return realtime
@@ -481,9 +485,15 @@ try {
   assert.equal((await callback(tailId, 'consent', tailProvider, { Digits: '1' })).status, 200)
   const tailSocket = await openMedia(tailId)
   const tailPeerIndex = realtimePeers.length
+  const dedicatedBillingScope = { organizationId: 'org-fixture', projectId: 'proj_fixture', apiKeyId: 'key_fixture' }
+  process.env.OPENAI_REALTIME_API_KEY = 'fixture-dedicated-realtime-key'
+  process.env.SUPPORT_REALTIME_BILLING_SCOPE = JSON.stringify(dedicatedBillingScope)
   tailSocket.send(JSON.stringify({ event: 'connected', protocol: 'Call', version: '1.0.0' }))
   tailSocket.send(JSON.stringify({ event: 'start', sequenceNumber: '1', streamSid: tailStream, start: { streamSid: tailStream, accountSid, callSid: tailProvider.sid, tracks: ['inbound'], mediaFormat: { encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1 }, customParameters: { call: tailId, proof: createHmac('sha256', authToken).update(`hq-support-stream:${tailId}`).digest('hex') } } }))
   await until(() => realtimePeers[tailPeerIndex]?.sent.some(event => event.type === 'session.update'), 'the delayed-receipt fixture opens the native provider connection')
+  delete process.env.OPENAI_REALTIME_API_KEY
+  delete process.env.SUPPORT_REALTIME_BILLING_SCOPE
+  check(realtimeAuthorizations[tailPeerIndex] === 'Bearer fixture-dedicated-realtime-key', 'the scoped call uses the dedicated provider credential')
   const tailPeer = realtimePeers[tailPeerIndex]!
   const sendTailAudio = (frame: number) => tailSocket.send(JSON.stringify({ event: 'media', sequenceNumber: String(frame + 1), streamSid: tailStream, media: { track: 'inbound', chunk: String(frame), timestamp: String((frame - 1) * 20), payload } }))
   const tailFrames = () => tailPeer.sent.filter(event => event.type === 'input_audio_buffer.append').length
@@ -504,6 +514,21 @@ try {
   check((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [tailRow.ai_reservation_id]))?.status === 'reserved', 'the AI hold remains reserved')
   check((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [tailRow.reservation_id]))?.status === 'settled', 'the separate carrier cost still settles')
   check(tailSettlement.data.call.lastError === 'realtime_usage_pending', 'the operator can identify the unresolved AI usage')
+  const scopedCall = (await one('SELECT ai_billing_scope, ai_stream_opened_at, ai_stream_closed_at FROM support_phone_calls WHERE id = ?', [tailRow.id]))!
+  check(scopedCall.ai_billing_scope === realtimeBillingScope(dedicatedBillingScope), 'the signed stream retains its billing scope without the key')
+  check(Number(scopedCall.ai_stream_opened_at) > 0 && Number(scopedCall.ai_stream_closed_at) >= Number(scopedCall.ai_stream_opened_at), 'the scoped stream retains its observed interval')
+  const fixtureDay = '2026-01-01'
+  const fixtureStart = Date.parse(fixtureDay + 'T00:00:00Z')
+  await query('UPDATE support_phone_calls SET ai_stream_opened_at = ?, ai_stream_closed_at = ? WHERE id = ?', [fixtureStart + 1000, fixtureStart + 6000, tailRow.id])
+  const evidence = { format: 'openai-realtime-costs-v1', currency: 'USD', day: fixtureDay, scope: dedicatedBillingScope, sourceSha256: 'a'.repeat(64), exclusive: true, complete: true, costMicros: 20_000 }
+  const beforePreview = await one('SELECT * FROM support_wallet_reservations WHERE public_id = ?', [tailRow.ai_reservation_id])
+  const providerWritesBeforePreview = providerWrites
+  const preview = await previewVoiceCosts(evidence, fixtureStart + 86_400_000)
+  check(preview.state === 'matched' && preview.allocation.callId === tailId && /^[a-f0-9]{64}$/.test(preview.approval), 'the reviewed daily scope resolves exactly one call and returns an approval digest')
+  check((await previewVoiceCosts({ ...evidence, exclusive: false }, fixtureStart + 86_400_000)).state === 'incomplete_evidence', 'mixed provider workloads remain pending')
+  check((await previewVoiceCosts({ ...evidence, scope: { ...dedicatedBillingScope, projectId: 'proj_other' } }, fixtureStart + 86_400_000)).state === 'no_matching_calls', 'another provider project cannot claim the call')
+  assert.deepEqual(await one('SELECT * FROM support_wallet_reservations WHERE public_id = ?', [tailRow.ai_reservation_id]), beforePreview)
+  assert.equal(providerWrites, providerWritesBeforePreview)
   console.log(`PASS phone HTTP and media (${checks} checks)`)
   if (process.env.SUPPORT_PHONE_BROWSER_FIXTURE === '1') {
     const statePath = process.env.SUPPORT_PHONE_FIXTURE_STATE

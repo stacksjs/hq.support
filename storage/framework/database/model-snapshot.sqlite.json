@@ -5915,6 +5915,33 @@
             "isNullable": false,
             "hasDefault": true,
             "defaultValue": false
+          },
+          {
+            "name": "ai_billing_scope",
+            "type": "string",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": ""
+          },
+          {
+            "name": "ai_stream_opened_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
+          },
+          {
+            "name": "ai_stream_closed_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
           }
         ],
         "indexes": [
@@ -5946,6 +5973,14 @@
               "provider_sid"
             ],
             "type": "unique"
+          },
+          {
+            "name": "support_phone_call_ai_billing_scope",
+            "columns": [
+              "ai_billing_scope",
+              "ai_stream_opened_at"
+            ],
+            "type": "index"
           }
         ]
       },
@@ -10602,7 +10637,7 @@
       }
     ]
   },
-  "hash": "1666064854e4b70292ee35209ec207d325cc60b4aaf161bc297841b02f55e133",
+  "hash": "ca692187d28fa7758003984c9b21844a787c44c976dcaecdd77b058315d79cbf",
   "dialect": "sqlite",
-  "updatedAt": "2026-11-28T04:44:48.146Z"
+  "updatedAt": "2026-11-28T08:10:49.561Z"
 }
