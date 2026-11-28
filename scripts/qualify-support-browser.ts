@@ -83,7 +83,14 @@ interface LogEntry { text: string, source?: string, url?: string, networkRequest
 async function qualify(assets: string, path: '/proof' | '/loader-proof', viewport: { width: number, height: number }, label: string, scheme: 'light' | 'dark', localization: boolean) {
   if (stopping) throw new Error('Browser qualification interrupted')
   preview = await createWidgetPreview({ port: 0, assetsDirectory: assets, native: false })
-  const origin = preview.server.url.origin, url = origin + path + (localization && path === '/loader-proof' ? '?localization=1' : ''), policy = (await fetch(url)).headers.get('content-security-policy') || ''
+  const origin = preview.server.url.origin
+  const url = new URL(path, origin)
+  if (localization && path === '/loader-proof') {
+    url.searchParams.set('localization', '1')
+    // Distribution checks also qualify retained artifacts from older source.
+    if (!process.env.SUPPORT_BROWSER_ASSETS) url.searchParams.set('draftValidation', '1')
+  }
+  const policy = (await fetch(url)).headers.get('content-security-policy') || ''
   assert.ok(policy.includes("script-src 'self'") && !/unsafe-inline|unsafe-eval/.test(policy), 'Proof must run under a strict script CSP')
   const requests = new Map<string, RequestRecord>(), failures: string[] = [], forbidden: string[] = [], expectedFailures = new Set<string>(), logs: LogEntry[] = []
   browser = await launch({ headless: true, shared: false, viewport, chromePath: process.env.CHROME_PATH || process.env.BROWSE_BROWSER, args: process.platform === 'linux' ? ['--disable-dev-shm-usage', ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])] : [], startTimeoutMs: 60000, commandTimeoutMs: 20000 })
@@ -110,7 +117,7 @@ async function qualify(assets: string, path: '/proof' | '/loader-proof', viewpor
   await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `globalThis.__hqCompilerCsp = []; document.addEventListener('securitypolicyviolation', event => globalThis.__hqCompilerCsp.push({directive:event.violatedDirective,blocked:event.blockedURI}));` })
   let passed = false
   try {
-    assert.ok(await navigate(cdp, url, { quietMs: 100, timeoutMs: 20000 }), 'Plain host must settle')
+    assert.ok(await navigate(cdp, url.href, { quietMs: 100, timeoutMs: 20000 }), 'Plain host must settle')
     const expectedTitle = path === '/proof' ? 'All native widget checks passed' : 'All hosted loader checks passed'
     const proof = await waitFor(async () => {
       const state = await cdp.evaluate<{ title: string, checks: string[], violations: unknown[] }>(`({title:document.title,checks:[...document.querySelectorAll('#checks > *')].map(node=>node.textContent),violations:globalThis.__hqCompilerCsp})`)
@@ -122,6 +129,11 @@ async function qualify(assets: string, path: '/proof' | '/loader-proof', viewpor
     assert.deepEqual(proof.violations, [], 'No CSP violation may be hidden by proof completion')
     assert.deepEqual(failures, [], 'No unexpected failed HTTP requests')
     assert.deepEqual(forbidden, [], 'Browser fixture must not contact external services')
+    if (url.searchParams.has('draftValidation')) {
+      const sends = [...requests.values()].filter(request => request.method === 'POST' && /\/conversations(?:\/[^/]+\/messages)?$/.test(new URL(request.url).pathname))
+      assert.equal(sends.length, 2, 'Only the two corrected drafts reach the API')
+      assert.ok(sends.every(request => JSON.parse(request.postData || '{}').body?.trim()), 'No empty or whitespace-only draft reaches the API')
+    }
     assert.equal(expectedFailures.size, path === '/proof' ? 1 : 0, 'Only the explicit draft-preservation 503 is expected')
     const allowed = logs.filter(entry => entry.source === 'network' && expectedFailures.has(entry.networkRequestId || '')).map(entry => entry.text)
     const errors = [...cdp.errors]
@@ -151,7 +163,7 @@ try {
   await Bun.write(resolve(output, 'report.json'), JSON.stringify({ passed: false, version: manifest.version, reason: 'Qualification in progress' }, null, 2))
   const appearances = [
     { label: 'desktop', viewport: { width: 1280, height: 900 }, scheme: 'light' },
-    { label: 'mobile', viewport: { width: 390, height: 844 }, scheme: 'dark' },
+    { label: 'mobile', viewport: { width: process.env.SUPPORT_BROWSER_ASSETS ? 390 : 320, height: 844 }, scheme: 'dark' },
   ] as const
   for (const { label, viewport, scheme } of appearances) {
     for (const path of ['/proof', '/loader-proof'] as const) await qualify(assets, path, viewport, label, scheme, manifest.locales?.includes('ar') === true)

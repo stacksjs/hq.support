@@ -29,6 +29,7 @@ messenger:
   support: "Support"
   typing: "Support is typing…"
   message: "Your message"
+  messageRequired: "Enter a message."
   placeholder: "Write your message..."
   powered: "Powered by HQ.support"
   sending: "Sending…"
