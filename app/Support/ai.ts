@@ -6,7 +6,7 @@ import { insert, one, query, workspaceTransaction } from './database'
 import { fail, text } from './errors'
 import type { Plan } from './limits'
 import { billingPolicy, limitsFor, periodOf } from './limits'
-import { conversation, digest, enqueue, entitled, usage } from './service'
+import { assertConversationWritable, conversation, digest, enqueue, entitled, usage } from './service'
 import { localeOf, searchTerms } from './knowledge'
 import { retrieveKnowledge } from './knowledge-index'
 import { assertCopilotBudget, releaseCopilot, reserveCopilot, settleCopilot } from './copilot-budget'
@@ -78,6 +78,7 @@ export async function answerQuestion(project: Row, id: unknown, input: Row, acto
   const previous = await one('SELECT * FROM support_ai_runs WHERE project_id = ? AND actor_scope = ? AND key = ?', [project.id, scope, key])
   if (previous && previous.fingerprint !== fingerprint) fail(409, 'idempotency_conflict', 'This idempotency key was used with different input.')
   if (previous?.status === 'succeeded') return JSON.parse(String(previous.response)) as Answer
+  assertConversationWritable(thread)
   if (previous?.status === 'pending' && Number(previous.lease_until) > Date.now()) fail(409, 'ai_busy', 'An AI answer is already in progress. Retry with the same idempotency key.')
   // Reject exhausted budgets before spending provider resources on a query embedding.
   await workspaceTransaction(Number(project.workspace_id), async () => {
@@ -119,6 +120,7 @@ export async function answerQuestion(project: Row, id: unknown, input: Row, acto
       await release(running, 'lease_expired')
     }
     const current = await conversation(project, thread.id, customer), period = periodOf(), previousPeriod = String(current.ai_charged_period)
+    assertConversationWritable(current)
     let charged = false
     if (reservation && !customer) await reserveCopilot(Number(project.workspace_id), reservation, period)
     else if (reservation) {

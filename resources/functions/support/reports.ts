@@ -5,6 +5,7 @@ import { createSupportConsole } from './console'
 type Aggregate = { status?: string, author_type?: string, total: number | string }
 interface ProjectReport {
   conversations: Aggregate[]
+  consolidations?: { total: number, active: number }
   messages: Aggregate[]
   tickets: Aggregate[]
   messengerTimings: ReportTimings

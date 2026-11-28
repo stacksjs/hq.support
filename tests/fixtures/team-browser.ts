@@ -236,7 +236,7 @@ try {
   await evaluate(`document.querySelector('[aria-label="Refresh inbox"]').click()`); await waitFor(() => evaluate(`document.querySelector('[aria-label="Refresh inbox"]').disabled === false && !document.body.textContent.includes('Fixture inbox refresh failure.')`), 15000, { label: 'Refresh retry recovers' })
 
   const auditBeforeRetry = Number((await one('SELECT COUNT(*) AS count FROM support_assignment_audits WHERE conversation_id = ?', [conversations[2].id]))!.count)
-  await click('Retry automatic routing'); await waitFor(async () => Number((await one('SELECT COUNT(*) AS count FROM support_assignment_audits WHERE conversation_id = ?', [conversations[2].id]))!.count) > auditBeforeRetry, 15000, { label: 'Overflow retry persisted' }); await waitFor(() => evaluate(`document.querySelector('.routing-panel button[type="submit"]').disabled === false`), 15000, { label: 'Routing operation complete' }); await text('This conversation remains unassigned')
+  await click('Retry automatic routing'); await waitFor(async () => Number((await one('SELECT COUNT(*) AS count FROM support_assignment_audits WHERE conversation_id = ?', [conversations[2].id]))!.count) > auditBeforeRetry, 15000, { label: 'Overflow retry persisted' }); await waitFor(() => evaluate(`document.querySelector('section[aria-labelledby="assignment-heading"] form button[type="submit"]').disabled === false`), 15000, { label: 'Routing operation complete' }); await text('This conversation remains unassigned')
   check(Number((await one('SELECT assignee_id FROM support_conversations WHERE id = ?', [conversations[2].id]))!.assignee_id) === 0 && await evaluate(`document.querySelector('#reply').value === 'Unsent draft retained on refresh'`), 'honest overflow retry preserves draft and does not over-admit')
   failSend = true; await click('Send reply'); await text('Fixture transport failure.')
   check(await evaluate(`document.querySelector('#reply').value === 'Unsent draft retained on refresh'`), 'failed native HTTP send retains the unsent draft')
@@ -273,7 +273,7 @@ try {
   check(await evaluate(`document.querySelector('#customer-details').contains(document.activeElement) && document.activeElement.id !== 'customer-details-close'`), 'Shift-Tab wraps focus within the open assignment drawer')
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 }); await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 })
   check(await evaluate(`document.activeElement.id === 'customer-details-close'`), 'Tab wraps back to the drawer close button')
-  await input('#assignment-agent', '0'); await click('Save assignment'); await waitFor(async () => Number((await one('SELECT assignee_id FROM support_conversations WHERE id = ?', [conversations[2].id]))!.assignee_id) === 0, 10000, { label: 'Tablet unassignment persisted' }); await waitFor(() => evaluate(`document.querySelector('.routing-panel button[type="submit"]').disabled === false`), 10000, { label: 'Tablet routing completed' })
+  await input('#assignment-agent', '0'); await click('Save assignment'); await waitFor(async () => Number((await one('SELECT assignee_id FROM support_conversations WHERE id = ?', [conversations[2].id]))!.assignee_id) === 0, 10000, { label: 'Tablet unassignment persisted' }); await waitFor(() => evaluate(`document.querySelector('section[aria-labelledby="assignment-heading"] form button[type="submit"]').disabled === false`), 10000, { label: 'Tablet routing completed' })
   await input('#assignment-agent', String(agent.id)); await click('Save assignment'); await waitFor(async () => Number((await one('SELECT assignee_id FROM support_conversations WHERE id = ?', [conversations[2].id]))!.assignee_id) === agent.id, 10000, { label: 'Tablet assignment persisted' })
   check(await evaluate(`document.querySelector('#reply').value === 'Draft retained through rejected assignment and narrow drawer'`), 'tablet assignment uses actual native admission without clearing the private reply draft')
   await evaluate(`document.querySelector('.customer-backdrop').click()`); await panelClosed()
@@ -321,10 +321,15 @@ try {
   const siblingRecord = (await http(`/v1/projects/${sibling.public_id}/conversations`, 'POST', { externalId: 'sibling-customer', subject: 'Sibling-only request', body: 'archivedsecretneedle', idempotencyKey: 'sibling-search' }, siblingKeys.ingestKey)).data.conversation
   await navigate(cdp, origin + '/app', { quietMs: 100, timeoutMs: 20000 }); await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 50`), 15000, { label: 'Initial native fifty-conversation page' })
   check(!await evaluate(`document.body.textContent.includes('Archive case 000')`), 'historical body-only target is outside the initial fifty loaded conversations')
-  const searchInput = '[aria-label="Search subjects and messages"]'
+  const searchInput = '[aria-label="Search conversations"]'
   const beforeShort = searchTraffic.length
   await input(searchInput, 'n'); await text('Enter at least 2 characters'); await Bun.sleep(400)
   check(searchTraffic.length === beforeShort && await evaluate(`document.querySelectorAll('.conversation-row').length === 0`), 'one-character input shows validation without querying or silently falling back to all conversations')
+  const exactId = '#' + oldBody.id
+  await input(searchInput, exactId)
+  await text('Exact conversation ID in this project.')
+  await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 1 && document.querySelector('.conversation-row strong')?.textContent === 'Archive case 000'`), 15000, { label: 'Exact native conversation ID lookup' })
+  check(searchTraffic.at(-1)?.q === exactId, 'pasting the displayed ID finds exactly the historical conversation through native search')
   await input(searchInput, 'archivedsecretneedle'); await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 1 && document.querySelector('.conversation-row strong')?.textContent === 'Archive case 000' && document.querySelector('[aria-label="Refresh inbox"]').disabled === false`), 15000, { label: 'Historical server search result' })
   check(await evaluate(`document.querySelectorAll('.conversation-row').length === 1`) && searchTraffic.at(-1)?.q === 'archivedsecretneedle', 'server search returns an old body-only match without client subject filtering or sibling-project leakage')
   await selectConversation('Archive case 000'); await input('#reply', 'Private draft retained while searching persisted history')

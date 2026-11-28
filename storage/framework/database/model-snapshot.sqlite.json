@@ -991,6 +991,14 @@
             "isUnique": false,
             "isNullable": true,
             "hasDefault": false
+          },
+          {
+            "name": "merged_into_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": true,
+            "hasDefault": false
           }
         ],
         "indexes": [
@@ -10436,10 +10444,165 @@
             "type": "index"
           }
         ]
+      },
+      {
+        "table": "support_conversation_merges",
+        "columns": [
+          {
+            "name": "id",
+            "type": "bigint",
+            "isPrimaryKey": true,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "workspace_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false,
+            "references": {
+              "table": "support_workspaces",
+              "column": "id"
+            }
+          },
+          {
+            "name": "project_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false,
+            "references": {
+              "table": "support_projects",
+              "column": "id"
+            }
+          },
+          {
+            "name": "secondary_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false,
+            "references": {
+              "table": "support_conversations",
+              "column": "id",
+              "onDelete": "cascade"
+            }
+          },
+          {
+            "name": "primary_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false,
+            "references": {
+              "table": "support_conversations",
+              "column": "id",
+              "onDelete": "cascade"
+            }
+          },
+          {
+            "name": "merged_by",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "previous_status",
+            "type": "enum",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false,
+            "enumValues": [
+              "open",
+              "closed",
+              "snoozed"
+            ]
+          },
+          {
+            "name": "previous_routing_reason",
+            "type": "string",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "previous_snoozed_until",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": true,
+            "hasDefault": false
+          },
+          {
+            "name": "undone_by",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": true,
+            "hasDefault": false
+          },
+          {
+            "name": "undone_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": true,
+            "hasDefault": false
+          },
+          {
+            "name": "created_at",
+            "type": "datetime",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": "UTC_TIMESTAMP"
+          },
+          {
+            "name": "updated_at",
+            "type": "datetime",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": true,
+            "hasDefault": false
+          }
+        ],
+        "indexes": [
+          {
+            "name": "support_merge_secondary",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "secondary_id",
+              "undone_at"
+            ],
+            "type": "index"
+          },
+          {
+            "name": "support_merge_primary",
+            "columns": [
+              "workspace_id",
+              "project_id",
+              "primary_id",
+              "undone_at"
+            ],
+            "type": "index"
+          }
+        ]
       }
     ]
   },
-  "hash": "992b1ce650776b9351be80abc8589fb0952280c3d67cb8ada97dda63a9ad1600",
+  "hash": "1666064854e4b70292ee35209ec207d325cc60b4aaf161bc297841b02f55e133",
   "dialect": "sqlite",
-  "updatedAt": "2026-11-28T00:08:46.435Z"
+  "updatedAt": "2026-11-28T04:44:48.146Z"
 }

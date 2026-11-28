@@ -1,10 +1,10 @@
 # Conversation search
 
-Authenticated workspace agents can pass `q` to `GET /api/support/projects/{project}/inbox`. The query must contain 2 to 200 characters. It searches the persisted subject or an existing message body, including internal notes available to that agent. Results use the ordinary conversation summary, without message snippets, and compose with `status`, `inboxId`, `limit` (1 to 100) and the returned `cursor`. Ordering remains descending conversation ID; incoming conversations do not shift an existing keyset page. The inbox route permits 120 requests per minute under native rate limiting.
+Authenticated workspace agents can pass `q` to `GET /api/support/projects/{project}/inbox`. Text queries contain 2 to 200 characters and search the persisted subject and message bodies, including internal notes available to the agent. A positive integer also matches its conversation ID. Prefix the number with `#` for an exact ID lookup. Encode that prefix as `%23` in an API URL. Results use the ordinary conversation summary and compose with `status`, `inboxId`, `limit` (1 to 100), and the returned `cursor`. Ordering remains descending conversation ID. Incoming conversations do not shift an existing keyset page. The inbox route permits 120 requests per minute under native rate limiting.
 
 Authorization resolves current native membership on every request. The outer conversation, matching messages and unread projections bind workspace and project together. Sibling projects are separate search scopes, even for the same owner. Anonymous visitors, customer sessions and server summary read keys cannot use transcript search. Client-supplied workspace, author or visibility values do not widen the search. Repeated query parameters, oversized input and malformed cursors are refused. All query values travel as SQL parameters.
 
-PostgreSQL uses its native `simple` full-text parser and `plainto_tsquery` against subjects and bodies. SQLite development uses case-insensitive literal substring matching, with no wildcard expansion. The response's `search.mode` is `fulltext` or `lexical`, respectively. These are deliberately reported as different retrieval modes; stemming, fuzzy search and semantic search are not claimed. Search invokes no AI provider and consumes no hosted AI allowance.
+PostgreSQL uses its native `simple` full-text parser and `plainto_tsquery` against subjects and bodies. SQLite uses case-insensitive literal substring matching. The response's `search.mode` is `fulltext` or `lexical`, respectively, and `id` for an explicit conversation ID lookup. Search invokes no AI provider and consumes no hosted AI allowance.
 
 The retained HTTP test runs against disposable SQLite and PostgreSQL databases. It covers historical body matches, private notes, summary-only output, same-workspace sibling and cross-workspace isolation, removed membership, malformed input, SQL punctuation, pagination during incoming traffic, and status/inbox composition. A deliberately inconsistent message tenant ID cannot create a match. The existing core and SDK suites cover the unchanged unsearched list contract.
 
@@ -13,12 +13,12 @@ Production search load and index qualification remain launch gates. This slice e
 ## Inbox search interface
 
 The inbox searches its selected project after 300 ms without another edit.
-Queries must contain 2–200 characters. One-character or oversized input shows
-validation and sends no list request; it does not silently fall back to all
-conversations. Empty or whitespace-only input omits `q` and restores the
-unsearched list with the current status and team-inbox filters. The help text
-distinguishes literal matches from full-text word matches using the server's
-reported mode.
+Paste the ID as shown in the inbox, such as `#123`, to open a result for that
+conversation. A positive number also works in ordinary search. A
+one-character text query or oversized input shows validation and sends no
+list request. Empty or whitespace-only input omits `q` and restores the list
+with the current status and team-inbox filters. The help text describes the
+server's current search mode.
 
 Every edit invalidates the old list generation immediately, before debounce.
 The controller aborts its prior list request and clears its cursor. Responses

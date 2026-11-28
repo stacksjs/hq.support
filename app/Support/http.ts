@@ -15,8 +15,9 @@ import { requireWidgetOrigin } from './widget-origin'
 import { projectReports } from './reports'
 
 type SavedReplyOperation = 'saved-replies.list' | 'saved-replies.create' | 'saved-replies.update' | 'saved-replies.archive'
+type ConversationMergeOperation = 'conversation.merge' | 'conversation.merge.undo' | 'conversation.merge.links'
 
-export type Operation = SavedReplyOperation | 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'agent.presence' | 'agent.typing' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.session.revoke' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.typing' | 'widget.presence' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.create' | 'widget.tickets.detail' | 'widget.ticket-types' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
+export type Operation = SavedReplyOperation | ConversationMergeOperation | 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'agent.presence' | 'agent.typing' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.session.revoke' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.typing' | 'widget.presence' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.create' | 'widget.tickets.detail' | 'widget.ticket-types' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
 
 const response = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } })
 function bearer(request: RequestInstance): string { return /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') || '')?.[1] ?? '' }
@@ -132,6 +133,19 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
     }
     else if (operation === 'messages.create' || operation === 'agent.reply' || operation === 'widget.reply') { body = operation === 'agent.reply' ? await (await import('./managed-channels')).createChannelReply(project, params.id, data, Number(account?.id)) : operation === 'widget.reply' ? await workspaceTransaction(Number(project.workspace_id), async () => await support.reply(project, params.id, data, { customer: await support.customer(project, bearer(request)), acceptedAt })) : await support.reply(project, params.id, data, { customer: person, userId: account?.id }); status = 201 }
     else if (operation === 'conversation.update') body = await support.updateConversation(project, params.id, data, account!.id)
+    else if (operation === 'conversation.merge.links') {
+      const search = new URL(request.url).searchParams
+      if ([...search.keys()].some(name => name !== 'before') || search.getAll('before').length !== 1) fail(422, 'invalid_query', 'Use the duplicate cursor from the previous page.')
+      const before = String(identifier(search.get('before')))
+      const row = await support.conversation(project, params.id)
+      const { conversationMergeDetails } = await import('./conversation-merge')
+      body = { merge: await conversationMergeDetails(project, row, before) }
+    }
+    else if (operation === 'conversation.merge' || operation === 'conversation.merge.undo') {
+      const { mergeConversation, undoConversationMerge } = await import('./conversation-merge')
+      const mutate = operation === 'conversation.merge' ? mergeConversation : undoConversationMerge
+      body = await mutate(project, params.id, data, account!.id)
+    }
     else if (operation === 'keys.create') { await support.member(account!.id, Number(project.workspace_id), ['owner', 'admin']); body = await (await import('./credentials')).createProjectKeys(project, account!.id, data.idempotencyKey); status = 201 }
     else if (operation === 'projects.settings') {
       await support.member(account!.id, Number(project.workspace_id), ['owner', 'admin'])

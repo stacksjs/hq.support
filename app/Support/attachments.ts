@@ -5,7 +5,7 @@ import { insert, one, query, workspaceTransaction } from './database'
 import type { Plan } from './limits'
 import { limitsFor } from './limits'
 import { fail, identifier, text } from './errors'
-import { conversation, entitled, secret } from './service'
+import { assertConversationWritable, conversation, entitled, secret } from './service'
 
 function view(row: Row) {
   return { id: String(row.id), conversationId: String(row.conversation_id), fileName: String(row.file_name), mimeType: String(row.mime_type), bytes: Number(row.bytes), status: String(row.status), visibility: String(row.visibility) }
@@ -37,6 +37,7 @@ export async function upload(project: Row, conversationId: unknown, file: File, 
       if (!['reserved', 'failed'].includes(String(existing.status))) fail(409, 'attachment_state', 'Attachment is no longer writable.')
       if (Number(existing.lease_until) > Date.now()) fail(409, 'upload_in_progress', 'This attachment is already uploading. Retry shortly.')
     }
+    assertConversationWritable(await conversation(project, conversationId, customer))
     const charge = !existing || existing.status === 'failed'
     if (charge && quota.storageBytes !== null && Number(workspace.storage_bytes) + bytes.byteLength > quota.storageBytes) fail(402, 'storage_limit', 'Attachment storage allowance reached.')
     if (charge) await query('UPDATE support_workspaces SET storage_bytes = storage_bytes + ? WHERE id = ?', [bytes.byteLength, workspaceId])
@@ -89,6 +90,7 @@ export async function remove(project: Row, id: unknown) {
   const row = await attachment(project, id)
   await workspaceTransaction(Number(project.workspace_id), async () => {
     const current = await attachment(project, id)
+    if (current.status === 'stored') assertConversationWritable(await conversation(project, current.conversation_id))
     if (!['stored', 'deleting'].includes(String(current.status)) || Number(current.lease_until) > Date.now()) fail(409, 'upload_in_progress', 'Complete or recover the upload before removing it.')
     await query("UPDATE support_attachments SET status = 'deleting' WHERE id = ? AND project_id = ?", [row.id, project.id])
   })

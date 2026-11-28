@@ -15,6 +15,12 @@ export async function admitCustomerReply(project: Row, original: Row, customer: 
     if (depth >= 64 || visited.has(Number(row.id))) fail(409, 'conversation_lineage_invalid', 'Request history cannot be safely followed. Contact the support team.')
     visited.add(Number(row.id))
     if (Number(row.workspace_id) !== Number(project.workspace_id) || Number(row.contact_id) !== Number(customer.id)) fail(404, 'not_found', 'Conversation not found.')
+    if (row.merged_into_id) {
+      const { activeConversationMerge } = await import('./conversation-merge')
+      const merge = await activeConversationMerge(project, row)
+      row = await conversation(project, merge.primary_id, customer)
+      continue
+    }
     if (!row.continuation_id) break
     const next = await conversation(project, row.continuation_id, customer)
     if (Number(next.continued_from_id) !== Number(row.id)) fail(409, 'conversation_lineage_invalid', 'Request history cannot be safely followed. Contact the support team.')
