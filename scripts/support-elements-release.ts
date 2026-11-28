@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, rm, copyFile, lstat } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, rm, copyFile, lstat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { retainLibraryRelease } from '@stacksjs/actions/library/release-artifacts'
@@ -109,9 +109,13 @@ export async function releaseCommand(mode: string, artifact: string, version: st
     assert.equal((await lstat(native)).isSymbolicLink(), false, 'Use the published native build tools, not a workspace link')
     const nativeVersion = (await Bun.file(resolve(native, 'package.json')).json()).version
     assert.ok(Bun.semver.satisfies(nativeVersion, '>=0.75.581'), 'Install the released native component export and publisher fixes before preparing a candidate')
+    assert.ok((await lstat(generated)).isDirectory(), 'Expected a generated public library directory')
     const files = await directoryPayload(generated); inspectPayload(files, version)
     const proof = await Bun.file(resolve(root, 'storage/framework/runtime/support-browser/report.json')).json()
     assert.equal(proof.passed, true); assert.equal(proof.results.length, 4)
+    // These validated library files are public, non-executable assets. Bun
+    // preserves their modes in the archive, so use one mode across build hosts.
+    await Promise.all([...files.keys()].map(path => chmod(resolve(generated, path), 0o644)))
     await rm(artifact, { recursive: true, force: true }); await mkdir(artifact, { recursive: true })
     await command([process.execPath, 'pm', 'pack', '--filename', resolve(artifact, 'package.tgz'), '--ignore-scripts'], generated)
     const archive = new Uint8Array(await Bun.file(resolve(artifact, 'package.tgz')).arrayBuffer()), packaged = await archivePayload(archive)
