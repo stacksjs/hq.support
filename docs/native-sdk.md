@@ -5,6 +5,30 @@ and the framework's default Support/SessionAction, with native authentication,
 real HTTP routes and disposable SQLite/PostgreSQL databases. These are wire
 contract tests, not substitutes for browser rendering or live-provider tests.
 
+## Install in a Stacks app
+
+Run these commands from the consuming app. Use `./buddy` if the repository
+includes a launcher.
+
+| What you need | Command |
+| --- | --- |
+| Install the SDK using the app's existing pin or Buddy's framework version | `buddy support:install --sdk-only` |
+| Install a specific published SDK version reproducibly | `buddy support:install --sdk-only --sdk-version 0.75.712` |
+| Connect a project through HQ.support approval | `buddy support:install` |
+| Connect and explicitly mount the identified Messenger | `buddy support:install --messenger` |
+| Check project configuration and read access | `buddy support:doctor` |
+
+SDK-only installation updates the consuming app's runtime dependencies and
+lockfile. It requires neither credentials nor a project connection. Commit the
+manifest and lockfile together. Use `@stacksjs/support/server` for server calls,
+`@stacksjs/support/browser` for customer-scoped sessions, and
+`@stacksjs/support/testing` for deterministic fixtures.
+
+The separately published `@stacksjs/support-elements` browser package provides
+standalone web components. Install an exact tested version of that package when
+you need the components in a site without Stacks. The Buddy Messenger command
+uses the hosted Messenger and the server-issued customer session.
+
 ## Session expiry and identity
 
 `POST /api/v1/projects/{project}/sessions` requires the project's write key and

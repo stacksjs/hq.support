@@ -50,6 +50,9 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
+      - name: Qualify the published Support SDK in a clean Buddy app
+        timeout-minutes: 4
+        run: bun --no-env-file scripts/qualify-native-support-sdk.ts
       - run: ./buddy key:generate
       - run: ./buddy generate:auto-imports
       - run: bun scripts/build-support-elements.ts
