@@ -2,7 +2,7 @@
 
 The minimal npm distribution is `@stacksjs/support-elements`: five native stx custom elements, per-element ESM/declarations/CSS, the self-registering bundle, SSR helpers and Custom Elements Manifest. The hosted `createSupport` lazy loader remains a separate public asset. The publication checks require its native bundle to match the npm bundle exactly. No new loader facade is invented inside this npm package.
 
-The public `alpha` tag currently points to `0.1.0-alpha.1`. The reviewed `0.1.0-alpha.5` candidate includes inline themes, keyboard focus, placeholder contrast, locale and typing updates, and customer transcript pagination. Package versions are independent of the site version. The publication workflow defaults to verification and dry run. Select `publish` after the npm maintainer approves the Trusted Publisher. [Publication tracker](https://github.com/stacksjs/hq.support/issues/30)
+The public `alpha` tag currently points to `0.1.0-alpha.1`. The `0.1.0-alpha.6` candidate adds prompt agent typing updates in the open Messenger. It also includes the earlier inline themes, keyboard focus, placeholder contrast, locale updates, and customer transcript pagination. Package versions are independent of the site version. The publication workflow defaults to verification and dry run. Select `publish` after the npm maintainer approves the Trusted Publisher. [Publication tracker](https://github.com/stacksjs/hq.support/issues/30)
 
 ## Native fixes and publisher choice
 

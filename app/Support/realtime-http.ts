@@ -11,7 +11,7 @@ import type { Row, WorkspaceTransaction } from './database'
 import { one, query, replayOperatorTransaction, workspaceTransaction } from './database'
 import { boundedEnvelope, boundedPage, customerProjectionLimits } from './customer-projection'
 import { fail, identifier, SupportError } from './errors'
-import { customerTypingChannel, maxTypingStreams, supportTypingInvalidations } from './inbox-presence'
+import { customerTypingChannel, maxReplyTypingStreams, maxTypingStreams, replyTypingChannel, supportReplyTypingInvalidations, supportTypingInvalidations } from './inbox-presence'
 import { agentReplayChannel, customerReplayChannel, supportReplayInvalidations, supportReplayStore } from './replay'
 import { conversation, conversations, detail, digest, member, project } from './service'
 
@@ -21,15 +21,17 @@ const caps = { project: 1536, workspace: 2048, operator: 3072 } as const
 const json = (body: unknown, status = 200) => Response.json(boundedEnvelope(body), { status, headers: { 'Cache-Control': 'no-store' } })
 const snapshotRequired = (status = 409, body: Row = {}) => json({ ...body, cursor: null, snapshotRequired: true }, status)
 interface Principal { project: Row, person?: Row, agentId?: number, channel: string, origin: string }
-const typingStreams = new Map<symbol, { workspaceId: number, agentId: number }>()
+const typingStreams = new Map<symbol, { workspaceId: number, ownerId: number }>()
+const replyTypingStreams = new Map<symbol, { workspaceId: number, ownerId: number }>()
 
-function reserveTypingStream(workspaceId: number, agentId: number) {
-  const workspace = [...typingStreams.values()].filter(value => value.workspaceId === workspaceId)
-  if (typingStreams.size >= maxTypingStreams || workspace.length >= 128 || workspace.filter(value => value.agentId === agentId).length >= 4)
-    fail(429, 'typing_stream_limit', 'Typing stream capacity is in use. The inbox will keep refreshing.')
+function reserveTypingStream(workspaceId: number, ownerId: number, widget: boolean) {
+  const streams = widget ? replyTypingStreams : typingStreams
+  const workspace = [...streams.values()].filter(value => value.workspaceId === workspaceId)
+  if (streams.size >= (widget ? maxReplyTypingStreams : maxTypingStreams) || workspace.length >= (widget ? 1024 : 128) || workspace.filter(value => value.ownerId === ownerId).length >= 4)
+    fail(429, 'typing_stream_limit', 'Typing stream capacity is in use. The conversation will keep refreshing.')
   const slot = Symbol('typing stream')
-  typingStreams.set(slot, { workspaceId, agentId })
-  return () => { typingStreams.delete(slot) }
+  streams.set(slot, { workspaceId, ownerId })
+  return () => { streams.delete(slot) }
 }
 
 function exactOrigin(value: unknown): value is string {
@@ -213,34 +215,43 @@ async function stream(request: RequestInstance, widget: boolean, principal: Prin
   return response.status === 200 ? response : json({ error: { code: 'realtime_unavailable', message: 'Realtime stream could not be opened.' } }, response.status)
 }
 
-export async function handleCustomerTypingStream(request: RequestInstance): Promise<Response> {
+export async function handleTypingStream(request: RequestInstance, widget: boolean): Promise<Response> {
+  let principal: Principal | undefined
   let release: (() => void) | undefined
   try {
     if (new URL(request.url).search) fail(422, 'invalid_input', 'Typing streams do not take query parameters.')
-    const principal = await authority(request, false)
-    const selected = await conversation(principal.project, request.getParam('id'))
-    release = reserveTypingStream(Number(principal.project.workspace_id), principal.agentId!)
+    const original = await authority(request, widget)
+    principal = original
+    const selected = await conversation(original.project, request.getParam('id'), original.person)
+    release = reserveTypingStream(Number(original.project.workspace_id), Number(original.person?.id ?? original.agentId), widget)
     const authorize = async () => {
-      await authority(request, false, principal)
-      await conversation(principal.project, selected.id)
+      const current = await authority(request, widget, original)
+      await conversation(current.project, selected.id, current.person)
       return true
     }
     createBroadcastHub()
     const result = await createBroadcastResponse({
-      channels: [customerTypingChannel(principal.project, selected.id)],
-      invalidations: supportTypingInvalidations(), signal: AbortSignal.any([request.signal, AbortSignal.timeout(600_000)]),
+      channels: [widget ? replyTypingChannel(selected.id) : customerTypingChannel(original.project, selected.id)],
+      invalidations: widget ? supportReplyTypingInvalidations() : supportTypingInvalidations(), signal: AbortSignal.any([request.signal, AbortSignal.timeout(600_000)]),
       heartbeatMs: 15_000, maxPending: 8, onClose: release,
       authorize: () => authorize().catch(() => false),
     })
     if (!result.ok) release()
     try { await authorize() }
     catch (error) { await result.body?.cancel(); throw error }
+    if (widget) { result.headers.set('Access-Control-Allow-Origin', original.origin); result.headers.set('Vary', 'Origin') }
     return result
   }
   catch (error) {
     release?.()
     const status = error instanceof SupportError ? error.status : typeof error === 'object' && error && 'statusCode' in error && error.statusCode === 403 ? 403 : 503
-    return json({ error: { code: error instanceof SupportError ? error.code : 'typing_stream_unavailable', message: 'Typing updates could not be streamed.' } }, status)
+    const result = json({ error: { code: error instanceof SupportError ? error.code : 'typing_stream_unavailable', message: 'Typing updates could not be streamed.' } }, status)
+    if (widget && principal) {
+      try { const current = await authority(request, true, principal); result.headers.set('Access-Control-Allow-Origin', current.origin) }
+      catch { /* A stale origin or session cannot authorize this response. */ }
+      result.headers.set('Vary', 'Origin')
+    }
+    return result
   }
 }
 
