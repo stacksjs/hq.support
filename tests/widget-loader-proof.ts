@@ -12,6 +12,7 @@ function check(condition: unknown, name: string) {
 try {
   const query = new URLSearchParams(location.search)
   const localization = query.get('localization') === '1'
+  const draftValidation = query.get('draftValidation') === '1'
   const url = query.get('native') ? 'http://127.0.0.1:4411/support.js' : '/support.js'
   const module = await import(url)
   check(!customElements.get('hq-support-messenger'), 'loader import is lazy and does not register elements')
@@ -51,12 +52,37 @@ try {
     second.open()
     await other.updateComplete
     check(other.shadowRoot.querySelector('section').lang === 'de' && other.shadowRoot.querySelector('h2').textContent === 'Wie können wir helfen?', 'a separate Messenger can open in German')
+    if (draftValidation) {
+      for (const [widget, message] of [[messenger, 'Enter a message.'], [other, 'Geben Sie eine Nachricht ein.']] as const) {
+        const shadow: ShadowRoot = widget.shadowRoot
+        const field = shadow.querySelector<HTMLTextAreaElement>('#support-body')!
+        field.form!.requestSubmit()
+        await widget.updateComplete
+        const currentField = shadow.querySelector<HTMLTextAreaElement>('#support-body')!
+        const errorId = currentField.getAttribute('aria-describedby')
+        const error = errorId && shadow.getElementById(errorId)
+        const send = shadow.querySelector<HTMLButtonElement>('#support-send')!
+        check(currentField.required && currentField.getAttribute('aria-invalid') === 'true' && error && error.textContent?.trim() === message && shadow.activeElement === currentField, 'empty composer shows localized inline feedback and keeps focus')
+        check(error && error.getBoundingClientRect().height > 0 && error.getBoundingClientRect().bottom <= send.getBoundingClientRect().top, 'required feedback leaves Send visible below the message')
+        check(!widget.conversationId, 'an empty submission creates no conversation')
+      }
+      const floating = messenger.shadowRoot.querySelector('#support-body') as HTMLTextAreaElement
+      floating.value = '   '
+      floating.dispatchEvent(new Event('input', { bubbles: true }))
+      floating.form!.requestSubmit()
+      await messenger.updateComplete
+      check(messenger.shadowRoot.querySelector('#support-body').getAttribute('aria-invalid') === 'true' && !messenger.conversationId, 'whitespace keeps the required feedback and creates no conversation')
+    }
     const conversation = () => messenger.shadowRoot.querySelector('section') as HTMLElement
     const composer = conversation().querySelector<HTMLTextAreaElement>('#support-body')!
     composer.focus()
     composer.value = 'مرحبا بالدعم'
     composer.setSelectionRange(1, 4)
     composer.dispatchEvent(new Event('input', { bubbles: true }))
+    if (draftValidation) {
+      await messenger.updateComplete
+      check(conversation().querySelector('#support-body')?.getAttribute('aria-invalid') === 'false' && !conversation().querySelector('#support-body-error')?.textContent?.trim(), 'a corrected draft clears required feedback')
+    }
     const session = messenger.sessionToken
     await first.update({ locale: 'ar' })
     await messenger.updateComplete
@@ -86,6 +112,19 @@ try {
     try { await first.update({ locale: 'fr' }) }
     catch { unknownLocale = true }
     check(unknownLocale && conversation().lang === 'en', 'unsupported locales leave the current conversation and language intact')
+    if (draftValidation) {
+      const inline = other.shadowRoot.querySelector('#support-body') as HTMLTextAreaElement
+      inline.value = 'Eine Nachricht aus dem eingebetteten Formular.'
+      inline.dispatchEvent(new Event('input', { bubbles: true }))
+      await other.updateComplete
+      const corrected = other.shadowRoot.querySelector('#support-body') as HTMLTextAreaElement
+      check(corrected.getAttribute('aria-invalid') === 'false' && !other.shadowRoot.querySelector('#support-body-error')?.textContent?.trim(), 'corrected inline draft clears feedback')
+      const delivery = new Promise(resolve => other.addEventListener('delivery', resolve, { once: true }))
+      corrected.form!.requestSubmit()
+      await delivery
+      await other.updateComplete
+      check(other.thread.some((message: { body: string }) => message.body === 'Eine Nachricht aus dem eingebetteten Formular.'), 'the inline composer delivers a corrected message')
+    }
   }
   first.close()
   await messenger.updateComplete

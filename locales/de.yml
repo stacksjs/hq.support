@@ -29,6 +29,7 @@ messenger:
   support: "Support"
   typing: "Der Support schreibt gerade …"
   message: "Ihre Nachricht"
+  messageRequired: "Geben Sie eine Nachricht ein."
   placeholder: "Nachricht schreiben …"
   powered: "Bereitgestellt von HQ.support"
   sending: "Wird gesendet …"
