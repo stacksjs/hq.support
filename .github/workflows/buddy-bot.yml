@@ -107,7 +107,19 @@ jobs:
 
       - name: Update the dependency dashboard
         if: ${{ github.event.schedule == '15 */2 * * *' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run && contains(fromJSON('["all", "dashboard"]'), inputs.job)) }}
-        run: bunx @buddysh/buddy dashboard
+        run: |
+          # Buddy #1467 corrects Bun advisory detection. Use the verified
+          # Pantry commit archive until the fix reaches the npm release.
+          dashboard_dir="$(mktemp -d "$RUNNER_TEMP/hq-buddy-dashboard.XXXXXX")"
+          (
+            cd "$dashboard_dir"
+            curl --fail --silent --show-error --location --retry 3 --max-time 30 \
+              'https://registry.pantry.dev/@buddysh/buddy@05abd20' --output buddy.tgz
+            printf '%s  buddy.tgz\n' '149ea097697e79d9add81f578aa9cfd415fdcaf25c409a1aef1f0bbabfaa2c0b' | sha256sum --check
+            printf '%s\n' '{"private":true,"dependencies":{"@buddysh/buddy":"./buddy.tgz"}}' > package.json
+            bun install --ignore-scripts
+          )
+          bun --no-env-file "$dashboard_dir/node_modules/@buddysh/buddy/dist/bin/entry.js" dashboard
 
       - name: Report the planned dashboard refresh
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && contains(fromJSON('["all", "dashboard"]'), inputs.job) }}
