@@ -321,10 +321,15 @@ try {
   const siblingRecord = (await http(`/v1/projects/${sibling.public_id}/conversations`, 'POST', { externalId: 'sibling-customer', subject: 'Sibling-only request', body: 'archivedsecretneedle', idempotencyKey: 'sibling-search' }, siblingKeys.ingestKey)).data.conversation
   await navigate(cdp, origin + '/app', { quietMs: 100, timeoutMs: 20000 }); await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 50`), 15000, { label: 'Initial native fifty-conversation page' })
   check(!await evaluate(`document.body.textContent.includes('Archive case 000')`), 'historical body-only target is outside the initial fifty loaded conversations')
-  const searchInput = '[aria-label="Search subjects and messages"]'
+  const searchInput = '[aria-label="Search conversations"]'
   const beforeShort = searchTraffic.length
   await input(searchInput, 'n'); await text('Enter at least 2 characters'); await Bun.sleep(400)
   check(searchTraffic.length === beforeShort && await evaluate(`document.querySelectorAll('.conversation-row').length === 0`), 'one-character input shows validation without querying or silently falling back to all conversations')
+  const exactId = '#' + oldBody.id
+  await input(searchInput, exactId)
+  await text('Exact conversation ID in this project.')
+  await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 1 && document.querySelector('.conversation-row strong')?.textContent === 'Archive case 000'`), 15000, { label: 'Exact native conversation ID lookup' })
+  check(searchTraffic.at(-1)?.q === exactId, 'pasting the displayed ID finds exactly the historical conversation through native search')
   await input(searchInput, 'archivedsecretneedle'); await waitFor(() => evaluate(`document.querySelectorAll('.conversation-row').length === 1 && document.querySelector('.conversation-row strong')?.textContent === 'Archive case 000' && document.querySelector('[aria-label="Refresh inbox"]').disabled === false`), 15000, { label: 'Historical server search result' })
   check(await evaluate(`document.querySelectorAll('.conversation-row').length === 1`) && searchTraffic.at(-1)?.q === 'archivedsecretneedle', 'server search returns an old body-only match without client subject filtering or sibling-project leakage')
   await selectConversation('Archive case 000'); await input('#reply', 'Private draft retained while searching persisted history')

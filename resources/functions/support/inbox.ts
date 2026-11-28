@@ -242,7 +242,12 @@ export function createInbox() {
   }
   function syncRouting(item: Conversation) { routingInbox.set(String(item.inbox_id || 0)); routingAssignee.set(String(item.assignee_id || 0)) }
   function listPath(cursor?: string | null, limit?: number) { const query = new URLSearchParams(); if (search().trim()) query.set('q', search().trim()); if (inboxFilter()) query.set('inboxId', inboxFilter()); if (filter() !== 'all') query.set('status', filter()); if (cursor) query.set('cursor', cursor); if (limit) query.set('limit', String(limit)); return `/api/support/projects/${encodeURIComponent(project())}/inbox?${query}` }
-  function queryIssue() { return search().length > 200 ? 'Search is limited to 200 characters.' : search().trim().length === 1 ? 'Enter at least 2 characters to search subjects and messages.' : '' }
+  function queryIssue() {
+    const query = search().trim()
+    if (search().length > 200) return 'Search is limited to 200 characters.'
+    if (query.length === 1 && !/^[1-9]$/.test(query)) return 'Enter at least 2 characters to search subjects and messages.'
+    return ''
+  }
   function cancelList() { generation++; listController?.abort(); listController = undefined; visibleListRequest?.abort(); visibleListRequest = undefined; debouncedSearch.cancel() }
   const debouncedSearch = useDebounce(() => { if (!disposed) void refresh() }, 300)
   function searchChanged() {
