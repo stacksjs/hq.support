@@ -12,6 +12,7 @@ export { createCustomerSatisfaction } from '../../../resources/functions/support
 export { createCustomerTyping } from '../../../resources/functions/support/customer-typing'
 export { createInboxLocale } from '../../../resources/functions/support/inbox-locale'
 export { createInboxPresence } from '../../../resources/functions/support/inbox-presence'
+export { createInboxReplay } from '../../../resources/functions/support/inbox-replay'
 export { createInbox } from '../../../resources/functions/support/inbox'
 export { createKnowledge } from '../../../resources/functions/support/knowledge'
 export { createSupport, supportLayoutCss, support } from '../../../resources/functions/support/loader'

@@ -11,4 +11,4 @@ route.post('/support/projects/{project}/phone/calls/{call}/reconcile', phoneActi
 route.post('/support/projects/{project}/phone/calls/{call}/takeover', phoneAction('takeover', 'POST')).middleware('auth')
 route.post('/support/projects/{project}/phone/token', phoneAction('token', 'POST')).middleware('auth').rateLimit(10, 'minute')
 route.post('/phone/channels/{channel}/incoming', phoneAction('incoming', 'POST')).skipCsrf().rateLimit(120, 'minute')
-for (const operation of ['instructions', 'status', 'consent', 'agent', 'dial-complete', 'wait'] as const) route.post(`/phone/calls/{call}/${operation}`, phoneAction(operation, 'POST')).skipCsrf().rateLimit(300, 'minute')
+for (const operation of ['instructions', 'status', 'consent', 'agent', 'agent-progress', 'dial-complete', 'wait'] as const) route.post(`/phone/calls/{call}/${operation}`, phoneAction(operation, 'POST')).skipCsrf().rateLimit(300, 'minute')

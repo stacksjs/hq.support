@@ -149,6 +149,22 @@ initialization happens on unrelated console pages. Register, incoming/accept,
 mute, reject/disconnect, refresh, microphone failure and destroy are explicit
 controller states. Page/project/channel changes must destroy the previous device.
 
+## Agent deprovisioning
+
+SCIM deactivation and deletion persist a phone revocation with the workspace
+membership change. The Stacks worker ends only provider children belonging to
+that workspace, parent call, and browser identity. It cancels ringing legs and
+completes connected ones. A reactivated agent can accept a new call. The old
+dial stays revoked.
+
+The signed Client progress callback records the child SID, including delayed
+delivery after deactivation. The worker can also look up children under an
+active pre-upgrade parent. A lost provider response stays in the journal until
+the exact child reaches a verified terminal state. The scheduled worker
+recovers persisted revocations after process restarts. Completed child records
+feed the original cost settlement. The parent follows its existing Dial
+completion instructions when the scoped child disconnects.
+
 ## Qualification and remaining work
 
 `tests/feature/phone.test.ts` starts native HTTP auth/routes, generated migrations,
@@ -157,15 +173,16 @@ Realtime transport. Only external Twilio HTTP and OpenAI socket peers are
 injected. It tests signed callback/media boundaries, explicit consent, concurrent
 single-attempt writes, exact spend ceilings, uncertain result recovery, public
 knowledge isolation, ticket replay/audit, playback cancellation, and parent/child
-actual cost settlement. The optional localhost browser fixture keeps the same
+actual cost settlement. The SCIM fixture also verifies scoped leg termination,
+a held recovery lease, and recovery in a fresh worker process. The optional localhost browser fixture keeps the same
 native HTTP/SQL server alive; the official Device can be substituted only in the
 native test compile.
 
 Live caller speech-to-text, US/Canada number purchase, direct outbound human-browser dialing, a full IVR
 editor, advanced call queues/hold, voicemail, raw recordings, provider recording
 retention, live provider account approval, real microphone/PSTN interoperability,
-operator reconciliation for unresolved AI invoices, and immediate provider-leg
-termination when a native membership is revoked remain unfinished. Provider
+operator reconciliation for unresolved AI invoices, and live verification of
+phone deprovisioning remain unfinished. Provider
 callbacks are ordered and deduplicated, but full operational replay/reconciliation
 UI and long-term transcript retention need their own acceptance. Enterprise
 closed-thread content retention includes completed call transcripts and tool-result

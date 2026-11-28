@@ -1,13 +1,14 @@
 import type { RequestInstance } from '@stacksjs/types'
 import type { Row } from './database'
 import type { PhoneDependencies } from './phone-config'
-import { digest, member } from './service'
+import { digest } from './service'
 import { processInbound, receiveInbound } from './delivery'
 import { fail } from './errors'
 import { one, insert, query, workspaceTransaction } from './database'
 import { inboundChannel, phoneContext, prepareCall, publicPhoneCall, terminalCall } from './phone'
 import { SqlPhoneJournal } from './phone-journal'
 import { phoneOrigin, phoneProvider, streamToken } from './phone-config'
+import { authorizePhoneAgentDial, phoneAgentIdentity, recordPhoneAgentProgress, rememberPhoneChild } from './phone-agents'
 
 async function fields(request: RequestInstance) {
   if (!request.rawBody) fail(400, 'raw_body_required', 'The original voice form is required.')
@@ -30,7 +31,9 @@ async function consentInstructions(call: Row) {
   response.hangup()
   return xml(response.toString())
 }
-export async function phoneWebhook(request: RequestInstance, operation: 'incoming' | 'instructions' | 'status' | 'consent' | 'agent' | 'dial-complete' | 'wait', dependencies: PhoneDependencies = {}) {
+export type PhoneWebhookOperation = 'incoming' | 'instructions' | 'status' | 'consent' | 'agent' | 'agent-progress' | 'dial-complete' | 'wait'
+
+export async function phoneWebhook(request: RequestInstance, operation: PhoneWebhookOperation, dependencies: PhoneDependencies = {}) {
   const form = await fields(request)
   let call: Row
   if (operation === 'incoming') {
@@ -52,6 +55,10 @@ export async function phoneWebhook(request: RequestInstance, operation: 'incomin
   call = await publicPhoneCall(request.getParam('call'))
   const context = await phoneContext(call)
   const callback = await authenticate(request, form, context.credentials, `/api/phone/calls/${call.public_id}/${operation}`, String(call.callback_origin))
+  if (operation === 'agent-progress') {
+    await recordPhoneAgentProgress(call, form, callback)
+    return new Response(null, { status: 204 })
+  }
   if ((call.provider_sid && callback.callSid !== call.provider_sid) || callback.from !== call.from_number || callback.to !== call.to_number) fail(403, 'phone_call_mismatch', 'Provider callback does not match this call.')
   if (!call.provider_sid) {
     await workspaceTransaction(Number(call.workspace_id), async () => {
@@ -91,7 +98,7 @@ export async function phoneWebhook(request: RequestInstance, operation: 'incomin
   if (operation === 'wait' || operation === 'agent') {
     const { default: twilio } = await import('twilio')
     const response = new twilio.twiml.VoiceResponse()
-    const remaining = Math.floor((Number(call.deadline_at) - Date.now()) / 1000)
+    let remaining = Math.floor((Number(call.deadline_at) - Date.now()) / 1000)
     if (remaining <= 0 || terminalCall(call.status)) { response.hangup(); return xml(response.toString()) }
     if (operation === 'wait') {
       response.say('A human has been requested. Please wait briefly while an agent joins.')
@@ -100,10 +107,16 @@ export async function phoneWebhook(request: RequestInstance, operation: 'incomin
       response.hangup()
     }
     else {
-      if (!call.assigned_agent_id) fail(409, 'agent_not_assigned', 'No authenticated agent is assigned.')
-      await member(Number(call.assigned_agent_id), Number(call.workspace_id))
-      const client = response.dial({ timeLimit: remaining, timeout: 20, callerId: String(context.credentials.fromNumber), action: `${call.callback_origin}/api/phone/calls/${call.public_id}/dial-complete`, method: 'POST' }).client()
-      client.identity(`w${call.workspace_id}.p${call.project_id}.u${call.assigned_agent_id}`)
+      const authorized = await authorizePhoneAgentDial(String(call.public_id), Number(call.workspace_id))
+      remaining = Math.floor((Number(authorized.call.deadline_at) - Date.now()) / 1000)
+      if (remaining <= 0 || terminalCall(authorized.call.status)) { response.hangup(); return xml(response.toString()) }
+      const callbackBase = `${call.callback_origin}/api/phone/calls/${call.public_id}`
+      const client = response.dial({ timeLimit: remaining, timeout: 20, callerId: String(context.credentials.fromNumber), action: callbackBase + '/dial-complete', method: 'POST' }).client({
+        statusCallback: callbackBase + '/agent-progress',
+        statusCallbackEvent: ['ringing', 'answered', 'completed'],
+        statusCallbackMethod: 'POST',
+      })
+      client.identity(phoneAgentIdentity(call, authorized.agentId))
       client.parameter({ name: 'call', value: String(call.public_id) })
     }
     return xml(response.toString())
@@ -111,11 +124,7 @@ export async function phoneWebhook(request: RequestInstance, operation: 'incomin
   if (operation === 'dial-complete') {
     const child = form.get('DialCallSid')
     if (!child || !/^CA[a-f0-9]{32}$/i.test(child)) fail(422, 'invalid_call_receipt', 'Provider child call receipt is required.')
-    await workspaceTransaction(Number(call.workspace_id), async () => {
-      const fingerprint = digest(`dial:${child}`)
-      if (!await one('SELECT id FROM support_phone_events WHERE call_id = ? AND digest = ?', [call.id, fingerprint])) await insert('support_phone_events', { workspace_id: call.workspace_id, call_id: call.id, digest: fingerprint, sequence: -1, status: 'dial-complete', payload: JSON.stringify({ childSid: child }) })
-      await query('UPDATE support_phone_calls SET child_sid = ? WHERE id = ? AND workspace_id = ?', [child, call.id, call.workspace_id])
-    })
+    await workspaceTransaction(Number(call.workspace_id), () => rememberPhoneChild(call, child))
     const { voiceResponse } = await import('@stacksjs/telephony')
     return xml(voiceResponse([{ type: 'hangup' }]))
   }

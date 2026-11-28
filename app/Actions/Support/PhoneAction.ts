@@ -1,16 +1,17 @@
 import { Action } from '@stacksjs/actions/runtime'
+import type { PhoneWebhookOperation } from '../../Support/phone-webhooks'
 import type { PhoneDependencies } from '../../Support/phone-config'
 import type { RequestInstance } from '@stacksjs/types'
 import { SupportError, fail } from '../../Support/errors'
 import { agentProject, object } from '../../Support/service'
 import { query } from '../../Support/database'
 
-export type PhoneOperation = 'capabilities' | 'list' | 'detail' | 'verify' | 'create' | 'end' | 'reconcile' | 'token' | 'takeover' | 'incoming' | 'instructions' | 'status' | 'consent' | 'agent' | 'dial-complete' | 'wait'
+export type PhoneOperation = 'capabilities' | 'list' | 'detail' | 'verify' | 'create' | 'end' | 'reconcile' | 'token' | 'takeover' | PhoneWebhookOperation
 async function handle(request: RequestInstance, operation: PhoneOperation, dependencies: PhoneDependencies) {
   try {
-    if (['incoming', 'instructions', 'status', 'consent', 'agent', 'dial-complete', 'wait'].includes(operation)) {
+    if (['incoming', 'instructions', 'status', 'consent', 'agent', 'agent-progress', 'dial-complete', 'wait'].includes(operation)) {
       const { phoneWebhook } = await import('../../Support/phone-webhooks')
-      return await phoneWebhook(request, operation as 'incoming' | 'instructions' | 'status' | 'consent' | 'agent' | 'dial-complete' | 'wait', dependencies)
+      return await phoneWebhook(request, operation as PhoneWebhookOperation, dependencies)
     }
     const account = await request.user()
     if (!account) fail(401, 'unauthorized', 'Sign in to continue.')

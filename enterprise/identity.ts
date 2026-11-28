@@ -6,6 +6,7 @@ import { insert, one, query, workspaceTransaction } from '../app/Support/databas
 import { fail, identifier, text } from '../app/Support/errors'
 import { digest, object, secret, workspace } from '../app/Support/service'
 import { requireEnterprise } from './license'
+import { revokePhoneAgentDials } from '../app/Support/phone-agents'
 import { limitsFor } from '../app/Support/limits'
 import type { Plan } from '../app/Support/limits'
 
@@ -148,6 +149,7 @@ export async function setProvisionedActive(workspaceId: number, principal: Row, 
     // Native credentials belong to the human account, across workspaces.
     // Every workspace API rechecks membership, so revocation stops this
     // workspace immediately without signing the human out elsewhere.
+    if (!active && row.membership_user_id) await revokePhoneAgentDials(workspaceId, Number(row.membership_user_id))
 
     if (deleted) await query('UPDATE support_enterprise_identities SET deleted_at = ? WHERE id = ? AND workspace_id = ?', [Date.now(), row.id, workspaceId])
     await audit(workspaceId, null, active ? 'scim.user.reactivated' : 'scim.user.revoked', row.id)

@@ -17,6 +17,7 @@ export default function (): void {
   schedule.job('ReopenSnoozedConversations').everyMinute().onQueue('support-workflows').withoutOverlapping().onOneServer()
   schedule.job('RunSupportImport').everyMinute().onQueue('support-imports').withoutOverlapping().onOneServer()
   schedule.job('RunChannelDelivery').everyMinute().onQueue('support-channels').withoutOverlapping().onOneServer()
+  schedule.job('EndRevokedPhoneLegs').everyMinute().onQueue('support-workflows').withoutOverlapping().onOneServer()
   schedule.job('RunTicketSla').everyMinute().onQueue('support-sla').withoutOverlapping().onOneServer()
   schedule.job('RunSupportEmail').everyMinute().onQueue('support-email').withoutOverlapping().onOneServer()
   schedule.job('IndexSupportKnowledge').everyMinute().onQueue('support-knowledge').withoutOverlapping().onOneServer()

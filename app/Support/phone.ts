@@ -117,7 +117,7 @@ export async function prepareCall(project: Row, input: Row, actorId: number | nu
     return await insert('support_phone_calls', {
       workspace_id: project.workspace_id, project_id: project.id, channel_id: channel.id, public_id: publicId, operation_key: operation, fingerprint, actor_id: actorId, contact_id: person.id, conversation_id: thread.conversation.id,
       provider_sid: options.inboundSid ?? null, direction: options.inboundSid ? 'inbound' : 'outbound', from_number: options.inboundSid ? destination.number : owned.number, to_number: options.inboundSid ? owned.number : destination.number, country: destination.country,
-      mode, status: options.inboundSid ? 'ringing' : 'pending', provider_state: options.inboundSid ? 'succeeded' : 'pending', max_duration_seconds: maximum, reservation_id: providerReservation.public_id, ai_reservation_id: aiReservation.public_id,
+      mode, tracks_agent_dials: true, status: options.inboundSid ? 'ringing' : 'pending', provider_state: options.inboundSid ? 'succeeded' : 'pending', max_duration_seconds: maximum, reservation_id: providerReservation.public_id, ai_reservation_id: aiReservation.public_id,
       reserved_cents: reserved, ai_reserved_cents: aiReserved, stream_state: 'pending', stream_digest: digest(streamToken(String(credentials.authToken), publicId)), notice: String(credentials.recordingNotice || 'This call uses an AI assistant. Assistant responses are saved as text. Press 1 to consent, or hang up.'), callback_origin: origin,
     })
   })
@@ -169,6 +169,10 @@ export async function takeOverPhoneCall(project: Row, reference: string, userId:
   await workspaceTransaction(Number(call.workspace_id), async () => {
     await member(userId, Number(call.workspace_id))
     const current = await publicPhoneCall(reference)
+    if (terminalCall(current.status) || Number(current.consent_at) <= 0 || Number(current.deadline_at) <= Date.now())
+      fail(409, 'call_ended', 'This call cannot be transferred.')
+    const dial = await one('SELECT revoked_at FROM support_phone_agent_dials WHERE workspace_id = ? AND call_id = ? AND agent_id = ?', [call.workspace_id, current.id, userId])
+    if (Number(dial?.revoked_at) > 0) fail(403, 'forbidden', 'Phone access for this agent has been revoked.')
     const unusedAi = current.stream_state === 'pending'
     await query("UPDATE support_phone_calls SET assigned_agent_id = ?, mode = 'agent', transfer_at = ?, ai_cost_micros = ?, stream_state = ? WHERE id = ? AND workspace_id = ?", [userId, Date.now(), unusedAi ? 0 : current.ai_cost_micros, unusedAi ? 'handed-off' : current.stream_state, call.id, call.workspace_id])
   })

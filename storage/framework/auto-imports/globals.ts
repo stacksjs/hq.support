@@ -25,6 +25,7 @@ declare global {
   const createCustomerTyping: typeof autoImports.createCustomerTyping
   const createInboxLocale: typeof autoImports.createInboxLocale
   const createInboxPresence: typeof autoImports.createInboxPresence
+  const createInboxReplay: typeof autoImports.createInboxReplay
   const createInbox: typeof autoImports.createInbox
   const createKnowledge: typeof autoImports.createKnowledge
   const createSupport: typeof autoImports.createSupport

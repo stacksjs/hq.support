@@ -5899,6 +5899,15 @@
             "isUnique": false,
             "isNullable": true,
             "hasDefault": false
+          },
+          {
+            "name": "tracks_agent_dials",
+            "type": "boolean",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": false
           }
         ],
         "indexes": [
@@ -10293,10 +10302,149 @@
             "type": "index"
           }
         ]
+      },
+      {
+        "table": "support_phone_agent_dials",
+        "columns": [
+          {
+            "name": "id",
+            "type": "bigint",
+            "isPrimaryKey": true,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "workspace_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false,
+            "references": {
+              "table": "support_workspaces",
+              "column": "id"
+            }
+          },
+          {
+            "name": "call_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "agent_id",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": false
+          },
+          {
+            "name": "revoked_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
+          },
+          {
+            "name": "finished_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
+          },
+          {
+            "name": "available_at",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
+          },
+          {
+            "name": "lease_until",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
+          },
+          {
+            "name": "progress_revision",
+            "type": "bigint",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": 0
+          },
+          {
+            "name": "last_error",
+            "type": "string",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": ""
+          },
+          {
+            "name": "created_at",
+            "type": "datetime",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": false,
+            "hasDefault": true,
+            "defaultValue": "UTC_TIMESTAMP"
+          },
+          {
+            "name": "updated_at",
+            "type": "datetime",
+            "isPrimaryKey": false,
+            "isUnique": false,
+            "isNullable": true,
+            "hasDefault": false
+          }
+        ],
+        "indexes": [
+          {
+            "name": "support_phone_agent_dial_scope",
+            "columns": [
+              "call_id",
+              "agent_id"
+            ],
+            "type": "unique"
+          },
+          {
+            "name": "support_phone_agent_dial_membership",
+            "columns": [
+              "workspace_id",
+              "agent_id"
+            ],
+            "type": "index"
+          },
+          {
+            "name": "support_phone_agent_dial_due",
+            "columns": [
+              "finished_at",
+              "available_at",
+              "lease_until"
+            ],
+            "type": "index"
+          }
+        ]
       }
     ]
   },
-  "hash": "f01440b9c7f0a827d07c16d8c40668f4422547c797b5ad69184afb6075f111bc",
+  "hash": "a8d9ed353310e443ccf56048fabc83303a2628d3d8c86835b02f852347b48a7d",
   "dialect": "postgres",
-  "updatedAt": "2026-11-27T19:29:58.490Z"
+  "updatedAt": "2026-11-28T00:08:49.792Z"
 }

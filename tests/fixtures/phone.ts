@@ -4,12 +4,14 @@ import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { config, overridesReady } from '@stacksjs/config'
 import { injectGlobalAutoImports } from '@stacksjs/server'
 import { route } from '@stacksjs/router'
+import { assertIsolatedOk, runIsolated } from '@stacksjs/testing/isolated'
 import { phoneAction } from '../../app/Actions/Support/PhoneAction'
 import { one, query } from '../../app/Support/database'
 import { configureWalletLimits } from '../../app/Support/billing'
 import { saveChannel } from '../../app/Support/channels'
 import { executeSupportTool } from '../../app/Support/tools'
 import { createArticle } from '../../app/Support/knowledge'
+import { recoverPhoneRevocations } from '../../app/Support/phone-agents'
 import { startVoiceServer } from '../../app/Support/voice-server'
 import type { RealtimeSocket } from '@stacksjs/ai/realtime'
 
@@ -22,7 +24,10 @@ await injectGlobalAutoImports()
 await route.importRoutes()
 const accountSid = `AC${'a'.repeat(32)}`, numberSid = `PN${'b'.repeat(32)}`, apiKeySid = `SK${'c'.repeat(32)}`, authToken = 'fixture-voice-secret'
 let providerWrites = 0, providerCreates = 0, failure: 'uncertain' | 'rejected' | undefined
+let lostEndForChild: string | undefined
+let observeOnParentRead: { sid: string, run: () => Promise<void> } | undefined
 const calls = new Map<string, Record<string, unknown>>()
+const hiddenListChildren = new Set<string>()
 const provider = async (url: string, init?: RequestInit) => {
   assert.ok(url.startsWith(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}/`))
   assert.equal(new Headers(init?.headers).get('authorization'), 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64'))
@@ -31,6 +36,12 @@ const provider = async (url: string, init?: RequestInit) => {
     if (method === 'GET') return Response.json({ incoming_phone_numbers: [{ sid: numberSid, phone_number: '+14155550100', voice_url: null }] })
     providerWrites++
     return Response.json({ sid: numberSid, phone_number: '+14155550100', voice_url: body.get('VoiceUrl'), voice_method: body.get('VoiceMethod') })
+  }
+  const list = new URL(url)
+  if (list.pathname.endsWith('/Calls.json') && method === 'GET') {
+    const parent = list.searchParams.get('ParentCallSid')
+    assert.ok(parent && calls.has(parent))
+    return Response.json({ calls: [...calls.values()].filter(call => call.parent_call_sid === parent && !hiddenListChildren.has(String(call.sid))) })
   }
   const create = url.endsWith('/Calls.json') && method === 'POST'
   if (create) {
@@ -47,9 +58,19 @@ const provider = async (url: string, init?: RequestInit) => {
   const sid = /\/Calls\/(CA[a-f0-9]{32})\.json$/.exec(url)?.[1]
   const call = sid ? calls.get(sid) : undefined
   if (!call) return Response.json({}, { status: 404 })
+  const observation = observeOnParentRead
+  if (method === 'GET' && observation && observation.sid === sid) {
+    observeOnParentRead = undefined
+    await observation.run()
+  }
   if (method === 'POST') {
     providerWrites++
-    if (body.has('Status')) call.status = body.get('Status')
+    if (body.has('Status')) {
+      if (call.status === 'ringing') assert.equal(body.get('Status'), 'canceled')
+      if (call.status === 'in-progress') assert.equal(body.get('Status'), 'completed')
+      call.status = body.get('Status')
+      if (call.sid === lostEndForChild) { lostEndForChild = undefined; throw new Error('Simulated response loss after ending the child') }
+    }
     if (body.has('TimeLimit')) call.time_limit = Number(body.get('TimeLimit'))
   }
   return Response.json(call)
@@ -62,7 +83,7 @@ for (const [suffix, operation] of [['verify', 'verify'], ['calls', 'create'], ['
 for (const operation of ['end', 'reconcile', 'takeover'] as const) route.post(`/api/_phone/projects/{project}/calls/{call}/${operation}`, phoneAction(operation, 'POST', dependencies)).middleware('auth')
 route.get('/api/_phone/projects/{project}/capabilities', phoneAction('capabilities', 'GET', dependencies)).middleware('auth')
 route.get('/api/_phone/projects/{project}/calls', phoneAction('list', 'GET', dependencies)).middleware('auth')
-for (const operation of ['instructions', 'status', 'consent', 'agent', 'dial-complete', 'wait'] as const) route.post(`/api/_phone/calls/{call}/${operation}`, phoneAction(operation, 'POST', dependencies)).skipCsrf()
+for (const operation of ['instructions', 'status', 'consent', 'agent', 'agent-progress', 'dial-complete', 'wait'] as const) route.post(`/api/_phone/calls/{call}/${operation}`, phoneAction(operation, 'POST', dependencies)).skipCsrf()
 route.post('/api/_phone/channels/{channel}/incoming', phoneAction('incoming', 'POST', dependencies)).skipCsrf()
 const server = await route.serve({ port: 0, hostname: '127.0.0.1' }), base = `http://127.0.0.1:${server.port}/api`
 let checks = 0, csrf = '', cookie = ''
@@ -253,7 +274,7 @@ try {
   check((await request(`${path}/calls/${handoffId}/takeover`, 'POST', {}, outsider)).status === 403, 'foreign account cannot take over a phone call')
   check((await request(`${path}/calls/${handoffId}/takeover`, 'POST', {}, owner)).status === 200, 'native authenticated agent claims bounded phone handoff')
   const agentInstructions = await callback(handoffId, 'agent', parentCall)
-  check(agentInstructions.status === 200 && agentInstructions.text.includes(`<Client><Identity>w${workspace.id}.p${project.id}.u${user!.id}</Identity>`) && agentInstructions.text.includes('timeLimit='), `handoff TwiML uses server-derived browser identity and duration ${agentInstructions.text}`)
+  check(agentInstructions.status === 200 && agentInstructions.text.includes(`<Identity>w${workspace.id}.p${project.id}.u${user!.id}</Identity>`) && agentInstructions.text.includes('timeLimit='), `handoff TwiML uses server-derived browser identity and duration ${agentInstructions.text}`)
   const childSid = 'CA' + 'e'.repeat(32)
   calls.set(childSid, { sid: childSid, from: '+14155550100', to: `client:w${workspace.id}.p${project.id}.u${user!.id}`, parent_call_sid: parentCall.sid, direction: 'outbound-dial', status: 'completed', duration: '20', price: '-0.005000', price_unit: 'USD' })
   parentCall.status = 'completed'; parentCall.duration = '30'; parentCall.price = '-0.010000'; parentCall.price_unit = 'USD'
@@ -265,6 +286,125 @@ try {
   process.env.SUPPORT_DEPLOYMENT_MODE = 'hosted'
   await query("UPDATE support_workspaces SET plan = 'enterprise' WHERE id = ?", [workspace.id])
   await query("UPDATE support_conversations SET status = 'closed', updated_at = ? WHERE id = ? AND workspace_id = ?", [new Date(Date.now() - 100 * 86400000).toISOString(), stored!.conversation_id, workspace.id])
+  const directoryPath = `/support/workspaces/${workspace.id}/enterprise`
+  const scimPath = `/scim/v2/${workspace.id}/Users`
+  const revokedEmail = 'phone-deprovisioned@example.test'
+  const scopedAgent = await nativeAccount(revokedEmail)
+  const directoryUser = await one('SELECT id FROM users WHERE email = ?', [revokedEmail])
+  assert.ok(directoryUser)
+  assert.equal((await request(directoryPath + '/provider', 'POST', { protocol: 'oidc', issuer: 'https://directory.example.test', clientId: 'owned-phone-fixture' }, owner)).status, 201)
+  const directoryToken = (await request(directoryPath + '/scim-tokens', 'POST', {}, owner)).data.token
+  assert.ok(directoryToken)
+  const provisioned = await request(scimPath, 'POST', { userName: revokedEmail, externalId: 'phone-agent', active: true }, directoryToken)
+  assert.equal(provisioned.status, 201)
+  await query("UPDATE support_memberships SET user_id = ?, status = 'active' WHERE workspace_id = ? AND email = ?", [directoryUser.id, workspace.id, revokedEmail])
+  const activeLeg = await request(path + '/calls', 'POST', { ...input, idempotencyKey: 'native-membership-revocation', to: '+16135550104' }, owner)
+  assert.equal(activeLeg.status, 201)
+  const legId = activeLeg.data.call.id
+  const callRow = await one('SELECT * FROM support_phone_calls WHERE public_id = ?', [legId])
+  assert.ok(callRow)
+  const providerLeg = calls.get(String(callRow.provider_sid))
+  assert.ok(providerLeg)
+  assert.equal((await callback(legId, 'consent', providerLeg, { Digits: '1' })).status, 200)
+  assert.equal((await request(`${path}/calls/${legId}/takeover`, 'POST', {}, scopedAgent)).status, 200)
+  const connectedInstructions = await callback(legId, 'agent', providerLeg)
+  assert.equal(connectedInstructions.status, 200)
+  assert.ok(connectedInstructions.text.includes('<Client '))
+  providerLeg.status = 'in-progress'
+  const browserLeg = { sid: 'CA' + 'f'.repeat(32), from: '+14155550100', to: `client:w${workspace.id}.p${project.id}.u${directoryUser.id}`, parent_call_sid: providerLeg.sid, direction: 'outbound-dial', status: 'in-progress' }
+  const peerLeg = { ...browserLeg, sid: 'CA' + 'a'.repeat(32), to: `client:w${workspace.id}.p${project.id}.u${user!.id}` }
+  calls.set(browserLeg.sid, browserLeg)
+  calls.set(peerLeg.sid, peerLeg)
+  const ringingLeg = { ...browserLeg, sid: 'CA' + 'b'.repeat(32), status: 'ringing' }
+  calls.set(ringingLeg.sid, ringingLeg)
+  assert.ok(connectedInstructions.text.includes('agent-progress'))
+  const legacyCreated = await request(path + '/calls', 'POST', { ...input, idempotencyKey: 'legacy-reassigned-dial', to: '+16135550105' }, owner)
+  assert.equal(legacyCreated.status, 201)
+  const legacyId = legacyCreated.data.call.id
+  const legacyCall = await one('SELECT * FROM support_phone_calls WHERE public_id = ?', [legacyId])
+  assert.ok(legacyCall)
+  await query('UPDATE support_phone_calls SET tracks_agent_dials = ? WHERE id = ?', [false, legacyCall.id])
+  const legacyParent = calls.get(String(legacyCall.provider_sid))
+  assert.ok(legacyParent)
+  assert.equal((await callback(legacyId, 'consent', legacyParent, { Digits: '1' })).status, 200)
+  assert.equal((await request(`${path}/calls/${legacyId}/takeover`, 'POST', {}, owner)).status, 200)
+  legacyParent.status = 'in-progress'
+  const legacyChild = { ...browserLeg, sid: 'CA' + '6'.repeat(32), parent_call_sid: legacyParent.sid, status: 'in-progress' }
+  calls.set(legacyChild.sid, legacyChild)
+  const requestsBeforeRevocation = providerWrites
+  const revoked = await request(scimPath + '/' + provisioned.data.id, 'PATCH', { schemas: ['urn:ietf:params:scim:api:messages:2.0:PatchOp'], Operations: [{ op: 'replace', path: 'active', value: false }] }, directoryToken)
+  assert.equal(revoked.status, 200)
+  assert.equal(revoked.data.active, false)
+  assert.equal((await callback(legId, 'agent', providerLeg)).status, 403)
+  const revocation = await one('SELECT * FROM support_phone_agent_dials WHERE call_id = ? AND agent_id = ?', [callRow.id, directoryUser.id])
+  check(Number(revocation?.revoked_at) > 0, 'SCIM persists an agent-specific dial revocation before provider writes')
+  check(providerWrites === requestsBeforeRevocation, 'the native directory transaction commits without waiting on provider operations')
+  const nativeQueued = await one("SELECT id FROM jobs WHERE queue = 'support-workflows' AND payload LIKE ?", ['%EndRevokedPhoneLegs%'])
+  check(nativeQueued, 'SCIM dispatches the native provider cleanup job')
+  const repeated = await request(scimPath + '/' + provisioned.data.id, 'PUT', { userName: revokedEmail, active: false }, directoryToken)
+  check(repeated.status === 200, 'repeat deactivation is accepted')
+  check(Number((await one('SELECT COUNT(*) AS total FROM support_phone_agent_dials WHERE call_id = ? AND agent_id = ?', [callRow.id, directoryUser.id]))?.total) === 1, 'repeat deactivation reuses one persisted intent')
+  assert.equal((await callback(legId, 'agent-progress', browserLeg, { ParentCallSid: 'CA' + '7'.repeat(32) })).status, 403)
+  assert.equal((await callback(legId, 'agent-progress', browserLeg, { ParentCallSid: String(providerLeg.sid) }, false)).status, 401)
+  // A child progress callback queued before revocation can arrive after the directory transaction.
+  assert.equal((await callback(legId, 'agent-progress', browserLeg, { ParentCallSid: String(providerLeg.sid) })).status, 204)
+  hiddenListChildren.add(browserLeg.sid)
+  lostEndForChild = browserLeg.sid
+  await recoverPhoneRevocations(dependencies)
+  check(browserLeg.status === 'completed' && ringingLeg.status === 'canceled' && peerLeg.status === 'in-progress', 'the worker terminates connected and ringing legs for the revoked identity and preserves the other agent')
+  check(legacyChild.status === 'completed', 'the worker also recovers an exact previous-agent leg on an untracked legacy parent')
+  check(providerWrites === requestsBeforeRevocation + 3, 'each scoped leg receives a single provider operation')
+  const uncertainEnd = await one("SELECT id FROM support_phone_operations WHERE key LIKE ? AND state = 'uncertain'", ['%:revoke-agent:%'])
+  check(uncertainEnd, 'the lost response is journaled as uncertain')
+  providerLeg.status = 'completed'
+  const lateLeg = { ...browserLeg, sid: 'CA' + '5'.repeat(32), status: 'ringing' }
+  hiddenListChildren.add(lateLeg.sid)
+  observeOnParentRead = { sid: String(providerLeg.sid), async run() {
+    calls.set(lateLeg.sid, lateLeg)
+    assert.equal((await callback(legId, 'agent-progress', lateLeg, { ParentCallSid: String(providerLeg.sid) })).status, 204)
+  } }
+  const peerServer = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+    const url = new URL(request.url)
+    return provider('https://api.twilio.com' + url.pathname + url.search, { method: request.method, headers: request.headers, body: request.method === 'POST' ? await request.text() : undefined })
+  } })
+  try {
+    const restart = async () => {
+      const result = await runIsolated('tests/fixtures/phone-revocation-worker.ts', { env: { SUPPORT_TEST_PHONE_PROVIDER: peerServer.url.origin }, envFile: false, preload: [], timeoutMs: 12000 })
+      assertIsolatedOk(result, 'PASS native phone revocation recovery')
+    }
+    await query('UPDATE support_phone_agent_dials SET available_at = 0, lease_until = ? WHERE id = ?', [Date.now() + 60_000, revocation!.id])
+    await restart()
+    check((await one('SELECT state FROM support_phone_operations WHERE id = ?', [uncertainEnd!.id]))?.state === 'uncertain', 'a fresh worker respects the existing lease')
+    await query('UPDATE support_phone_agent_dials SET lease_until = 0 WHERE id = ?', [revocation!.id])
+    await restart()
+  }
+  finally { await peerServer.stop(true) }
+  check(providerWrites === requestsBeforeRevocation + 3, 'restart recovery verifies terminal state without a duplicate provider write')
+  check((await one('SELECT state FROM support_phone_operations WHERE id = ?', [uncertainEnd!.id]))?.state === 'succeeded', 'the exact terminal child resolves the uncertain journal')
+  check(Number((await one('SELECT finished_at FROM support_phone_agent_dials WHERE id = ?', [revocation!.id]))?.finished_at) === 0 && !observeOnParentRead, 'late provider progress during a lease keeps the intent open')
+  await recoverPhoneRevocations(dependencies)
+  check(lateLeg.status === 'canceled' && providerWrites === requestsBeforeRevocation + 4, 'the new durable progress signal ends the late child once')
+  await query('UPDATE support_phone_agent_dials SET available_at = 0 WHERE id = ?', [revocation!.id])
+  await recoverPhoneRevocations(dependencies)
+  check(Number((await one('SELECT finished_at FROM support_phone_agent_dials WHERE id = ?', [revocation!.id]))?.finished_at) > 0, 'recovery finishes after the provider parent ends')
+  const billingChildren = await query("SELECT payload FROM support_phone_events WHERE call_id = ? AND status = 'dial-complete'", [callRow.id])
+  assert.deepEqual(billingChildren.map(row => JSON.parse(String(row.payload)).childSid).sort(), [browserLeg.sid, ringingLeg.sid, lateLeg.sid].sort(), 'terminal child evidence remains available for billing')
+  check((await request(scimPath + '/' + provisioned.data.id, 'PUT', { userName: revokedEmail, active: true }, directoryToken)).status === 200, 'the directory can reactivate the workspace member')
+  check((await callback(legId, 'agent', providerLeg)).status === 403, 'a reactivated member cannot revive a previously revoked dial')
+  check((await request(`${path}/calls/${legId}/takeover`, 'POST', {}, scopedAgent)).status === 403, 'a reactivated member cannot redirect the old caller back to their browser')
+  assert.equal((await callback(legId, 'status', providerLeg, { SequenceNumber: '10' })).status, 204)
+  Object.assign(providerLeg, { duration: '30', price: '-0.010000', price_unit: 'USD' })
+  Object.assign(browserLeg, { duration: '12', price: '-0.003000', price_unit: 'USD' })
+  Object.assign(ringingLeg, { duration: '0', price: '0.000000', price_unit: 'USD' })
+  Object.assign(lateLeg, { duration: '0', price: '0.000000', price_unit: 'USD' })
+  Object.assign(peerLeg, { status: 'completed', duration: '14', price: '-0.004000', price_unit: 'USD' })
+  const agentDialComplete = await callback(legId, 'dial-complete', providerLeg, { DialCallSid: peerLeg.sid })
+  assert.equal(agentDialComplete.status, 200)
+  assert.match(agentDialComplete.text, /<Hangup\s*\/>/, 'completed browser dial follows the existing caller hangup instructions')
+  const agentSettlement = await request(`${path}/calls/${legId}/reconcile`, 'POST', {}, owner)
+  check(agentSettlement.status === 200 && !agentSettlement.data.pending, 'the original authorization and all actual child costs reconcile after deprovisioning')
+  const endedCharge = await one('SELECT provider_cost_micros FROM support_wallet_reservations WHERE public_id = ?', [callRow.reservation_id])
+  check(Number(endedCharge?.provider_cost_micros) === 17000, 'each confirmed child contributes its actual charge once')
   const retention = `/support/workspaces/${workspace.id}/enterprise/retention`
   check((await request(retention, 'PUT', { days: 30, enabled: true }, owner)).status === 200, 'enterprise voice content retention uses native paid-plan authority')
   await request(retention + `/holds/${stored!.conversation_id}`, 'PUT', { active: true, reason: 'Voice legal hold' }, owner)

@@ -11,6 +11,7 @@ export default defineModel({
   ],
   attributes: {
     assignedAgentId: { type: 'bigint', fillable: true, nullable: true, validation: { rule: schema.number().integer() } },
+    tracksAgentDials: { type: 'boolean', fillable: true, required: true, default: false, validation: { rule: schema.boolean() } },
     childSid: { fillable: true, nullable: true, unique: true, validation: { rule: schema.string() } },
     transferAt: { type: 'bigint', fillable: true, required: true, default: 0, validation: { rule: schema.number().integer() } },
     reservedCents: { type: 'bigint', fillable: true, required: true, validation: { rule: schema.number().integer() } },
