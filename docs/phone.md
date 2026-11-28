@@ -124,9 +124,8 @@ receipt covers it. Fractional usage costs are aggregated before microdollar
 and cents rounding. A missing receipt, unmatched token categories or an unclean
 audio close retains the AI reservation for reconciliation. On a clean carrier
 stop with incomplete usage, the call reports `realtime_usage_pending`. AI pricing
-follows the configured account/model tariff. An operator invoice
-reconciliation workflow for unresolved AI usage is still required before broad
-managed voice rollout.
+follows the configured account/model tariff. The operator can review unresolved
+usage against finalized provider costs before the managed voice rollout.
 
 ### Review pending Realtime costs
 
@@ -144,10 +143,25 @@ microdollars as `costMicros`. Set `complete` and `exclusive` only after verifyin
 all pages and line items for the dedicated key. Keep provider evidence outside
 source control.
 
-The preview proposes a wallet charge when the completed daily evidence matches
+The preview proposes a wallet change when the completed daily evidence matches
 exactly one eligible scoped call that fits within its hold. It reports other
-outcomes for review and leaves wallet and provider state untouched. Applying
-and correcting reviewed costs is tracked in [#88](https://github.com/stacksjs/hq.support/issues/88).
+outcomes for review and leaves wallet and provider state untouched. Calls
+that overlap UTC days or share a cost bucket with other calls need further
+evidence for attribution.
+
+Apply the reviewed result from the protected deployment shell using
+`./buddy support:voice-cost-settle --file /private/realtime-cost.json --approve <digest> --reason <case-reference>`.
+Use the approval digest from the preview. The command rechecks the call,
+source digest, provider receipts, billing period, and wallet allocation in the
+workspace transaction. It records the host operator identity and the protected
+case reference. Use a case reference without customer data.
+
+A correction supplies the new export digest and `replaces` with the last
+applied approval digest for the same scope and day. Preview the correction
+again, then apply its new approval digest. The wallet ledger records only the
+adjustment to the current charge. The carrier settlement stays independent.
+Repeating an applied approval returns the existing revision. The isolated
+Realtime billing export rehearsal is tracked in [#88](https://github.com/stacksjs/hq.support/issues/88).
 
 ## API and browser controller
 

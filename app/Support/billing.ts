@@ -320,3 +320,50 @@ export async function settleProviderWallet(workspaceId: number, reservationId: s
     return (await one('SELECT * FROM support_wallet_reservations WHERE id = ?', [reservation.id]))!
   })
 }
+
+interface ReviewedVoiceWallet {
+  reserved: boolean
+  period: string
+  priorCost: number
+  priorCharge: number
+  aggregateMicros: number
+  aggregateCents: number
+  previousCost: number
+  previousCharge: number
+  chargedCents: number
+  walletDeltaCents: number
+}
+
+/** Reviewed Realtime corrections preserve the monthly provider bucket and append a ledger adjustment. */
+export async function applyReviewedVoiceWallet(workspaceId: number, projectId: number, callId: string, holdId: string, revisionId: number, costMicros: number, plan: ReviewedVoiceWallet) {
+  requireWorkspaceTransaction(workspaceId)
+  const provider = 'openai-realtime'
+  const reference = `openai:${callId}`
+  const hold = await one(`
+    SELECT id, status, provider_reference, provider_cost_micros, actual_cents
+    FROM support_wallet_reservations
+    WHERE public_id = ? AND workspace_id = ? AND project_id = ? AND provider = ? AND operation_key = ?
+  `, [holdId, workspaceId, projectId, provider, `voice-ai:${callId}`])
+  const expectedStatus = plan.reserved ? hold?.status === 'reserved' : hold?.status === 'settled' || hold?.status === 'released'
+  if (!hold || !expectedStatus || hold.provider_reference !== (plan.reserved ? '' : reference)
+    || Number(hold.provider_cost_micros) !== plan.previousCost || Number(hold.actual_cents) !== plan.previousCharge)
+    fail(409, 'voice_cost_hold_changed', 'The voice wallet hold changed after review.')
+  if (plan.reserved) {
+    const settled = await settleProviderWallet(workspaceId, holdId, costMicros, reference)
+    if (Number(settled.actual_cents) !== plan.chargedCents)
+      fail(409, 'voice_cost_hold_changed', 'The voice wallet allocation changed after review.')
+    return
+  }
+  const timestamp = new Date().toISOString()
+  const changedBucket = await one(`
+    UPDATE support_provider_cost_buckets SET provider_cost_micros = ?, charged_cents = ?, updated_at = ?
+    WHERE workspace_id = ? AND provider = ? AND period = ? AND provider_cost_micros = ? AND charged_cents = ?
+    RETURNING id
+  `, [plan.aggregateMicros, plan.aggregateCents, timestamp, workspaceId, provider, plan.period, plan.priorCost, plan.priorCharge])
+  if (!changedBucket) fail(409, 'voice_cost_bucket_changed', 'The monthly provider costs changed after review.')
+  await entry(workspaceId, `voice-cost:${revisionId}:${holdId}`, 'settlement_adjustment', plan.walletDeltaCents, provider, reference)
+  await query(`
+    UPDATE support_wallet_reservations SET status = ?, actual_cents = ?, provider_cost_micros = ?, updated_at = ?
+    WHERE id = ? AND workspace_id = ? AND project_id = ?
+  `, [costMicros === 0 && plan.chargedCents === 0 ? 'released' : 'settled', plan.chargedCents, costMicros, timestamp, hold.id, workspaceId, projectId])
+}

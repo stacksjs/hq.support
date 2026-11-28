@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { createHmac } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { migrateAuthTables, runDatabaseMigration } from '@stacksjs/database'
 import { config, overridesReady } from '@stacksjs/config'
 import { injectGlobalAutoImports } from '@stacksjs/server'
@@ -14,6 +17,7 @@ import { createArticle } from '../../app/Support/knowledge'
 import { recoverPhoneRevocations } from '../../app/Support/phone-agents'
 import { realtimeBillingScope } from '../../app/Support/voice-billing-scope'
 import { previewVoiceCosts } from '../../app/Support/voice-cost-preview'
+import { settleVoiceCosts } from '../../app/Support/voice-cost-settlement'
 import { startVoiceServer } from '../../app/Support/voice-server'
 import type { RealtimeSocket } from '@stacksjs/ai/realtime'
 
@@ -529,6 +533,63 @@ try {
   check((await previewVoiceCosts({ ...evidence, scope: { ...dedicatedBillingScope, projectId: 'proj_other' } }, fixtureStart + 86_400_000)).state === 'no_matching_calls', 'another provider project cannot claim the call')
   assert.deepEqual(await one('SELECT * FROM support_wallet_reservations WHERE public_id = ?', [tailRow.ai_reservation_id]), beforePreview)
   assert.equal(providerWrites, providerWritesBeforePreview)
+  assert.equal(preview.state, 'matched')
+  const closedDay = fixtureStart + 86_400_000
+  await query('UPDATE support_phone_calls SET ai_billing_scope = ?, ai_stream_opened_at = ?, ai_stream_closed_at = ? WHERE public_id = ?', [scopedCall.ai_billing_scope, fixtureStart + 100, fixtureStart + 200, callId])
+  check((await previewVoiceCosts(evidence, closedDay)).state === 'ambiguous_cohort', 'another call under the same scope blocks a single-call allocation')
+  await query("UPDATE support_phone_calls SET ai_billing_scope = '', ai_stream_opened_at = 0, ai_stream_closed_at = 0 WHERE public_id = ?", [callId])
+  await query('UPDATE support_phone_usage SET cost_micros = cost_micros + 1 WHERE call_id = ? AND response_id = ?', [tailRow.id, 'tail-first-response'])
+  await assert.rejects(settleVoiceCosts(evidence, preview.approval, 'case-a stale receipt fixture', closedDay), { code: 'voice_cost_approval_changed' })
+  const currentPreview = await previewVoiceCosts(evidence, closedDay)
+  assert.equal(currentPreview.state, 'matched')
+  const walletBefore = Number((await one('SELECT wallet_cents FROM support_workspaces WHERE id = ?', [workspace.id]))!.wallet_cents)
+  const foreignWallet = await one('SELECT wallet_cents FROM support_workspaces WHERE id = ?', [foreign.id])
+  const receipt = currentPreview.approval
+  const results = await Promise.all([
+    settleVoiceCosts(evidence, receipt, 'case-a reviewed provider fixture', closedDay),
+    settleVoiceCosts(evidence, receipt, 'case-a reviewed provider fixture', closedDay),
+  ])
+  check(results.filter(result => !result.replayed).length === 1, 'concurrent applications create a single billing revision')
+  const expectedAfterInitial = walletBefore + currentPreview.allocation.walletDeltaCents
+  check(Number((await one('SELECT wallet_cents FROM support_workspaces WHERE id = ?', [workspace.id]))!.wallet_cents) === expectedAfterInitial, 'the wallet changes by exactly the reviewed amount')
+  const firstRevision = (await one('SELECT * FROM support_voice_cost_revisions WHERE approval = ?', [receipt]))!
+  assert.ok(firstRevision.operator && firstRevision.receipt_sha256 && firstRevision.reason === 'case-a reviewed provider fixture')
+  const adjustment = { ...evidence, sourceSha256: 'b'.repeat(64), costMicros: 5_000 }
+  check((await previewVoiceCosts(adjustment, closedDay)).state === 'revision_changed', 'a correction must reference the last approved revision')
+  const correction = { ...adjustment, replaces: receipt }
+  const correctionPreview = await previewVoiceCosts(correction, closedDay)
+  assert.equal(correctionPreview.state, 'matched')
+  check(correctionPreview.allocation.previouslyChargedCents === currentPreview.allocation.chargedCents, 'the correction subtracts the amount already charged')
+  const evidenceDirectory = await mkdtemp(join(tmpdir(), 'hq-voice-cost-fixture-'))
+  let appliedCorrection: Awaited<ReturnType<typeof settleVoiceCosts>>
+  try {
+    const evidenceFile = join(evidenceDirectory, 'cost.json')
+    await Bun.write(evidenceFile, JSON.stringify(correction))
+    async function buddy(args: string[]) {
+      const child = Bun.spawn(['./buddy', ...args, '--env', 'test'], {
+        stdout: 'pipe', stderr: 'pipe', signal: AbortSignal.timeout(20_000),
+      })
+      const [exit, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+      assert.equal(exit, 0, stdout + stderr)
+      const line = stdout.split('\n').find(entry => entry.startsWith('{'))
+      assert.ok(line, 'The billing CLI returns a JSON result')
+      return JSON.parse(line)
+    }
+    const checked = await buddy(['support:voice-cost-preview', '--file', evidenceFile])
+    assert.equal(checked.approval, correctionPreview.approval)
+    appliedCorrection = await buddy(['support:voice-cost-settle', '--file', evidenceFile, '--approve', correctionPreview.approval, '--reason', 'case-b corrected provider fixture'])
+  }
+  finally { await rm(evidenceDirectory, { recursive: true, force: true }) }
+  check(!appliedCorrection.replayed && appliedCorrection.walletDeltaCents === correctionPreview.allocation.walletDeltaCents, 'corrected evidence applies exactly the reviewed wallet adjustment')
+  const expectedAfterCorrection = expectedAfterInitial + appliedCorrection.walletDeltaCents
+  assert.equal((await settleVoiceCosts(evidence, receipt, 'case-a repeat', closedDay)).replayed, true)
+  await assert.rejects(settleVoiceCosts({ ...evidence, costMicros: 1 }, receipt, 'case-a mismatched replay', closedDay), { code: 'voice_cost_approval_changed' })
+  const finalCall = await request(`${path}/calls/${tailId}/reconcile`, 'POST', {}, owner)
+  check(finalCall.status === 200 && !finalCall.data.pending, 'normal carrier reconciliation accepts the reviewed AI charge')
+  assert.equal(Number((await one('SELECT wallet_cents FROM support_workspaces WHERE id = ?', [workspace.id]))!.wallet_cents), expectedAfterCorrection)
+  assert.deepEqual(await one('SELECT wallet_cents FROM support_workspaces WHERE id = ?', [foreign.id]), foreignWallet)
+  assert.equal(Number((await one('SELECT provider_cost_micros FROM support_wallet_reservations WHERE public_id = ?', [tailRow.ai_reservation_id]))!.provider_cost_micros), 5000)
+  assert.equal((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [tailRow.reservation_id]))?.status, 'settled')
   console.log(`PASS phone HTTP and media (${checks} checks)`)
   if (process.env.SUPPORT_PHONE_BROWSER_FIXTURE === '1') {
     const statePath = process.env.SUPPORT_PHONE_FIXTURE_STATE

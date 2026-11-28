@@ -9,12 +9,13 @@ const format = 'openai-realtime-costs-v1'
 const dayMs = 86_400_000
 const scopeLimit = 100
 
-export async function previewVoiceCosts(input: unknown, now = Date.now()) {
+export function normalizeVoiceCostEvidence(input: unknown, now: number) {
   const report = object(input)
-  const { day, sourceSha256, costMicros, exclusive, complete } = report
+  const { day, sourceSha256, costMicros, exclusive, complete, replaces = '' } = report
   if (report.format !== format || report.currency !== 'USD'
     || typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)
     || typeof sourceSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sourceSha256)
+    || typeof replaces !== 'string' || (replaces !== '' && !/^[a-f0-9]{64}$/.test(replaces))
     || typeof exclusive !== 'boolean' || typeof complete !== 'boolean'
     || typeof costMicros !== 'number' || !Number.isSafeInteger(costMicros) || costMicros < 0)
     fail(422, 'voice_cost_evidence_invalid', 'Provide a reviewed USD Realtime daily cost file with scope and evidence digest.')
@@ -28,9 +29,16 @@ export async function previewVoiceCosts(input: unknown, now = Date.now()) {
   let scope: string
   try { scope = realtimeBillingScope(report.scope) }
   catch { fail(422, 'voice_cost_scope_invalid', 'Provide the organization, project and dedicated API key identifiers from the export.') }
+  const inputSha256 = digest(JSON.stringify([format, scope, day, sourceSha256, costMicros, exclusive, complete, replaces]))
+  return { format, scope, day, start, end, sourceSha256, costMicros, exclusive, complete, replaces, inputSha256 }
+}
 
+type VoiceCostEvidence = ReturnType<typeof normalizeVoiceCostEvidence>
+
+export async function planVoiceCosts(evidence: VoiceCostEvidence) {
+  const { scope, day, start, end, sourceSha256, costMicros, complete, exclusive, replaces, inputSha256 } = evidence
   const rows = await query(`
-    SELECT call.public_id, call.workspace_id, call.project_id, call.status, call.stream_state, call.ai_cost_micros,
+    SELECT call.id, call.public_id, call.workspace_id, call.project_id, call.status, call.stream_state, call.ai_cost_micros,
       call.ai_stream_opened_at, call.ai_stream_closed_at, hold.public_id AS hold_id, hold.reserved_cents,
       hold.status AS hold_status, hold.actual_cents, hold.provider_cost_micros AS hold_cost_micros,
       hold.provider_reference, hold.created_at AS hold_created_at
@@ -50,19 +58,34 @@ export async function previewVoiceCosts(input: unknown, now = Date.now()) {
   }))
   const preview = { format, day, sourceSha256, costMicros, calls, truncated: rows.length > scopeLimit }
   if (!complete || !exclusive)
-    return { ...preview, state: 'incomplete_evidence' as const }
+    return { preview: { ...preview, state: 'incomplete_evidence' as const } }
   if (rows.length !== 1)
-    return { ...preview, state: rows.length === 0 ? 'no_matching_calls' as const : 'ambiguous_cohort' as const }
+    return { preview: { ...preview, state: rows.length === 0 ? 'no_matching_calls' as const : 'ambiguous_cohort' as const } }
   const row = rows[0]!
   const closedAt = Number(row.ai_stream_closed_at)
   if (Number(row.ai_stream_opened_at) < start || closedAt < Number(row.ai_stream_opened_at)
     || closedAt >= end || row.stream_state === 'active' || !terminalCall(row.status))
-    return { ...preview, state: 'incomplete_call' as const }
-  if (row.hold_status === 'settled' || row.hold_status === 'released')
-    return { ...preview, state: 'already_settled' as const }
-  if (!row.hold_id || row.hold_status !== 'reserved' || row.ai_cost_micros != null
-    || Number(row.actual_cents) !== 0 || Number(row.hold_cost_micros) !== -1 || row.provider_reference !== '')
-    return { ...preview, state: 'hold_changed' as const }
+    return { preview: { ...preview, state: 'incomplete_call' as const } }
+
+  const latest = await one(`
+    SELECT id, call_id, approval, cost_micros, charged_cents FROM support_voice_cost_revisions
+    WHERE billing_scope = ? AND day = ? ORDER BY id DESC LIMIT 1
+  `, [scope, day])
+  if (String(latest?.approval ?? '') !== replaces || (latest && String(latest.call_id) !== String(row.id)))
+    return { preview: { ...preview, state: 'revision_changed' as const, latestApproval: String(latest?.approval ?? '') } }
+  const previousCost = Number(row.hold_cost_micros)
+  const previousCharge = Number(row.actual_cents)
+  const reserved = row.hold_status === 'reserved'
+  const openHold = reserved && row.ai_cost_micros == null && previousCharge === 0 && previousCost === -1
+    && row.provider_reference === '' && !latest
+  const appliedHold = (row.hold_status === 'settled' || row.hold_status === 'released')
+    && row.provider_reference === `openai:${row.public_id}`
+    && previousCost >= 0 && row.ai_cost_micros != null && Number(row.ai_cost_micros) === previousCost
+    && (!latest || (Number(latest.cost_micros) === previousCost && Number(latest.charged_cents) === previousCharge))
+  if (!row.hold_id || (!openHold && !appliedHold))
+    return { preview: { ...preview, state: 'hold_changed' as const } }
+  if (appliedHold && previousCost === costMicros)
+    return { preview: { ...preview, state: 'already_settled' as const } }
 
   const created = new Date(row.hold_created_at as string | Date)
   if (!Number.isFinite(created.getTime()))
@@ -74,15 +97,38 @@ export async function previewVoiceCosts(input: unknown, now = Date.now()) {
   `, [row.workspace_id, period])
   const priorCost = Number(bucket?.provider_cost_micros ?? 0)
   const priorCharge = Number(bucket?.charged_cents ?? 0)
-  const chargedCents = managedCostFromMicros(priorCost + costMicros) - priorCharge
+  const withoutCall = priorCost - (appliedHold ? previousCost : 0)
+  if (withoutCall < 0 || priorCharge !== managedCostFromMicros(priorCost))
+    return { preview: { ...preview, state: 'wallet_cost_changed' as const } }
+  const aggregateMicros = withoutCall + costMicros
+  const aggregateCents = managedCostFromMicros(aggregateMicros)
+  const chargedCents = previousCharge + aggregateCents - priorCharge
   const reservedCents = Number(row.reserved_cents)
-  if (!Number.isSafeInteger(reservedCents) || chargedCents < 0 || chargedCents > reservedCents)
-    return { ...preview, state: 'hold_exceeded' as const }
+  if (!Number.isSafeInteger(reservedCents) || !Number.isSafeInteger(chargedCents) || chargedCents < 0 || chargedCents > reservedCents)
+    return { preview: { ...preview, state: 'hold_exceeded' as const } }
+  const receiptRows = await query(`
+    SELECT response_id, usage, cost_micros FROM support_phone_usage
+    WHERE workspace_id = ? AND call_id = ? ORDER BY response_id
+  `, [row.workspace_id, row.id])
+  const receiptSha256 = digest(JSON.stringify(receiptRows.map(receipt => [String(receipt.response_id), String(receipt.usage), receipt.cost_micros == null ? null : Number(receipt.cost_micros)])))
+  const walletDeltaCents = (reserved ? reservedCents : previousCharge) - chargedCents
   return {
-    ...preview,
-    state: 'matched' as const,
-    allocation: { callId: String(row.public_id), chargedCents, releasedCents: reservedCents - chargedCents },
-    approval: digest(JSON.stringify([format, scope, day, sourceSha256, costMicros, row.public_id, row.workspace_id,
-      row.project_id, row.ai_stream_opened_at, closedAt, row.hold_id, reservedCents, period, priorCost, priorCharge])),
+    row,
+    receiptSha256,
+    wallet: { reserved, period, priorCost, priorCharge, aggregateMicros, aggregateCents, previousCost, previousCharge, chargedCents, walletDeltaCents },
+    preview: {
+      ...preview,
+      state: 'matched' as const,
+      allocation: { callId: String(row.public_id), previouslyChargedCents: previousCharge, chargedCents, walletDeltaCents },
+      approval: digest(JSON.stringify([
+        inputSha256, String(row.public_id), String(row.workspace_id), String(row.project_id),
+        Number(row.ai_stream_opened_at), closedAt, String(row.hold_id), reserved, reservedCents, previousCost,
+        previousCharge, period, priorCost, priorCharge, aggregateCents, chargedCents, walletDeltaCents, receiptSha256,
+      ])),
+    },
   }
+}
+
+export async function previewVoiceCosts(input: unknown, now = Date.now()) {
+  return (await planVoiceCosts(normalizeVoiceCostEvidence(input, now))).preview
 }
