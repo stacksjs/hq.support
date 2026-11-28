@@ -135,33 +135,47 @@ object containing the provider's `organizationId`, `projectId`, and `apiKeyId`.
 Keep the key exclusive to this deployment’s voice streams. The media server
 retains a hash of those three identifiers and the observed stream interval.
 
-An operator can run `./buddy support:voice-cost-preview --file /private/realtime-cost.json`
-for a closed UTC day. The private input contains `format: "openai-realtime-costs-v1"`,
-`currency: "USD"`, `day` as `YYYY-MM-DD`, the same identifiers in `scope`, the
-`sourceSha256` of the reviewed provider export, and its total in whole USD
-microdollars as `costMicros`. Set `complete` and `exclusive` only after verifying
-all pages and line items for the dedicated key. Keep provider evidence outside
-source control.
+Export the original OpenAI Costs JSON for the closed UTC day. Filter by the
+dedicated project and API key, and group by `project_id`, `api_key_id`, and
+`line_item`. Keep the complete response and the billing case outside source
+control. [OpenAI Costs API](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs)
+
+The private review file contains `format: "openai-realtime-costs-v1"`,
+`currency: "USD"`, `day` as `YYYY-MM-DD`, the same identifiers in `scope`, and
+`lineItems` with each exact reviewed line item from the response. Set
+`complete` and `exclusive` after verifying that the export covers the dedicated
+key and the Realtime workload. Run the preview with both files.
+
+```sh
+./buddy support:voice-cost-preview --file /private/realtime-review.json \
+  --source /private/openai-costs.json
+```
 
 The preview proposes a wallet change when the completed daily evidence matches
 exactly one eligible scoped call that fits within its hold. It reports other
-outcomes for review and leaves wallet and provider state untouched. Calls
-that overlap UTC days or share a cost bucket with other calls need further
-evidence for attribution.
+outcomes for review and leaves wallet and provider state untouched. It hashes
+the original response bytes and sums the exact USD decimal amounts before
+rounding the net cost to microdollars. Calls that overlap UTC days or share a
+cost bucket with other calls need further evidence for attribution.
 
-Apply the reviewed result from the protected deployment shell using
-`./buddy support:voice-cost-settle --file /private/realtime-cost.json --approve <digest> --reason <case-reference>`.
-Use the approval digest from the preview. The command rechecks the call,
-source digest, provider receipts, billing period, and wallet allocation in the
-workspace transaction. It records the host operator identity and the protected
-case reference. Use a case reference without customer data.
+Apply the reviewed result from the protected deployment shell with the
+approval digest from the preview.
 
-A correction supplies the new export digest and `replaces` with the last
-applied approval digest for the same scope and day. Preview the correction
-again, then apply its new approval digest. The wallet ledger records only the
-adjustment to the current charge. The carrier settlement stays independent.
-Repeating an applied approval returns the existing revision. The isolated
-Realtime billing export rehearsal is tracked in [#88](https://github.com/stacksjs/hq.support/issues/88).
+```sh
+./buddy support:voice-cost-settle --file /private/realtime-review.json \
+  --source /private/openai-costs.json --approve <digest> --reason <case-reference>
+```
+
+The command rechecks the call, source digest, provider receipts, billing period,
+and wallet allocation in the workspace transaction. It records the host
+operator identity and the protected case reference. Use a case reference without
+customer data.
+
+A correction supplies the new provider response and sets `replaces` to the
+last applied approval digest for the same scope and day. Preview and apply
+the new digest. The wallet ledger records the adjustment to the current charge.
+The carrier settlement stays independent. Repeating an applied approval returns
+the existing revision. [Isolated billing rehearsal #88](https://github.com/stacksjs/hq.support/issues/88)
 
 ## API and browser controller
 

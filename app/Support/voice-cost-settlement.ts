@@ -16,8 +16,8 @@ function revisionView(revision: Row, replayed: boolean) {
 }
 
 /** Deployment CLI only. Require the exact reviewed allocation before making a wallet change. */
-export async function settleVoiceCosts(input: unknown, approvedPreview: unknown, caseReason: unknown, now = Date.now()) {
-  const evidence = normalizeVoiceCostEvidence(input, now)
+export async function settleVoiceCosts(input: unknown, source: Uint8Array, approvedPreview: unknown, caseReason: unknown, now = Date.now()) {
+  const evidence = normalizeVoiceCostEvidence(input, source, now)
   const approval = text(approvedPreview, 'approve', 64)
   const reason = text(caseReason, 'reason', 500)
   const operator = text(userInfo().username, 'operator', 128)

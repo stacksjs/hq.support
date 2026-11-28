@@ -1,6 +1,7 @@
 import { managedCostFromMicros } from './billing'
 import { one, query } from './database'
 import { fail } from './errors'
+import { readOpenAiVoiceCosts } from './openai-voice-costs'
 import { terminalCall } from './phone'
 import { digest, object } from './service'
 import { realtimeBillingScope } from './voice-billing-scope'
@@ -9,27 +10,28 @@ const format = 'openai-realtime-costs-v1'
 const dayMs = 86_400_000
 const scopeLimit = 100
 
-export function normalizeVoiceCostEvidence(input: unknown, now: number) {
+export function normalizeVoiceCostEvidence(input: unknown, source: Uint8Array, now: number) {
   const report = object(input)
-  const { day, sourceSha256, costMicros, exclusive, complete, replaces = '' } = report
+  const { day, lineItems, exclusive, complete, replaces = '' } = report
   if (report.format !== format || report.currency !== 'USD'
     || typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)
-    || typeof sourceSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sourceSha256)
     || typeof replaces !== 'string' || (replaces !== '' && !/^[a-f0-9]{64}$/.test(replaces))
     || typeof exclusive !== 'boolean' || typeof complete !== 'boolean'
-    || typeof costMicros !== 'number' || !Number.isSafeInteger(costMicros) || costMicros < 0)
-    fail(422, 'voice_cost_evidence_invalid', 'Provide a reviewed USD Realtime daily cost file with scope and evidence digest.')
+    || !Array.isArray(lineItems) || lineItems.length > 1000 || new Set(lineItems).size !== lineItems.length
+    || lineItems.some(item => typeof item !== 'string' || !item.trim() || item.length > 250))
+    fail(422, 'voice_cost_evidence_invalid', 'Provide a reviewed USD Realtime daily scope and its exact line items.')
   const start = Date.parse(day + 'T00:00:00.000Z')
   const end = start + dayMs
   if (!Number.isFinite(start) || new Date(start).toISOString().slice(0, 10) !== day)
     fail(422, 'voice_cost_day_invalid', 'Use a valid UTC day for the provider evidence.')
   if (end > now)
     fail(409, 'voice_cost_day_open', 'Wait until the UTC day has closed before reviewing provider evidence.')
-  managedCostFromMicros(costMicros)
-  let scope: string
-  try { scope = realtimeBillingScope(report.scope) }
+  let identifiers: ReturnType<typeof realtimeBillingScope>
+  try { identifiers = realtimeBillingScope(report.scope) }
   catch { fail(422, 'voice_cost_scope_invalid', 'Provide the organization, project and dedicated API key identifiers from the export.') }
-  const inputSha256 = digest(JSON.stringify([format, scope, day, sourceSha256, costMicros, exclusive, complete, replaces]))
+  const { projectId, apiKeyId, digest: scope } = identifiers
+  const { sourceSha256, costMicros } = readOpenAiVoiceCosts(source, { start, end, projectId, apiKeyId, lineItems })
+  const inputSha256 = digest(JSON.stringify([format, scope, day, sourceSha256, costMicros, exclusive, complete, replaces, [...lineItems].sort()]))
   return { format, scope, day, start, end, sourceSha256, costMicros, exclusive, complete, replaces, inputSha256 }
 }
 
@@ -129,6 +131,6 @@ export async function planVoiceCosts(evidence: VoiceCostEvidence) {
   }
 }
 
-export async function previewVoiceCosts(input: unknown, now = Date.now()) {
-  return (await planVoiceCosts(normalizeVoiceCostEvidence(input, now))).preview
+export async function previewVoiceCosts(input: unknown, source: Uint8Array, now = Date.now()) {
+  return (await planVoiceCosts(normalizeVoiceCostEvidence(input, source, now))).preview
 }

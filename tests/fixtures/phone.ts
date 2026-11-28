@@ -519,52 +519,74 @@ try {
   check((await one('SELECT status FROM support_wallet_reservations WHERE public_id = ?', [tailRow.reservation_id]))?.status === 'settled', 'the separate carrier cost still settles')
   check(tailSettlement.data.call.lastError === 'realtime_usage_pending', 'the operator can identify the unresolved AI usage')
   const scopedCall = (await one('SELECT ai_billing_scope, ai_stream_opened_at, ai_stream_closed_at FROM support_phone_calls WHERE id = ?', [tailRow.id]))!
-  check(scopedCall.ai_billing_scope === realtimeBillingScope(dedicatedBillingScope), 'the signed stream retains its billing scope without the key')
+  check(scopedCall.ai_billing_scope === realtimeBillingScope(dedicatedBillingScope).digest, 'the signed stream retains its billing scope without the key')
   check(Number(scopedCall.ai_stream_opened_at) > 0 && Number(scopedCall.ai_stream_closed_at) >= Number(scopedCall.ai_stream_opened_at), 'the scoped stream retains its observed interval')
   const fixtureDay = '2026-01-01'
   const fixtureStart = Date.parse(fixtureDay + 'T00:00:00Z')
   await query('UPDATE support_phone_calls SET ai_stream_opened_at = ?, ai_stream_closed_at = ? WHERE id = ?', [fixtureStart + 1000, fixtureStart + 6000, tailRow.id])
-  const evidence = { format: 'openai-realtime-costs-v1', currency: 'USD', day: fixtureDay, scope: dedicatedBillingScope, sourceSha256: 'a'.repeat(64), exclusive: true, complete: true, costMicros: 20_000 }
+  const lineItems = ['gpt-realtime, audio input', 'gpt-realtime, audio output']
+  const evidence = { format: 'openai-realtime-costs-v1', currency: 'USD', day: fixtureDay, scope: dedicatedBillingScope, exclusive: true, complete: true, lineItems }
+  const exportPage = (scope: typeof dedicatedBillingScope, amounts: number[]) => ({
+    object: 'page', has_more: false, next_page: null,
+    data: [{
+      object: 'bucket', start_time: fixtureStart / 1000, end_time: fixtureStart / 1000 + 86_400,
+      results: amounts.map((value, index) => ({
+        object: 'organization.costs.result', amount: { currency: 'usd', value }, project_id: scope.projectId,
+        api_key_id: scope.apiKeyId, line_item: lineItems[index],
+      })),
+    }],
+  })
+  const encodeCostPage = (page: unknown) => new TextEncoder().encode(JSON.stringify(page))
+  const firstPage = exportPage(dedicatedBillingScope, [0.0111114, 0.0088882])
+  const source = encodeCostPage(firstPage)
+  const closedDay = fixtureStart + 86_400_000
   const beforePreview = await one('SELECT * FROM support_wallet_reservations WHERE public_id = ?', [tailRow.ai_reservation_id])
   const providerWritesBeforePreview = providerWrites
-  const preview = await previewVoiceCosts(evidence, fixtureStart + 86_400_000)
+  const preview = await previewVoiceCosts(evidence, source, closedDay)
   check(preview.state === 'matched' && preview.allocation.callId === tailId && /^[a-f0-9]{64}$/.test(preview.approval), 'the reviewed daily scope resolves exactly one call and returns an approval digest')
-  check((await previewVoiceCosts({ ...evidence, exclusive: false }, fixtureStart + 86_400_000)).state === 'incomplete_evidence', 'mixed provider workloads remain pending')
-  check((await previewVoiceCosts({ ...evidence, scope: { ...dedicatedBillingScope, projectId: 'proj_other' } }, fixtureStart + 86_400_000)).state === 'no_matching_calls', 'another provider project cannot claim the call')
+  check(preview.costMicros === 20_000, 'the exact decimal Costs amounts are summed before rounding')
+  check((await previewVoiceCosts({ ...evidence, exclusive: false }, source, closedDay)).state === 'incomplete_evidence', 'mixed provider workloads remain pending')
+  const foreignScope = { ...dedicatedBillingScope, projectId: 'proj_other' }
+  const foreignSource = encodeCostPage(exportPage(foreignScope, [0.01, 0.01]))
+  check((await previewVoiceCosts({ ...evidence, scope: foreignScope }, foreignSource, closedDay)).state === 'no_matching_calls', 'another provider project cannot claim the call')
+  await assert.rejects(previewVoiceCosts(evidence, foreignSource, closedDay), { code: 'voice_cost_export_scope_invalid' })
+  await assert.rejects(previewVoiceCosts({ ...evidence, lineItems: lineItems.slice(0, 1) }, source, closedDay), { code: 'voice_cost_export_scope_invalid' })
+  await assert.rejects(previewVoiceCosts(evidence, encodeCostPage({ ...firstPage, has_more: true, next_page: 'more' }), closedDay), { code: 'voice_cost_export_incomplete' })
   assert.deepEqual(await one('SELECT * FROM support_wallet_reservations WHERE public_id = ?', [tailRow.ai_reservation_id]), beforePreview)
   assert.equal(providerWrites, providerWritesBeforePreview)
   assert.equal(preview.state, 'matched')
-  const closedDay = fixtureStart + 86_400_000
   await query('UPDATE support_phone_calls SET ai_billing_scope = ?, ai_stream_opened_at = ?, ai_stream_closed_at = ? WHERE public_id = ?', [scopedCall.ai_billing_scope, fixtureStart + 100, fixtureStart + 200, callId])
-  check((await previewVoiceCosts(evidence, closedDay)).state === 'ambiguous_cohort', 'another call under the same scope blocks a single-call allocation')
+  check((await previewVoiceCosts(evidence, source, closedDay)).state === 'ambiguous_cohort', 'another call under the same scope blocks a single-call allocation')
   await query("UPDATE support_phone_calls SET ai_billing_scope = '', ai_stream_opened_at = 0, ai_stream_closed_at = 0 WHERE public_id = ?", [callId])
   await query('UPDATE support_phone_usage SET cost_micros = cost_micros + 1 WHERE call_id = ? AND response_id = ?', [tailRow.id, 'tail-first-response'])
-  await assert.rejects(settleVoiceCosts(evidence, preview.approval, 'case-a stale receipt fixture', closedDay), { code: 'voice_cost_approval_changed' })
-  const currentPreview = await previewVoiceCosts(evidence, closedDay)
+  await assert.rejects(settleVoiceCosts(evidence, source, preview.approval, 'case-a stale receipt fixture', closedDay), { code: 'voice_cost_approval_changed' })
+  const currentPreview = await previewVoiceCosts(evidence, source, closedDay)
   assert.equal(currentPreview.state, 'matched')
   const walletBefore = Number((await one('SELECT wallet_cents FROM support_workspaces WHERE id = ?', [workspace.id]))!.wallet_cents)
   const foreignWallet = await one('SELECT wallet_cents FROM support_workspaces WHERE id = ?', [foreign.id])
   const receipt = currentPreview.approval
   const results = await Promise.all([
-    settleVoiceCosts(evidence, receipt, 'case-a reviewed provider fixture', closedDay),
-    settleVoiceCosts(evidence, receipt, 'case-a reviewed provider fixture', closedDay),
+    settleVoiceCosts(evidence, source, receipt, 'case-a reviewed provider fixture', closedDay),
+    settleVoiceCosts(evidence, source, receipt, 'case-a reviewed provider fixture', closedDay),
   ])
   check(results.filter(result => !result.replayed).length === 1, 'concurrent applications create a single billing revision')
   const expectedAfterInitial = walletBefore + currentPreview.allocation.walletDeltaCents
   check(Number((await one('SELECT wallet_cents FROM support_workspaces WHERE id = ?', [workspace.id]))!.wallet_cents) === expectedAfterInitial, 'the wallet changes by exactly the reviewed amount')
   const firstRevision = (await one('SELECT * FROM support_voice_cost_revisions WHERE approval = ?', [receipt]))!
   assert.ok(firstRevision.operator && firstRevision.receipt_sha256 && firstRevision.reason === 'case-a reviewed provider fixture')
-  const adjustment = { ...evidence, sourceSha256: 'b'.repeat(64), costMicros: 5_000 }
-  check((await previewVoiceCosts(adjustment, closedDay)).state === 'revision_changed', 'a correction must reference the last approved revision')
-  const correction = { ...adjustment, replaces: receipt }
-  const correctionPreview = await previewVoiceCosts(correction, closedDay)
+  const correctionSource = encodeCostPage(exportPage(dedicatedBillingScope, [0.0075, -0.0025]))
+  check((await previewVoiceCosts(evidence, correctionSource, closedDay)).state === 'revision_changed', 'a correction must reference the last approved revision')
+  const correction = { ...evidence, replaces: receipt }
+  const correctionPreview = await previewVoiceCosts(correction, correctionSource, closedDay)
   assert.equal(correctionPreview.state, 'matched')
   check(correctionPreview.allocation.previouslyChargedCents === currentPreview.allocation.chargedCents, 'the correction subtracts the amount already charged')
   const evidenceDirectory = await mkdtemp(join(tmpdir(), 'hq-voice-cost-fixture-'))
   let appliedCorrection: Awaited<ReturnType<typeof settleVoiceCosts>>
   try {
     const evidenceFile = join(evidenceDirectory, 'cost.json')
+    const sourceFile = join(evidenceDirectory, 'provider.json')
     await Bun.write(evidenceFile, JSON.stringify(correction))
+    await Bun.write(sourceFile, correctionSource)
     async function buddy(args: string[]) {
       const child = Bun.spawn(['./buddy', ...args, '--env', 'test'], {
         stdout: 'pipe', stderr: 'pipe', signal: AbortSignal.timeout(20_000),
@@ -575,15 +597,15 @@ try {
       assert.ok(line, 'The billing CLI returns a JSON result')
       return JSON.parse(line)
     }
-    const checked = await buddy(['support:voice-cost-preview', '--file', evidenceFile])
+    const checked = await buddy(['support:voice-cost-preview', '--file', evidenceFile, '--source', sourceFile])
     assert.equal(checked.approval, correctionPreview.approval)
-    appliedCorrection = await buddy(['support:voice-cost-settle', '--file', evidenceFile, '--approve', correctionPreview.approval, '--reason', 'case-b corrected provider fixture'])
+    appliedCorrection = await buddy(['support:voice-cost-settle', '--file', evidenceFile, '--source', sourceFile, '--approve', correctionPreview.approval, '--reason', 'case-b corrected provider fixture'])
   }
   finally { await rm(evidenceDirectory, { recursive: true, force: true }) }
   check(!appliedCorrection.replayed && appliedCorrection.walletDeltaCents === correctionPreview.allocation.walletDeltaCents, 'corrected evidence applies exactly the reviewed wallet adjustment')
   const expectedAfterCorrection = expectedAfterInitial + appliedCorrection.walletDeltaCents
-  assert.equal((await settleVoiceCosts(evidence, receipt, 'case-a repeat', closedDay)).replayed, true)
-  await assert.rejects(settleVoiceCosts({ ...evidence, costMicros: 1 }, receipt, 'case-a mismatched replay', closedDay), { code: 'voice_cost_approval_changed' })
+  assert.equal((await settleVoiceCosts(evidence, source, receipt, 'case-a repeat', closedDay)).replayed, true)
+  await assert.rejects(settleVoiceCosts(evidence, correctionSource, receipt, 'case-a mismatched replay', closedDay), { code: 'voice_cost_approval_changed' })
   const finalCall = await request(`${path}/calls/${tailId}/reconcile`, 'POST', {}, owner)
   check(finalCall.status === 200 && !finalCall.data.pending, 'normal carrier reconciliation accepts the reviewed AI charge')
   assert.equal(Number((await one('SELECT wallet_cents FROM support_workspaces WHERE id = ?', [workspace.id]))!.wallet_cents), expectedAfterCorrection)
