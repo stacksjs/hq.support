@@ -158,6 +158,11 @@ Qualify each channel's receive, reply, retry, revocation, and delivery receipt p
 Test hosted widget assets from an ordinary third-party website. Rehearse Intercom
 import, restore, rollback and load before switching provider callback URLs or DNS.
 
+The production workflow checks the public npm archive and alpha tag against the
+widget retained by exact main CI. It also installs the package in a clean
+consumer and verifies the types and browser imports before loading the
+deployment key.
+
 Deploy only the tested artifact. Use additive migrations, drain old workers, and
 preserve the previous release. A separate supervised media process and qualified
 voice worker are required before phone/voice launch. They are not provisioned by

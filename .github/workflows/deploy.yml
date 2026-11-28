@@ -71,6 +71,12 @@ jobs:
           path: storage/framework/runtime/support-elements-release
           run-id: ${{ steps.ci.outputs.run_id }}
           github-token: ${{ github.token }}
+      - name: Verify the published Messenger matches the exact main artifact
+        timeout-minutes: 10
+        env:
+          SUPPORT_ELEMENTS_VERSION: ${{ steps.widget.outputs.version }}
+          CHROME_PATH: /usr/bin/google-chrome
+        run: bun --no-env-file scripts/support-elements-release.ts registry
       - name: Build views with the qualified Messenger
         env:
           APP_ENV: production

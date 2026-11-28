@@ -2,7 +2,15 @@ import { describe, expect, test } from 'bun:test'
 import { verifyElementsPublicationSource, verifyElementsRegistrySource } from '../../scripts/verify-elements-registry-source'
 
 const input = { repository: 'stacksjs/hq.support', sourceSha: 'a'.repeat(40), verifierSha: 'b'.repeat(40), runId: '123', version: '0.1.0-alpha.0' }
-interface WorkflowStep { uses?: string, run?: string, id?: string, with?: Record<string, unknown>, env?: Record<string, string> }
+interface WorkflowStep {
+  if?: string
+  'continue-on-error'?: boolean
+  uses?: string
+  run?: string
+  id?: string
+  with?: Record<string, unknown>
+  env?: Record<string, string>
+}
 interface VerificationWorkflow {
   on: { workflow_dispatch: { inputs: Record<string, unknown> } }
   permissions: Record<string, string>
@@ -122,4 +130,24 @@ test('read-only workflow wires the current verifier to the verified historical c
   expect(job.steps.filter(step => step.env?.GITHUB_TOKEN)).toHaveLength(1)
   expect(JSON.stringify(workflow)).not.toContain('secrets.')
   expect(JSON.stringify(workflow)).not.toContain('NPM_TOKEN')
+})
+
+
+test('production requires public npm verification of the same main artifact before loading deploy credentials', async () => {
+  const workflow = Bun.YAML.parse(await Bun.file(new URL('../../.github/workflows/deploy.yml', import.meta.url)).text()) as { jobs: { production: { steps: WorkflowStep[] } } }
+  const { steps } = workflow.jobs.production
+  const artifact = steps.findIndex(step => step.uses?.startsWith('actions/download-artifact@'))
+  const registry = steps.findIndex(step => step.run === 'bun --no-env-file scripts/support-elements-release.ts registry')
+  const build = steps.findIndex(step => step.run?.includes('scripts/support-elements-release.ts stage-site'))
+  const loadKey = steps.findIndex(step => step.env?.DEPLOY_SSH_KEY)
+  const deploy = steps.findIndex(step => step.run?.includes('./buddy deploy --prod --yes'))
+
+  expect(artifact).toBeGreaterThanOrEqual(0)
+  expect(registry).toBeGreaterThan(artifact)
+  expect(build).toBeGreaterThan(registry)
+  expect(loadKey).toBeGreaterThan(build)
+  expect(deploy).toBeGreaterThan(loadKey)
+  expect(steps[registry]?.env).toEqual({ SUPPORT_ELEMENTS_VERSION: '${{ steps.widget.outputs.version }}', CHROME_PATH: '/usr/bin/google-chrome' })
+  expect(steps[registry]?.if).toBeUndefined()
+  expect(steps[registry]?.['continue-on-error']).toBeUndefined()
 })
