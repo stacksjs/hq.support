@@ -5,16 +5,39 @@ import { assertConversationWritable, conversation, createConversation, enqueue, 
 import { customFieldValues, parseTicketForm, publicForm, storedJson, ticketForm } from './ticket-forms'
 import { parseBusinessHours } from './ticket-calendar'
 import { currentTicketClock, startTicketClock, transitionTicketClock } from './ticket-sla'
+import { sharedTicketAccess, verifiedTicketCustomer } from './ticket-organizations'
 
 export { recordTicketFirstResponse } from './ticket-sla'
-export async function ticket(project: Row, reference: unknown, customer?: Row): Promise<Row> {
+export async function ticket(project: Row, reference: unknown): Promise<Row> {
   const row = await one('SELECT * FROM support_tickets WHERE id = ? AND project_id = ? AND workspace_id = ?', [identifier(reference), project.id, project.workspace_id])
-  if (!row || (customer && (String(row.contact_id) !== String(customer.id) || row.kind !== 'customer'))) fail(404, 'not_found', 'Ticket not found.')
+  if (!row) fail(404, 'not_found', 'Ticket not found.')
   return row
 }
+export async function customerTicket(project: Row, reference: unknown, customer: Row) {
+  const id = identifier(reference)
+  const owned = await one("SELECT * FROM support_tickets WHERE id = ? AND project_id = ? AND workspace_id = ? AND contact_id = ? AND kind = 'customer'",
+    [id, project.id, project.workspace_id, customer.id])
+  if (owned) return await ticketView(owned, true)
+  if (verifiedTicketCustomer(customer)) {
+    const shared = await one(`SELECT t.id, t.title, t.status, t.type_id, t.state, t.created_at, t.updated_at
+      FROM support_tickets t WHERE t.id = ? AND t.project_id = ? AND t.workspace_id = ? AND t.kind = 'customer' AND ${sharedTicketAccess}`,
+    [id, project.id, project.workspace_id, customer.id])
+    if (shared) return {
+      id: String(shared.id),
+      title: shared.title,
+      status: shared.status,
+      state: Number(shared.type_id) ? shared.state : shared.status,
+      created_at: shared.created_at,
+      updated_at: shared.updated_at,
+      shared: true,
+    }
+  }
+  fail(404, 'not_found', 'Ticket not found.')
+}
+
 export async function customerTickets(project: Row, customer: Row, search: URLSearchParams) {
   for (const name of search.keys()) {
-    if (name !== 'cursor' && name !== 'limit') fail(422, 'invalid_query', 'Unsupported ticket history query parameter.')
+    if (!['cursor', 'limit', 'scope', 'q', 'status'].includes(name)) fail(422, 'invalid_query', 'Unsupported ticket history query parameter.')
     if (search.getAll(name).length > 1) fail(422, 'duplicate_query', `Provide ${name} once.`)
   }
 
@@ -24,20 +47,36 @@ export async function customerTickets(project: Row, customer: Row, search: URLSe
   const limit = rawLimit === null ? 20 : /^[1-9]\d{0,2}$/.test(rawLimit) ? Number(rawLimit) : NaN
   if (!Number.isSafeInteger(limit) || limit > 100) fail(422, 'invalid_limit', 'Ticket limit must be a whole number from 1 to 100.')
 
+  const status = search.get('status')
+  if (status !== null && !['open', 'pending', 'resolved'].includes(status)) fail(422, 'invalid_status', 'Ticket status must be open, pending or resolved.')
+  const title = search.get('q')?.trim().toLowerCase()
+  if (title && title.length > 120) fail(422, 'invalid_query', 'Ticket search must be at most 120 characters.')
+
+  const scope = search.get('scope') ?? 'personal'
+  if (scope !== 'personal' && scope !== 'shared') fail(422, 'invalid_scope', 'Ticket scope must be personal or shared.')
+  const shared = scope === 'shared'
+  if (shared && !verifiedTicketCustomer(customer)) return { tickets: [], nextCursor: null }
+  const access = shared ? `t.contact_id <> ? AND ${sharedTicketAccess}` : 't.contact_id = ?'
+  const customerIds = shared ? [customer.id, customer.id] : [customer.id]
+  const values = [project.workspace_id, project.id, ...customerIds, cursor]
+  if (status) values.push(status)
+  if (title) values.push('%' + title.replace(/[!%_]/g, '!$&') + '%')
+
   const rows = await query(`SELECT t.id, t.title, t.status,
       CASE WHEN t.type_id > 0 THEN t.state ELSE t.status END AS state, t.created_at, t.updated_at,
       c.id AS conversation_id
     FROM support_tickets t
     LEFT JOIN support_conversations c ON c.id = t.conversation_id
       AND c.workspace_id = t.workspace_id AND c.project_id = t.project_id AND c.contact_id = t.contact_id
-    WHERE t.workspace_id = ? AND t.project_id = ? AND t.contact_id = ? AND t.kind = 'customer' AND t.id < ?
-    ORDER BY t.id DESC LIMIT ?`, [project.workspace_id, project.id, customer.id, cursor, limit + 1])
+    WHERE t.workspace_id = ? AND t.project_id = ? AND ${access} AND t.kind = 'customer' AND t.id < ?
+      ${status ? 'AND t.status = ?' : ''}${title ? " AND LOWER(t.title) LIKE ? ESCAPE '!'" : ''}
+    ORDER BY t.id DESC LIMIT ?`, [...values, limit + 1])
   const tickets = rows.slice(0, limit).map(row => ({
     id: String(row.id),
     title: row.title,
     status: row.status,
     state: row.state,
-    conversationId: row.conversation_id == null ? null : String(row.conversation_id),
+    conversationId: shared || row.conversation_id == null ? null : String(row.conversation_id),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }))
@@ -69,6 +108,22 @@ export async function submitTicket(project: Row, input: Row, actor: { customer: 
       const previous = await one('SELECT * FROM support_tickets WHERE workspace_id = ? AND project_id = ? AND id = ? AND contact_id = ?', [project.workspace_id, project.id, originalId, customer ? customer.id : identifier(input.contactId)])
       if (previous && (!customer || previous.kind === 'customer')) return { ticket: await ticketView(previous, Boolean(customer)) }
     },
+  })
+}
+
+export async function submitSharedTicketFollowUp(project: Row, reference: unknown, customer: Row, input: Row) {
+  const ticketId = identifier(reference)
+  const body = text(input.body, 'body', 20000)
+  return await workspaceTransaction(Number(project.workspace_id), async () => {
+    const source = await customerTicket(project, ticketId, customer)
+    if (source.shared !== true) fail(404, 'not_found', 'Shared ticket not found.')
+    return await idempotent(project, `shared-ticket-follow-up:${ticketId}:${customer.id}`, input.idempotencyKey, { body }, async () => {
+      const title = `Follow-up on ticket ${ticketId}`
+      const thread = await createConversation(project, { externalId: customer.external_id }, { subject: title, body, idempotencyKey: crypto.randomUUID() }, customer)
+      const followUp = await createTicket(project, { title, description: body, conversationId: thread.conversation.id }, customer)
+      await addTicketRelation(project, followUp.id, { relatedTicketId: ticketId, kind: 'customer' })
+      return { ticket: followUp, conversationId: String(thread.conversation.id) }
+    })
   })
 }
 

@@ -17,7 +17,7 @@ import { projectReports } from './reports'
 type SavedReplyOperation = 'saved-replies.list' | 'saved-replies.create' | 'saved-replies.update' | 'saved-replies.archive'
 type ConversationMergeOperation = 'conversation.merge' | 'conversation.merge.undo' | 'conversation.merge.links'
 
-export type Operation = SavedReplyOperation | ConversationMergeOperation | 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'agent.presence' | 'agent.typing' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.session.revoke' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.typing' | 'widget.presence' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.list' | 'widget.tickets.create' | 'widget.tickets.detail' | 'widget.ticket-types' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
+export type Operation = SavedReplyOperation | ConversationMergeOperation | 'me' | 'workspaces.create' | 'projects.create' | 'projects.settings' | 'keys.create' | 'invitations.create' | 'invitations.accept' | 'inbox' | 'conversation.detail' | 'conversation.update' | 'agent.reply' | 'agent.presence' | 'agent.typing' | 'sessions' | 'events' | 'conversations.create' | 'conversations.list' | 'messages.create' | 'widget.session' | 'widget.session.revoke' | 'widget.events' | 'widget.conversations' | 'widget.create' | 'widget.detail' | 'widget.typing' | 'widget.presence' | 'widget.reply' | 'hq.start' | 'hq.poll' | 'hq.describe' | 'hq.approve' | 'hq.usage' | 'tickets.list' | 'tickets.create' | 'tickets.update' | 'widget.tickets.list' | 'widget.tickets.follow-up' | 'widget.tickets.create' | 'widget.tickets.detail' | 'widget.ticket-types' | 'articles.list' | 'articles.create' | 'articles.update' | 'widget.articles' | 'reports' | 'billing' | 'workflows.list' | 'workflows.create'
 
 const response = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } })
 function bearer(request: RequestInstance): string { return /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') || '')?.[1] ?? '' }
@@ -165,13 +165,17 @@ async function handleCore(request: RequestInstance, operation: Operation): Promi
     else if (operation === 'widget.tickets.list') {
       body = await (await import('./tickets')).customerTickets(project, person!, new URL(request.url).searchParams)
     }
+    else if (operation === 'widget.tickets.follow-up') {
+      body = await (await import('./tickets')).submitSharedTicketFollowUp(project, params.id, person!, data)
+      status = 201
+    }
     else if (operation === 'tickets.create' || operation === 'widget.tickets.create') {
       const { submitTicket } = await import('./tickets')
       body = await submitTicket(project, data, person ? { customer: person } : { userId: account!.id }); status = 201
     }
     else if (operation === 'widget.tickets.detail' || operation === 'tickets.update') {
-      const { ticket, ticketView, updateTicket } = await import('./tickets')
-      body = { ticket: operation === 'tickets.update' ? await updateTicket(project, params.id, data) : await ticketView(await ticket(project, params.id, person), true) }
+      const { customerTicket, updateTicket } = await import('./tickets')
+      body = { ticket: operation === 'tickets.update' ? await updateTicket(project, params.id, data) : await customerTicket(project, params.id, person!) }
     }
     else if (operation === 'articles.list' || operation === 'widget.articles') {
       const url = new URL(request.url)

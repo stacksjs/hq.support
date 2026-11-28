@@ -68,6 +68,7 @@ route.get('/widget/projects/{project}/articles', supportAction('widget.articles'
 route.get('/widget/projects/{project}/tickets', supportAction('widget.tickets.list', 'GET')).rateLimit(120, 'minute')
 route.post('/widget/projects/{project}/tickets', supportAction('widget.tickets.create', 'POST')).skipCsrf().rateLimit(20, 'minute')
 route.get('/widget/projects/{project}/tickets/{id}', supportAction('widget.tickets.detail', 'GET')).rateLimit(120, 'minute')
+route.post('/widget/projects/{project}/tickets/{id}/follow-ups', supportAction('widget.tickets.follow-up', 'POST')).skipCsrf().rateLimit(20, 'minute')
 route.options('/widget/projects/{project}/*', async (request) => {
   const { project } = await import('../app/Support/service')
   const origin = request.headers.get('origin')

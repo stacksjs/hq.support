@@ -149,6 +149,60 @@ try {
   for (const search of ['limit=0', 'limit=101', 'cursor=0', 'limit=1&limit=2', 'contactId=1']) {
     check((await http(ticketHistory + '?' + search, 'GET', undefined, customerToken, allowedOrigin)).status === 422, 'ticket history rejects invalid or unsupported pagination')
   }
+  const organizationPath = `/support/projects/${project.public_id}/ticket-organizations`
+  const ticketGrants = `/support/projects/${project.public_id}/tickets/${ticket.id}/organizations`
+  const secondToken = String(secondCustomer.token)
+  const sharedHistory = ticketHistory + '?scope=shared'
+  const sharedDetail = `${ticketHistory}/${ticket.id}`
+  const otherUser = await one('SELECT id FROM users WHERE email = ?', ['sla-outsider@example.test'])
+  await insert('support_memberships', { workspace_id: workspace.id, user_id: otherUser!.id, email: 'sla-outsider@example.test', role: 'agent', status: 'active' })
+  const team = await http(organizationPath, 'POST', { name: 'Explicit support organization' }, owner)
+  check(team.status === 201, 'an owner can create a ticket organization')
+  const organizationId = team.data.organization.id
+  const members = `${organizationPath}/${organizationId}/members`
+  const secondMembership = `${members}/${secondCustomer.contact.id}`
+  const grant = `${ticketGrants}/${organizationId}`
+  check((await http(secondMembership, 'PUT', undefined, outsider)).status === 403, 'ordinary agents cannot grant organization membership')
+  check((await http(`${members}/${otherPerson.id}`, 'PUT', undefined, owner)).status === 404, 'membership is scoped to this project')
+  const anonymous = await createSession(project, { externalId: 'anonymous:organization-visitor', name: 'Visitor' })
+  check((await http(`${members}/${anonymous.contact.id}`, 'PUT', undefined, owner)).status === 422, 'browser-only anonymous sessions cannot join an organization')
+  const matchingCustomers = await http(organizationPath + '/customers?q=second', 'GET', undefined, owner)
+  check(matchingCustomers.status === 200 && matchingCustomers.data.customers.length === 1 && String(matchingCustomers.data.customers[0].id) === secondCustomer.contact.id, 'organization customer search stays in project scope')
+  check((await http(organizationPath + '/customers?q=visitor', 'GET', undefined, owner)).data.customers.length === 0, 'organization search omits anonymous customer identities')
+  check((await http(sharedDetail, 'GET', undefined, secondToken, allowedOrigin)).status === 404, 'a customer cannot open another customer ticket before sharing')
+  check((await http(secondMembership, 'PUT', undefined, owner)).status === 200, 'an owner explicitly adds a verified project customer')
+  check((await http(members, 'GET', undefined, owner)).data.members.length === 1, 'the administrative member list returns the scoped customer')
+  check((await http(sharedHistory, 'GET', undefined, secondToken, allowedOrigin)).data.tickets.length === 0, 'organization membership alone reveals no tickets')
+  check((await http(grant, 'PUT', undefined, outsider)).status === 403, 'ordinary agents cannot grant tickets')
+  check((await http(`/support/projects/${project.public_id}/tickets/${internal.id}/organizations/${organizationId}`, 'PUT', undefined, owner)).status === 404, 'internal tickets cannot be granted to an organization')
+  check((await http(grant, 'PUT', undefined, owner)).status === 200 && (await http(grant, 'PUT', undefined, owner)).status === 200, 'grant creation is idempotent')
+  check((await http(ticketGrants, 'GET', undefined, owner)).data.organizations.length === 1, 'an owner can review existing grants')
+  const sharedPage = await http(sharedHistory, 'GET', undefined, secondToken, allowedOrigin)
+  check(sharedPage.status === 200 && sharedPage.data.tickets.length === 1 && sharedPage.data.tickets[0].id === String(ticket.id) && sharedPage.data.tickets[0].conversationId === null, 'shared list reveals only the granted summary, with no access to the original conversation')
+  const filteredShared = await http(sharedHistory + '&q=' + encodeURIComponent(String(sharedPage.data.tickets[0].title).slice(0, 6)) + '&status=' + sharedPage.data.tickets[0].status, 'GET', undefined, secondToken, allowedOrigin)
+  check(filteredShared.status === 200 && filteredShared.data.tickets.length === 1, 'shared history filters only authorized ticket titles and states')
+  check((await http(sharedHistory + '&q=%25', 'GET', undefined, secondToken, allowedOrigin)).data.tickets.length === 0, 'title searches treat SQL wildcard characters as plain text')
+  const sharedView = await http(sharedDetail, 'GET', undefined, secondToken, allowedOrigin)
+  check(sharedView.status === 200 && sharedView.data.ticket.shared === true && !Object.hasOwn(sharedView.data.ticket, 'customFields') && !Object.hasOwn(sharedView.data.ticket, 'description') && !Object.hasOwn(sharedView.data.ticket, 'contact_id'), 'shared detail excludes original identity, content and custom field data')
+  check((await http(ticketHistory, 'GET', undefined, secondToken, allowedOrigin)).data.tickets.length === 1, 'default history stays scoped to personal tickets')
+  const followUpPath = sharedDetail + '/follow-ups'
+  const followUpInput = { body: 'What is the next step for our team?', idempotencyKey: 'team-ticket-follow-up' }
+  const followed = await http(followUpPath, 'POST', followUpInput, secondToken, allowedOrigin)
+  const repeated = await http(followUpPath, 'POST', followUpInput, secondToken, allowedOrigin)
+  check(followed.status === 201 && repeated.status === 201 && repeated.data.conversationId === followed.data.conversationId && repeated.data.ticket.id === followed.data.ticket.id, 'shared ticket follow-up opens one own conversation and ticket per idempotency key')
+  const followUpThread = await http(`${widget}/conversations/${followed.data.conversationId}`, 'GET', undefined, secondToken, allowedOrigin)
+  check(followUpThread.status === 200 && followUpThread.data.messages.length === 1 && followUpThread.data.messages[0].body === followUpInput.body, 'the team member can use Messenger in their own follow-up conversation')
+  check((await http(`${widget}/conversations/${conversation.id}`, 'GET', undefined, secondToken, allowedOrigin)).status === 404, 'sharing the ticket cannot authorize the original conversation')
+  const followUpRelation = await one("SELECT related_ticket_id FROM support_ticket_relations WHERE ticket_id = ? AND kind = 'customer'", [followed.data.ticket.id])
+  check(String(followUpRelation?.related_ticket_id) === String(ticket.id), 'agent-side ticket relation connects the follow-up to the source')
+
+  check((await http(grant, 'DELETE', undefined, owner)).status === 200 && (await http(sharedDetail, 'GET', undefined, secondToken, allowedOrigin)).status === 404, 'grant revocation removes access immediately')
+  check((await http(grant, 'PUT', undefined, owner)).status === 200 && (await http(secondMembership, 'DELETE', undefined, owner)).status === 200, 'owner can revoke membership independently of the grant')
+  check((await http(sharedHistory, 'GET', undefined, secondToken, allowedOrigin)).data.tickets.length === 0 && (await http(sharedDetail, 'GET', undefined, secondToken, allowedOrigin)).status === 404, 'membership revocation removes listed and direct ticket access')
+  check((await http(followUpPath, 'POST', followUpInput, secondToken, allowedOrigin)).status === 404, 'membership revocation also blocks a replay against the shared ticket')
+  check((await http(`${widget}/conversations/${followed.data.conversationId}`, 'GET', undefined, secondToken, allowedOrigin)).status === 200, 'the member owns the follow-up they already opened')
+
+  check((await http(sharedDetail, 'GET', undefined, customerToken, allowedOrigin)).status === 200, 'revoking another customer leaves the author access intact')
   const utcPolicy = (await http(path + '/policies', 'POST', { name: 'Always open', firstResponseMinutes: 1, resolutionMinutes: 2 }, owner)).data.policy
   const utcType = (await http(path + '/types', 'POST', { name: 'Immediate', slaPolicyId: utcPolicy.id }, owner)).data.type
   now = Date.now()

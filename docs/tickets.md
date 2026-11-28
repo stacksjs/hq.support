@@ -27,6 +27,34 @@ when linked. The `hq-support-ticket-status` element offers this history when its
 
 When a customer submits an opted-in type without a conversation, HQ.support opens a linked conversation for the same contact, consumes one conversation allowance, and uses the project's usual default inbox routing. The ticket and conversation commit together and an unchanged retry returns the same pair. The ticket response includes `conversation_id`. Use that ID with the existing customer conversation endpoint and the same session to read replies. The opening message uses the submitted description or title. Typed form answers stay on the ticket.
 
+## Customer organizations
+
+Owners and admins can open **Ticket sharing** from ticket configuration or use
+**Manage sharing** on a customer ticket. Create an organization, find a known
+customer by name or email, and add that customer explicitly. Grant a customer
+ticket to the organization to make its title and status visible to members.
+Removing a membership or ticket grant takes effect on the next request.
+
+The same admin operations are available under `/api/support/projects/{project}`.
+Use `GET` and `POST` on `/ticket-organizations`, and `GET` on
+`/ticket-organizations/customers?q=...` to look up contacts. Use `GET` on
+`/ticket-organizations/{organization}/members` or
+`/tickets/{ticket}/organizations` to inspect grants. Add or remove a member
+with `PUT` or `DELETE` on `/ticket-organizations/{organization}/members/{contact}`.
+Add or remove a ticket grant with the same methods on
+`/tickets/{ticket}/organizations/{organization}`.
+
+Customer history accepts `scope=shared` for the **Shared with you** view,
+`q` for title search, and `status` for the open, pending or resolved
+category. The default scope is personal. Shared detail returns ticket identity,
+title, state, and timestamps. Only the ticket author can open the ticket's
+original conversation through the customer portal. Shared viewers can use
+**Ask about this ticket** to open their own follow-up conversation. Submit
+`body` and an `idempotencyKey` to
+`POST /api/widget/projects/{project}/tickets/{ticket}/follow-ups`. The reply
+contains the new ticket and `conversationId`. Agents can see the relationship
+to the source ticket in the related-tickets panel.
+
 ## Clocks and business time
 
 A typed ticket starts independent first-response and resolution targets from the server acceptance instant. Unspecified types retain the legacy behavior without an SLA. Each clock snapshots its policy and calendar. Targets consume actual elapsed working milliseconds. Overlapping windows count once; configured local holidays contribute no working time. Calendar conversion uses native Stacks datetime helpers with IANA time zones, including 23/25-hour DST days. Repeated wall times use the earlier instant; nonexistent wall times shift forward according to native zone conversion. A window normalized to an empty span across a DST gap contributes no time. Calculations are bounded to ten calendar years and reject unschedulable targets.

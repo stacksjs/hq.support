@@ -1,5 +1,5 @@
 <script component type="application/json">
-{"tag":"hq-support-ticket-status","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"ticketId":{"type":"string","default":""},"selectedId":{"type":"string","default":"","attribute":false,"reflect":false},"ticket":{"type":"object","attribute":false,"reflect":false},"tickets":{"type":"array","attribute":false,"reflect":false},"nextCursor":{"type":"string","default":"","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"historyLoaded":{"type":"boolean","attribute":false,"reflect":false}},"events":{"loaded":{},"open-conversation":{},"error":{}}}
+{"tag":"hq-support-ticket-status","shadowDOM":"open","properties":{"apiUrl":{"type":"string","default":""},"projectId":{"type":"string","default":""},"sessionToken":{"type":"string","attribute":false,"reflect":false},"ticketId":{"type":"string","default":""},"historyScope":{"type":"string","default":"personal","attribute":false,"reflect":false},"historyQuery":{"type":"string","default":"","attribute":false,"reflect":false},"historyStatus":{"type":"string","default":"","attribute":false,"reflect":false},"selectedId":{"type":"string","default":"","attribute":false,"reflect":false},"ticket":{"type":"object","attribute":false,"reflect":false},"tickets":{"type":"array","attribute":false,"reflect":false},"nextCursor":{"type":"string","default":"","attribute":false,"reflect":false},"notice":{"type":"string","attribute":false,"reflect":false},"pending":{"type":"boolean","attribute":false,"reflect":false},"historyLoaded":{"type":"boolean","attribute":false,"reflect":false},"followUpDraft":{"type":"string","default":"","attribute":false,"reflect":false}},"events":{"loaded":{},"open-conversation":{},"error":{}}}
 </script>
 <script client>
 interface CustomerTicket extends Record<string, unknown> {
@@ -8,6 +8,7 @@ interface CustomerTicket extends Record<string, unknown> {
   status?: string
   state?: string
   description?: string
+  shared?: boolean
   conversation_id?: string | number | null
 }
 interface TicketSummary {
@@ -20,6 +21,7 @@ interface TicketResponse extends CustomerTicket {
   ticket?: CustomerTicket
   tickets?: TicketSummary[]
   nextCursor?: string | null
+  conversationId?: string
   error?: { message?: string }
   message?: string
 }
@@ -27,6 +29,7 @@ interface ComponentState {
   _abort?: AbortController
   _observe?: () => void
   _identity?: string
+  _followUp?: { ticket: string, body: string, idempotencyKey: string }
   ticket: CustomerTicket
   tickets: TicketSummary[]
 }
@@ -56,6 +59,11 @@ function clear() {
   this.nextCursor = ''
   this.selectedId = ''
   this.historyLoaded = false
+  this.followUpDraft = ''
+  this._followUp = undefined
+  this.historyScope = 'personal'
+  this.historyQuery = ''
+  this.historyStatus = ''
   this.pending = false
   this.notice = ''
 }
@@ -70,7 +78,12 @@ async function request(id = '', cursor = '') {
   this.notice = ''
   try {
     const path = '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/tickets'
-    const suffix = id ? '/' + encodeURIComponent(id) : cursor ? '?cursor=' + encodeURIComponent(cursor) : ''
+    const search = new URLSearchParams()
+    if (this.historyScope === 'shared') search.set('scope', 'shared')
+    if (this.historyQuery) search.set('q', this.historyQuery)
+    if (this.historyStatus) search.set('status', this.historyStatus)
+    if (cursor) search.set('cursor', cursor)
+    const suffix = id ? '/' + encodeURIComponent(id) : search.size ? '?' + search.toString() : ''
     const response = await fetch(this.apiUrl.replace(/\/$/, '') + path + suffix, { credentials: 'omit', referrerPolicy: 'origin', signal: controller.signal, headers: { Authorization: 'Bearer ' + this.sessionToken } })
     const data: TicketResponse = await response.json()
     if (!isCurrent()) return
@@ -104,8 +117,29 @@ async function refresh() {
   await this.request(this.ticketId || this.selectedId)
 }
 
+async function switchHistoryScope(scope: 'personal' | 'shared') {
+  this.configure()
+  if (scope === this.historyScope) return
+  this.clear()
+  this.historyScope = scope
+  await this.refresh()
+}
+
+async function filterSharedHistory(event: Event) {
+  event.preventDefault()
+  if (!(event.target instanceof HTMLFormElement)) return
+  const form = new FormData(event.target)
+  this.historyQuery = String(form.get('q') || '').trim()
+  this.historyStatus = String(form.get('status') || '')
+  this.tickets = []
+  this.nextCursor = ''
+  this.historyLoaded = false
+  await this.refresh()
+}
+
 async function showTicket(id: string) {
   this.selectedId = id
+  this.followUpDraft = ''
   this.ticket = {}
   const loading = this.refresh()
   await this.updateComplete
@@ -136,6 +170,47 @@ async function loadMore() {
     this.shadowRoot?.getElementById('ticket-row-' + ticketId)?.focus()
 }
 
+async function submitFollowUp(event: Event) {
+  event.preventDefault()
+  if (!(event.target instanceof HTMLFormElement) || this.pending || !this.ticket.shared || !this.ticket.id) return
+  const form = new FormData(event.target)
+  this.followUpDraft = String(form.get('follow-up') || '')
+  const body = this.followUpDraft.trim()
+  if (!body) { this.notice = 'Enter a message to follow up.'; return }
+  const ticket = String(this.ticket.id)
+  if (this._followUp?.ticket !== ticket || this._followUp?.body !== body)
+    this._followUp = { ticket, body, idempotencyKey: crypto.randomUUID() }
+  const controller = new AbortController()
+  this._abort = controller
+  const identity = this._identity
+  const isCurrent = () => this._abort === controller && this.identity() === identity && !controller.signal.aborted
+  this.pending = true
+  this.notice = ''
+  try {
+    const path = '/api/widget/projects/' + encodeURIComponent(this.projectId) + '/tickets/' + encodeURIComponent(ticket) + '/follow-ups'
+    const response = await fetch(this.apiUrl.replace(/\/$/, '') + path, {
+      method: 'POST', credentials: 'omit', referrerPolicy: 'origin', signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + this.sessionToken },
+      body: JSON.stringify({ body, idempotencyKey: this._followUp.idempotencyKey }),
+    })
+    const data: TicketResponse = await response.json()
+    if (!isCurrent()) return
+    if (!response.ok || !data.conversationId) throw new Error(data.error?.message || data.message || 'Your follow-up could not be sent.')
+    this.followUpDraft = ''
+    this._followUp = undefined
+    this.notice = 'Follow-up sent.'
+    this.emit('open-conversation', { conversationId: data.conversationId })
+  }
+  catch (error) {
+    if (!isCurrent()) return
+    this.notice = error instanceof Error ? error.message : 'Your follow-up could not be sent.'
+    this.emit('error', { message: this.notice })
+  }
+  finally {
+    if (isCurrent()) this.pending = false
+  }
+}
+
 function openConversation() {
   const conversationId = this.ticket.conversation_id
   if (conversationId) this.emit('open-conversation', { conversationId: String(conversationId) })
@@ -162,12 +237,36 @@ function onDisconnect() {
         <small>Ticket {{ this.ticket.id }}</small>
         <p>Status <strong>{{ this.stateLabel(this.ticket.state || this.ticket.status) }}</strong></p>
         @if(this.ticket.description)<p class="description">{{ this.ticket.description }}</p>@endif
+        @if(this.ticket.shared)
+          <form class="history-search" @submit.prevent="submitFollowUp">
+            <label>Ask about this ticket<textarea name="follow-up" required maxlength="20000" rows="3">{{ this.followUpDraft }}</textarea></label>
+            <button type="submit" :disabled="this.pending">Send follow-up</button>
+          </form>
+        @endif
         @if(this.ticket.conversation_id)<button type="button" @click="openConversation">Open conversation</button>@endif
       @endif
       <button type="button" @click="refresh" :disabled="this.pending">Refresh status</button>
     @else
-      <h2>Your support tickets</h2>
-      @if(this.historyLoaded && !this.tickets.length)<p>You have no support tickets yet.</p>@endif
+      <h2>Support tickets</h2>
+      <div class="history-filters" role="group" aria-label="Ticket visibility">
+        <button type="button" aria-pressed="{{ this.historyScope === 'personal' }}" @click="this.switchHistoryScope('personal')">Your tickets</button>
+        <button type="button" aria-pressed="{{ this.historyScope === 'shared' }}" @click="this.switchHistoryScope('shared')">Shared with you</button>
+      </div>
+      @if(this.historyScope === 'shared')
+        <form class="history-search" @submit.prevent="filterSharedHistory">
+          <label>Search shared tickets<input type="search" name="q" maxlength="120" value="{{ this.historyQuery }}"></label>
+          <label>Ticket status
+            <select name="status">
+              <option value="" :selected="!this.historyStatus">All statuses</option>
+              <option value="open" :selected="this.historyStatus === 'open'">Open</option>
+              <option value="pending" :selected="this.historyStatus === 'pending'">Pending</option>
+              <option value="resolved" :selected="this.historyStatus === 'resolved'">Resolved</option>
+            </select>
+          </label>
+          <button type="submit" :disabled="this.pending">Filter tickets</button>
+        </form>
+      @endif
+      @if(this.historyLoaded && !this.tickets.length)<p>{{ this.historyScope === 'shared' ? 'No shared tickets match this view.' : 'You have no support tickets yet.' }}</p>@endif
       @if(this.tickets.length)
         <ul>
           @foreach(this.tickets as item)
@@ -190,6 +289,12 @@ button+h2{margin-top:14px}small{font-size:12px;color:#53665d}p{line-height:1.5}
 ul{list-style:none;padding:0;margin:0 0 14px;display:grid;gap:6px}
 button{font:inherit;border:1px solid #cddbd3;border-radius:9px;background:#fff;color:#126d60;padding:9px 12px;cursor:pointer}
 button+button{margin-inline-start:6px}button:disabled{opacity:.5}
+.history-filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.history-search{display:grid;gap:8px;margin-bottom:14px}
+.history-search label{display:grid;gap:4px}
+.history-search input,.history-search select,.history-search textarea{box-sizing:border-box;width:100%;min-width:0;padding:8px;border:1px solid #cddbd3;border-radius:8px;font:inherit;color:inherit;background:#fff}
+.history-search button{justify-self:start}
+.history-filters button{margin:0}.history-filters button[aria-pressed="true"]{background:#e9f6f0;color:#10584c;border-color:#76ac99}
 button:focus-visible,h2:focus-visible{outline:3px solid #68bcab;outline-offset:3px}
 .ticket{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:start;min-height:44px}
 .ticket span{overflow-wrap:anywhere}.ticket small{flex-shrink:0}

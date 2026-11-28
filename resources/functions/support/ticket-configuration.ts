@@ -38,7 +38,11 @@ export function createTicketConfiguration() {
     policies.set((result.policies || []).map((row: Policy) => ({ ...row, pause_states: stored(row.pause_states, []) })))
     agents.set(result.agents || [])
   }
-  async function boot() { await workspace.boot(); await load() }
+  async function boot(projectId?: string) {
+    await workspace.boot()
+    if (projectId && workspace.projects().some(item => item.public_id === projectId)) workspace.project.set(projectId)
+    await load()
+  }
   function fail(message: string) { workspace.notice.set(''); workspace.error.set(message) }
   async function create(path: string, input: unknown, message: string) {
     if (!workspace.canManage() || workspace.pending()) return false

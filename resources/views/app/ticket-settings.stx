@@ -4,8 +4,17 @@ const pageDescription = 'Define ticket forms, business calendars and SLA policie
 </script>
 <script client>
 import { createTicketConfiguration } from '../../functions/support/ticket-configuration'
+import { createTicketSharing } from '../../functions/support/ticket-sharing'
 const config = createTicketConfiguration()
 const workspace = config.workspace
+const sharing = createTicketSharing(workspace)
+const params = useSearchParams()
+const organizationName = sharing.name
+const selectedOrganization = sharing.selected
+const customerSearch = sharing.search
+const selectedCustomer = sharing.customerId
+const sharedTicketId = sharing.ticketId
+const grantOrganization = sharing.grantOrganization
 const project = workspace.project
 const name = config.name
 const kind = config.kind
@@ -33,14 +42,31 @@ const firstMinutes = config.firstMinutes
 const resolutionMinutes = config.resolutionMinutes
 const pauseStates = config.pauseStates
 const escalationAssignee = config.escalationAssignee
-onMount(() => config.boot())
+async function showSharing() {
+  config.tab.set('sharing')
+  await sharing.load()
+}
+async function loadProject() {
+  await config.load()
+  if (config.tab() === 'sharing') await sharing.load()
+}
+onMount(async () => {
+  const selectedProject = params.get('project') || undefined
+  const ticket = params.get('ticket') || ''
+  await config.boot(selectedProject)
+  if (workspace.canManage() && selectedProject === workspace.project() && /^[1-9]\d*$/.test(ticket)) {
+    await showSharing()
+    sharedTicketId.set(ticket)
+    await sharing.loadGrants()
+  }
+})
 onDestroy(() => workspace.destroy())
 </script>
 @extends('console')
 @section('content')
-<header class="console-heading"><div><a href="/app/tickets" class="text-xs console-link">Tickets / Configuration</a><h1>Forms and response targets</h1><p>Give each request the right context and working hours. New definitions apply to future tickets; existing snapshots are preserved.</p></div><div class="project-picker"><label for="configuration-project">Project</label><select id="configuration-project" x-model="project" @change="config.load()" :disabled="workspace.pending() || workspace.loading()"><option value="">Select a project</option><option :for="item in workspace.projects()" :value="item.public_id">{{ item.name }}</option></select></div></header>
+<header class="console-heading"><div><a href="/app/tickets" class="text-xs console-link">Tickets / Configuration</a><h1>Forms and response targets</h1><p>Give each request the right context and working hours. New definitions apply to future tickets; existing snapshots are preserved.</p></div><div class="project-picker"><label for="configuration-project">Project</label><select id="configuration-project" x-model="project" @change="loadProject()" :disabled="workspace.pending() || workspace.loading()"><option value="">Select a project</option><option :for="item in workspace.projects()" :value="item.public_id">{{ item.name }}</option></select></div></header>
 <p :if="workspace.error()" class="console-error" role="alert">{{ workspace.error() }}</p><p :if="workspace.notice()" class="console-notice" role="status">{{ workspace.notice() }}</p><p :if="workspace.loading()" class="console-loading">Loading ticket configuration...</p>
-<div class="console-toolbar" aria-label="Ticket configuration sections"><button type="button" class="button button-outline" :aria-pressed="config.tab() === 'types'" @click="config.tab.set('types')">Ticket types</button><button type="button" class="button button-outline" :aria-pressed="config.tab() === 'calendars'" @click="config.tab.set('calendars')">Business calendars</button><button type="button" class="button button-outline" :aria-pressed="config.tab() === 'policies'" @click="config.tab.set('policies')">SLA policies</button><button type="button" class="text-button" @click="config.load()" :disabled="workspace.pending() || workspace.loading()">Refresh definitions</button></div>
+<div class="console-toolbar" aria-label="Ticket configuration sections"><button type="button" class="button button-outline" :aria-pressed="config.tab() === 'types'" @click="config.tab.set('types')">Ticket types</button><button type="button" class="button button-outline" :aria-pressed="config.tab() === 'calendars'" @click="config.tab.set('calendars')">Business calendars</button><button type="button" class="button button-outline" :aria-pressed="config.tab() === 'policies'" @click="config.tab.set('policies')">SLA policies</button><button :if="workspace.canManage()" type="button" class="button button-outline" :aria-pressed="config.tab() === 'sharing'" @click="showSharing()">Ticket sharing</button><button :if="config.tab() !== 'sharing'" type="button" class="text-button" @click="config.load()" :disabled="workspace.pending() || workspace.loading()">Refresh definitions</button></div>
 <p :if="!workspace.canManage() && workspace.ready()" class="capability-note">Owners and admins can create definitions. Your agent account can view the configuration.</p>
 <section :if="config.tab() === 'types'" class="editor-grid"><aside class="resource-list" aria-label="Configured ticket types"><details :for="type in config.types()" class="p-4 border-[#e1e8e2] border-b"><summary class="cursor-pointer"><strong>{{ type.name }}</strong><span>{{ type.kind }} / {{ config.policyLabel(type.sla_policy_id) }}</span></summary><dl class="mt-4 field-help"><div :for="field in type.fields"><dt>{{ field.label }} / {{ field.key }}</dt><dd>{{ field.type }} / {{ field.visibility }} / {{ field.required ? 'Required' : 'Optional' }}{{ field.default !== undefined ? ' / Has default' : '' }}</dd></div></dl><p class="mt-4 field-help">States: {{ config.stateLabels(type) }}</p><button :if="workspace.canManage()" type="button" class="mt-4 text-button" @click="config.copyType(type)" :disabled="workspace.pending()">Use as template</button></details><p :if="config.types().length === 0" class="empty-list">No typed forms yet. Standard customer tickets remain available without an SLA.</p></aside>
 <form :if="workspace.canManage()" class="editor-panel" @submit.prevent="config.createType()"><header class="editor-panel-heading"><h2>Create a ticket type</h2></header><fieldset class="border-0 editor-form" :disabled="workspace.pending()"><div class="field-grid"><div><label for="type-name">Type name</label><input id="type-name" x-model="name" required maxlength="100" placeholder="Product question"></div><div><label for="type-kind">Audience</label><select id="type-kind" x-model="kind"><option value="customer">Customer</option><option value="internal">Internal</option><option value="incident">Incident</option></select></div></div><label for="type-policy">SLA policy</label><select id="type-policy" x-model="policyId"><option value="">No SLA policy</option><option :for="policy in config.policies()" :value="String(policy.id)">{{ policy.name }}</option></select><p class="field-help">Only customer types and customer-visible fields are available to the embedded customer form.</p>
@@ -53,5 +79,68 @@ onDestroy(() => workspace.destroy())
 <div class="flex gap-4 items-center justify-between mt-6"><h3 class="font-semibold text-sm">Additional states</h3><button type="button" class="text-button" @click="config.editState()">Add state</button></div><p class="field-help">Open, Pending and Resolved are built in. Additional states map to one of those categories.</p><div :for="(item,index) in config.states()" class="flex gap-3 items-center justify-between py-3 border-[#e1e8e2] border-b"><span class="text-sm">{{ item.label }} / {{ item.key }} / {{ item.category }}</span><div class="flex gap-3"><button type="button" class="text-button" @click="config.editState(index)">Edit draft state</button><button type="button" class="text-button" @click="config.removeState(index)">Remove draft state</button></div></div><section :if="config.editingState()" class="mt-4 p-4 border border-[#d5e3d9] rounded-xl"><div class="field-grid"><div><label for="state-key">State key</label><input id="state-key" x-model="stateKey" maxlength="50" placeholder="waiting_customer"></div><div><label for="state-label">State label</label><input id="state-label" x-model="stateLabel" maxlength="100" placeholder="Waiting on customer"></div></div><label for="state-category">Status category</label><select id="state-category" x-model="stateCategory"><option value="open">Open</option><option value="pending">Pending</option><option value="resolved">Resolved</option></select><div class="flex gap-3 mt-4"><button type="button" class="button button-outline" @click="config.applyState()">Apply state</button><button type="button" class="text-button" @click="config.editingState.set(false)">Cancel state changes</button></div></section><p :if="config.editingField() || config.editingState()" class="mt-4 field-help">Apply or cancel the current field and state drafts before creating the type.</p><button type="submit" class="mt-6 button button-teal" :disabled="config.editingField() || config.editingState()">{{ workspace.pending() ? 'Creating...' : 'Create ticket type' }}</button></fieldset></form></section>
 <section :if="config.tab() === 'calendars'" class="editor-grid"><aside class="resource-list" aria-label="Configured business calendars"><details :for="calendar in config.calendars()" class="p-4 border-[#e1e8e2] border-b"><summary class="cursor-pointer"><strong>{{ calendar.name }}</strong><span>{{ calendar.time_zone }}</span></summary><p :for="window in calendar.definition.windows" class="mt-3 field-help">{{ config.windowLabel(window) }}</p><p class="mt-3 field-help">{{ calendar.definition.holidays.length }} local holiday dates</p><button :if="workspace.canManage()" type="button" class="mt-4 text-button" @click="config.copyCalendar(calendar)" :disabled="workspace.pending()">Use as template</button></details><p :if="config.calendars().length === 0" class="empty-list">No business calendars configured. A policy without a calendar is always open.</p></aside><form :if="workspace.canManage()" class="editor-panel" @submit.prevent="config.createCalendar()"><header class="editor-panel-heading"><h2>Create a business calendar</h2></header><fieldset class="border-0 editor-form" :disabled="workspace.pending()"><label for="calendar-name">Calendar name</label><input id="calendar-name" x-model="calendarName" required maxlength="100" placeholder="US support hours"><label for="calendar-zone">IANA time zone</label><input id="calendar-zone" x-model="timeZone" required placeholder="America/New_York"><p class="field-help">Working windows and holidays use this local time zone, including daylight saving transitions.</p><h3 class="mt-6 font-semibold text-sm">Weekly hours</h3><div :for="(window,index) in config.windows()" class="flex gap-3 items-center justify-between py-3 border-[#e1e8e2] border-b"><span class="text-sm">{{ config.windowLabel(window) }}</span><button type="button" class="text-button" @click="config.removeWindow(index)">Remove draft window</button></div><button type="button" class="mt-4 text-button" @click="config.editingWindow.set(true)">Add working window</button><section :if="config.editingWindow()" class="mt-4 p-4 border border-[#d5e3d9] rounded-xl"><div class="flex flex-wrap gap-2" aria-label="Working weekdays"><button :for="day in config.days" type="button" class="button button-outline" :aria-pressed="config.weekdays().includes(day.key)" @click="config.toggleDay(day.key)">{{ day.name }}</button></div><div class="field-grid"><div><label for="window-start">Starts (HH:mm)</label><input id="window-start" x-model="start" type="time"></div><div><label for="window-end">Ends (HH:mm)</label><input id="window-end" x-model="end" placeholder="17:00" maxlength="5"></div></div><p class="mt-3 field-help">24:00 is allowed only as an end. Split overnight windows at midnight.</p><div class="flex gap-3 mt-4"><button type="button" class="button button-outline" @click="config.applyWindow()">Apply working window</button><button type="button" class="text-button" @click="config.editingWindow.set(false)">Cancel window</button></div></section><label for="calendar-holidays">Local holiday dates, one YYYY-MM-DD per line</label><textarea id="calendar-holidays" x-model="holidays" rows="5" placeholder="2026-12-25"></textarea><button type="submit" class="mt-6 button button-teal" :disabled="config.editingWindow()">{{ workspace.pending() ? 'Creating...' : 'Create business calendar' }}</button></fieldset></form></section>
 <section :if="config.tab() === 'policies'" class="editor-grid"><aside class="resource-list" aria-label="Configured SLA policies"><details :for="policy in config.policies()" class="p-4 border-[#e1e8e2] border-b"><summary class="cursor-pointer"><strong>{{ policy.name }}</strong><span>{{ config.calendarLabel(policy.calendar_id) }}</span></summary><p class="mt-3 field-help">First response: {{ policy.first_response_minutes || 'Disabled' }} minutes / Resolution: {{ policy.resolution_minutes || 'Disabled' }} minutes</p><p class="mt-3 field-help">Pause states: {{ policy.pause_states.join(', ') || 'None' }}</p><button :if="workspace.canManage()" type="button" class="mt-4 text-button" @click="config.copyPolicy(policy)" :disabled="workspace.pending()">Use as template</button></details><p :if="config.policies().length === 0" class="empty-list">No SLA policies yet. Create one, then attach it to a new ticket type.</p></aside><form :if="workspace.canManage()" class="editor-panel" @submit.prevent="config.createPolicy()"><header class="editor-panel-heading"><h2>Create an SLA policy</h2></header><fieldset class="border-0 editor-form" :disabled="workspace.pending()"><label for="policy-name">Policy name</label><input id="policy-name" x-model="policyName" required maxlength="100" placeholder="Standard support"><label for="policy-calendar">Working calendar</label><select id="policy-calendar" x-model="calendarId"><option value="">Always open</option><option :for="calendar in config.calendars()" :value="String(calendar.id)">{{ calendar.name }} / {{ calendar.time_zone }}</option></select><div class="field-grid"><div><label for="first-response-minutes">First response target (working minutes)</label><input id="first-response-minutes" x-model="firstMinutes" type="number" min="0" max="525600" step="1" required></div><div><label for="resolution-minutes">Resolution target (working minutes)</label><input id="resolution-minutes" x-model="resolutionMinutes" type="number" min="0" max="525600" step="1" required></div></div><p class="field-help">Zero disables a metric. At least one target must be positive.</p><label for="policy-pauses">Pause state keys, comma separated</label><input id="policy-pauses" x-model="pauseStates" placeholder="pending, waiting_customer"><p class="field-help">Every pause key must exist on a type using this policy. Open and resolved cannot pause a clock.</p><label for="policy-escalation">Internal escalation assignee</label><select id="policy-escalation" x-model="escalationAssignee"><option value="">Keep current assignee</option><option :for="agent in config.agents()" :value="agent.id">{{ agent.name }} / {{ agent.role }}</option></select><p class="mt-4 field-help">A breach creates a durable internal event and may assign this active agent. It does not confirm delivery of an email, SMS or other external notification.</p><button type="submit" class="mt-6 button button-teal">{{ workspace.pending() ? 'Creating...' : 'Create SLA policy' }}</button></fieldset></form></section>
+<section :if="config.tab() === 'sharing' && workspace.canManage()" class="editor-grid">
+  <article class="editor-panel">
+    <header class="editor-panel-heading"><h2>Customer organizations</h2></header>
+    <div class="editor-form">
+      <form @submit.prevent="sharing.createOrganization()">
+        <label for="ticket-org-name">Organization name</label>
+        <input id="ticket-org-name" x-model="organizationName" required maxlength="120">
+        <button type="submit" class="button button-teal mt-2" :disabled="workspace.pending()">Create organization</button>
+      </form>
+      <div class="mt-5">
+        <label for="ticket-org-selected">Manage members</label>
+        <select id="ticket-org-selected" x-model="selectedOrganization" @change="sharing.loadMembers()" :disabled="workspace.pending()">
+          <option value="">Choose an organization</option>
+          <option :for="organization in sharing.organizations()" :value="String(organization.id)">{{ organization.name }}</option>
+        </select>
+      </div>
+      <ul :if="selectedOrganization()" class="mt-4">
+        <li :for="member in sharing.members()" class="flex flex-wrap gap-2 items-center justify-between py-2">
+          <span>{{ member.name || member.email }} <small class="field-help" :if="member.name && member.email">{{ member.email }}</small></span>
+          <button type="button" class="text-button" @click="sharing.changeCustomer(String(member.id), false)" :disabled="workspace.pending()">Remove member</button>
+        </li>
+      </ul>
+      <form :if="selectedOrganization()" class="mt-4" @submit.prevent="sharing.findCustomers()">
+        <label for="ticket-org-search">Find a customer by name or email</label>
+        <input id="ticket-org-search" x-model="customerSearch" type="search" required minlength="2" maxlength="120">
+        <button type="submit" class="button button-outline mt-2" :disabled="workspace.pending()">Search customers</button>
+      </form>
+      <form :if="selectedOrganization() && sharing.customers().length" class="mt-4" @submit.prevent="sharing.changeCustomer(selectedCustomer(), true)">
+        <label for="ticket-org-customer">Customer to add</label>
+        <select id="ticket-org-customer" x-model="selectedCustomer" required>
+          <option value="">Choose a customer</option>
+          <option :for="customer in sharing.customers()" :value="String(customer.id)">{{ customer.name }} {{ customer.email }}</option>
+        </select>
+        <button type="submit" class="button button-teal mt-2" :disabled="workspace.pending()">Add member</button>
+      </form>
+    </div>
+  </article>
+  <article class="editor-panel">
+    <header class="editor-panel-heading"><h2>Ticket grants</h2></header>
+    <div class="editor-form">
+      <p class="field-help">Members of the selected organization can view the ticket title and status.</p>
+      <form @submit.prevent="sharing.loadGrants()">
+        <label for="sharing-ticket-id">Ticket number</label>
+        <input id="sharing-ticket-id" type="text" inputmode="numeric" x-model="sharedTicketId" pattern="[1-9][0-9]*" required @input="sharing.clearGrants()">
+        <button type="submit" class="button button-outline mt-2" :disabled="workspace.pending()">Review grants</button>
+      </form>
+      <ul class="mt-4">
+        <li :for="organization in sharing.grants()" class="flex gap-3 items-center justify-between py-2">
+          <span>{{ organization.name }}</span>
+          <button type="button" class="text-button" @click="sharing.changeGrant(String(organization.id), false)" :disabled="workspace.pending()">Revoke access</button>
+        </li>
+      </ul>
+      <form class="mt-4" @submit.prevent="sharing.changeGrant(grantOrganization(), true)">
+        <label for="sharing-organization">Share with an organization</label>
+        <select id="sharing-organization" x-model="grantOrganization" required>
+          <option value="">Choose an organization</option>
+          <option :for="organization in sharing.organizations()" :value="String(organization.id)">{{ organization.name }}</option>
+        </select>
+        <button type="submit" class="button button-teal mt-2" :disabled="workspace.pending() || !sharedTicketId()">Share ticket</button>
+      </form>
+    </div>
+  </article>
+</section>
 <p class="console-help-footer">Definitions are append-only. Use an existing item as a template to create a new definition. Editing or deleting saved definitions, migrating existing tickets and priority-based policy selection are not available.</p>
 @endsection
